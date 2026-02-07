@@ -1,0 +1,47 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- ========================================
+       PROJECT CONFIGURATION
+       Sorcery+ Remake - MonoGame Desktop Project
+       ======================================== -->
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RollForward>Major</RollForward>
+    <PublishReadyToRun>false</PublishReadyToRun>
+    <TieredCompilation>false</TieredCompilation>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <!-- ========================================
+       MONOGAME FRAMEWORK
+       Cross-platform OpenGL desktop version
+       ======================================== -->
+
+  <ItemGroup>
+    <PackageReference Include="MonoGame.Framework.DesktopGL" Version="3.8.1.303" />
+    <PackageReference Include="MonoGame.Content.Builder.Task" Version="3.8.1.303" />
+  </ItemGroup>
+
+  <!-- ========================================
+       CONTENT PIPELINE
+       Assets processed by MonoGame Content Builder
+       ======================================== -->
+
+  <ItemGroup>
+    <MonoGameContentReference Include="Content\Content.mgcb" />
+  </ItemGroup>
+
+  <!-- ========================================
+       ASSET LINKS
+       Link to original extracted assets
+       ======================================== -->
+
+  <ItemGroup>
+    <None Update="Content\**\*.*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+</Project>

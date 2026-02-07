@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Skill(game-development)",
+      "Skill(game-development:*)",
+      "Bash(git add:*)"
+    ]
+  }
+}

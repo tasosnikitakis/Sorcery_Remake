@@ -1,0 +1,24 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.5.2.0
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SorceryRemake", "SorceryRemake.csproj", "{19B58127-3CCF-A673-2B5B-F149C9401041}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{19B58127-3CCF-A673-2B5B-F149C9401041}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{19B58127-3CCF-A673-2B5B-F149C9401041}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{19B58127-3CCF-A673-2B5B-F149C9401041}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{19B58127-3CCF-A673-2B5B-F149C9401041}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {FC1C8396-45C3-452C-9314-3E7153936FC6}
+	EndGlobalSection
+EndGlobal
