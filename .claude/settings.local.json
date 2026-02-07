@@ -3,7 +3,21 @@
     "allow": [
       "Skill(game-development)",
       "Skill(game-development:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nPhase 1: Complete - Core Game Engine & Animation System\n\nThis is the initial working prototype of the Sorcery+ remake with:\n\n✨ Features:\n- Entity-Component-System \\(ECS\\) architecture\n- Amstrad CPC Mode 0 rendering \\(160x200 → 640x400\\)\n- Authentic flight physics \\(gravity, thrust, inertia, damping\\)\n- Player sprite animation system \\(24x24 sprites\\)\n- Animations: idle_front, walk_right, walk_left, flying_up, falling\n- Single test room for movement testing\n\n🎮 Core Systems:\n- Physics: Force-based with gravity \\(300 px/s²\\) and damping \\(0.85\\)\n- Rendering: Pixel-perfect with 4x scaling\n- Animation: Frame-based with velocity thresholds\n- Input: Arrow key flight controls\n\n📁 Project Structure:\n- Core/: ECS entities and components\n- Physics/: Flight mechanics implementation\n- Graphics/: Sprite rendering and animation\n- Content/: MonoGame asset pipeline\n- docs/: Comprehensive documentation\n\n📚 Documentation:\n- README.md: Project overview and features\n- QUICKSTART.md: 5-minute setup guide\n- docs/Phase1.md: Detailed development log\n- docs/PythonToCSharpMigration.md: Python prototype comparison\n- docs/AnimationReference.md: Sprite frame mappings\n- docs/CodeStructure.md: Architecture deep dive\n- docs/AssetExtraction.md: Binary asset extraction guide\n\n🔧 Development Setup:\n- .NET 8.0+ compatible \\(tested with .NET 10\\)\n- VS Code debug configuration included\n- Build scripts for Windows and Linux/macOS\n\n🎯 Based on Python prototype:\n- Migrated from 320x144 to authentic 160x200 Mode 0\n- Preserved animation timing \\(7 ticks = 0.117s per frame\\)\n- Enhanced physics with force-based model\n\nCo-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(dotnet --version:*)",
+      "Bash(where:*)",
+      "Bash(dotnet --list-sdks:*)",
+      "Bash(dotnet --list-runtimes:*)",
+      "Bash(dir:*)",
+      "Bash(dotnet restore:*)",
+      "Bash(dotnet build:*)",
+      "Bash(dotnet tool install:*)",
+      "Bash(dotnet new:*)",
+      "Bash(dotnet run:*)",
+      "Bash(taskkill:*)",
+      "Bash(Stop-Process -Id 18280 -Force)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nPhase 1 Refinement: Python Prototype Match & Animation Fixes\n\n## Core Changes\n\n### Physics System\n- Replaced force-based physics with direct velocity assignment \\(authentic Amstrad CPC\\)\n- Matches Python prototype exactly: instant movement, no acceleration/damping\n- Speed: 200 px/s \\(tuned for better control\\)\n- Gravity: 120 px/s \\(tuned for better control\\)\n- Fixed Vector2 modification errors with temp variables\n\n### Screen & Rendering\n- Updated dimensions to match Python: 320x144 base @ 3x scale = 960x600 window\n- Added info panel rendering \\(168px dark blue bar at bottom\\)\n- Fixed sprite origin to top-left \\(0,0\\) for pixel-perfect positioning\n- Removed test room graphics \\(pure black background\\)\n- Added transparent sprite backgrounds \\(color key transparency\\)\n\n### Animation System\n- Fixed sprite coordinates to Row 4 \\(Y=75\\) - correct player wizard\n- Simplified animation logic: idle always cycles, walk animations on movement\n- Fixed initialization order bug \\(sprite component caching\\)\n- Idle animation now cycles continuously when stationary\n- All animations loop correctly\n\n### Sprite Configuration\n- Updated all player animations to use Row 4 \\(Y=75\\)\n- Frame spacing: 25px apart \\(24px sprite + 1px gap\\)\n- Animation speeds match Python \\(0.117s per frame\\)\n\n## Documentation\n- Added FIRST_RUN.md - First run checklist\n- Added FIX_DOTNET_SDK.md - SDK installation guide\n- Added SDK_DOWNLOAD_GUIDE.md - Detailed SDK download instructions\n- Added GITHUB_SETUP.md - GitHub push guide\n- Added VSCODE_TESTING.md - Testing guide\n- Added STATUS.md - Project status tracking\n- Added Python prototype files for reference \\(main.py, player.py, settings.py\\)\n\n## Test Results\n✅ Idle animation cycles continuously\n✅ Movement animations work correctly\n✅ Sprite boundaries respected\n✅ Transparent sprite backgrounds\n✅ Python prototype behavior matched\n✅ 960x600 window with info panel\n\nCo-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>\nEOF\n\\)\")"
     ]
   }
 }
