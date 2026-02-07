@@ -89,65 +89,118 @@ namespace SorceryRemake.Core
 
         public void Update(GameTime gameTime)
         {
-            if (Owner == null || _physics == null || _sprite == null)
+            if (Owner == null || _physics == null)
                 return;
+
+            // Re-cache sprite component if needed (it may be added after Initialize)
+            if (_sprite == null)
+            {
+                _sprite = Owner.GetComponent<SpriteComponent>();
+                if (_sprite == null) return; // Still null, can't continue
+
+                // Set initial animation now that sprite component exists
+                _sprite.SetAnimation(
+                    SpriteConfig.PLAYER_IDLE_FRONT,
+                    SpriteConfig.PLAYER_IDLE_ANIMATION_SPEED,
+                    loop: true
+                );
+            }
 
             // Update input state
             _previousKeyState = _currentKeyState;
             _currentKeyState = Keyboard.GetState();
 
             // ----------------------------------------------------------------
-            // PROCESS MOVEMENT INPUT
-            // Apply forces based on key presses
+            // PROCESS MOVEMENT INPUT - DIRECT VELOCITY (Python style)
+            // Matches Python's handle_input_and_movement() EXACTLY
             // ----------------------------------------------------------------
 
-            Vector2 inputDirection = Vector2.Zero;
-            bool isThrusting = false;
+            // HORIZONTAL VELOCITY (Left/Right)
+            bool movingLeft = _currentKeyState.IsKeyDown(Keys.Left);
+            bool movingRight = _currentKeyState.IsKeyDown(Keys.Right);
 
-            // Up arrow: Thrust upward (counteract gravity)
-            if (_currentKeyState.IsKeyDown(Keys.Up))
+            float targetHorizontalVelocity = 0;
+            if (movingLeft && !movingRight)
             {
-                _physics.ApplyThrust(new Vector2(0, -1), _physics.ThrustPower);
-                isThrusting = true;
+                targetHorizontalVelocity = -_physics.Speed; // -500 px/s
+            }
+            else if (movingRight && !movingLeft)
+            {
+                targetHorizontalVelocity = _physics.Speed; // +500 px/s
+            }
+            // else: targetHorizontalVelocity = 0 (instant stop!)
+
+            // VERTICAL VELOCITY (Up/Down/Gravity)
+            bool pressingUp = _currentKeyState.IsKeyDown(Keys.Up);
+            bool pressingDown = _currentKeyState.IsKeyDown(Keys.Down);
+
+            float currentVerticalVelocity = _physics.GravitySpeed; // Default: +300 px/s (fall)
+
+            if (pressingUp)
+            {
+                currentVerticalVelocity = -_physics.Speed; // -500 px/s (fly up)
+            }
+            else if (pressingDown)
+            {
+                currentVerticalVelocity = _physics.Speed; // +500 px/s (fly down fast)
             }
 
-            // Down arrow: Accelerate downward (complement gravity)
-            if (_currentKeyState.IsKeyDown(Keys.Down))
+            // Special case: On ground and no vertical input = stop falling
+            if (_physics.IsOnGround && !pressingUp && !pressingDown)
             {
-                _physics.ApplyThrust(new Vector2(0, 1), _physics.LateralAcceleration);
+                currentVerticalVelocity = 0;
             }
 
-            // Left arrow: Move left
-            if (_currentKeyState.IsKeyDown(Keys.Left))
-            {
-                _physics.ApplyThrust(new Vector2(-1, 0), _physics.LateralAcceleration);
-                inputDirection.X = -1;
-            }
-
-            // Right arrow: Move right
-            if (_currentKeyState.IsKeyDown(Keys.Right))
-            {
-                _physics.ApplyThrust(new Vector2(1, 0), _physics.LateralAcceleration);
-                inputDirection.X = 1;
-            }
+            // DIRECT ASSIGNMENT (create new Vector2 since it's a value type)
+            _physics.Velocity = new Vector2(targetHorizontalVelocity, currentVerticalVelocity);
 
             // ----------------------------------------------------------------
-            // UPDATE ANIMATION STATE
-            // Choose appropriate animation based on movement
+            // UPDATE ANIMATION STATE (SIMPLIFIED - Idle always cycles)
             // ----------------------------------------------------------------
 
-            PlayerAnimState newAnimState = DetermineAnimationState(
-                inputDirection,
-                isThrusting,
-                _physics.Velocity
-            );
+            // Determine target animation based on horizontal movement only
+            string targetAnimation = "idle_front"; // Default: always idle
+            bool flipSprite = false;
 
-            // Only change animation if state has changed
-            if (newAnimState != _currentAnimState)
+            // Only change animation if moving horizontally
+            if (targetHorizontalVelocity < -10f) // Moving left
             {
-                _currentAnimState = newAnimState;
-                ApplyAnimationState(newAnimState);
+                targetAnimation = "walk_left";
+                flipSprite = false; // walk_left has its own frames
             }
+            else if (targetHorizontalVelocity > 10f) // Moving right
+            {
+                targetAnimation = "walk_right";
+                flipSprite = false;
+            }
+
+            // Apply the animation if it changed
+            if (targetAnimation == "idle_front" && _sprite.AnimationFrames != SpriteConfig.PLAYER_IDLE_FRONT)
+            {
+                _sprite.SetAnimation(
+                    SpriteConfig.PLAYER_IDLE_FRONT,
+                    SpriteConfig.PLAYER_IDLE_ANIMATION_SPEED,
+                    loop: true
+                );
+            }
+            else if (targetAnimation == "walk_left" && _sprite.AnimationFrames != SpriteConfig.PLAYER_WALK_LEFT)
+            {
+                _sprite.SetAnimation(
+                    SpriteConfig.PLAYER_WALK_LEFT,
+                    SpriteConfig.PLAYER_WALK_ANIMATION_SPEED,
+                    loop: true
+                );
+            }
+            else if (targetAnimation == "walk_right" && _sprite.AnimationFrames != SpriteConfig.PLAYER_WALK_RIGHT)
+            {
+                _sprite.SetAnimation(
+                    SpriteConfig.PLAYER_WALK_RIGHT,
+                    SpriteConfig.PLAYER_WALK_ANIMATION_SPEED,
+                    loop: true
+                );
+            }
+
+            _sprite.FlipHorizontal = flipSprite;
         }
 
         // ====================================================================
@@ -217,13 +270,13 @@ namespace SorceryRemake.Core
                     break;
 
                 case PlayerAnimState.FlyingLeft:
-                    // Python: "walk_left" (uses walk_right frames with flip)
+                    // Python: "walk_left" (separate left-facing frames, NO flip)
                     _sprite.SetAnimation(
                         SpriteConfig.PLAYER_WALK_LEFT,
                         SpriteConfig.PLAYER_WALK_ANIMATION_SPEED,
                         loop: true
                     );
-                    _sprite.FlipHorizontal = true; // Flip sprite to face left
+                    _sprite.FlipHorizontal = false; // NO flip - separate frames
                     break;
 
                 case PlayerAnimState.FlyingRight:

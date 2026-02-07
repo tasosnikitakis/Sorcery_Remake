@@ -112,7 +112,7 @@ namespace SorceryRemake.Graphics
         {
             Texture = texture;
             SourceRectangle = sourceRect;
-            Origin = new Vector2(sourceRect.Width / 2f, sourceRect.Height / 2f);
+            Origin = Vector2.Zero; // Top-left origin for pixel-perfect positioning
             CurrentFrame = 0;
             _frameTimer = 0f;
         }
@@ -136,7 +136,7 @@ namespace SorceryRemake.Graphics
             if (frames.Length > 0)
             {
                 SourceRectangle = frames[0];
-                Origin = new Vector2(frames[0].Width / 2f, frames[0].Height / 2f);
+                Origin = Vector2.Zero; // Top-left origin for pixel-perfect positioning
             }
         }
 

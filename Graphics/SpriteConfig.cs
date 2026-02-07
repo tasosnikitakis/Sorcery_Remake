@@ -42,63 +42,73 @@ namespace SorceryRemake.Graphics
 
         // ====================================================================
         // PLAYER WIZARD ANIMATIONS
-        // Row 1 of spritesheet - Yellow wizard (main player)
-        // Matches Python prototype animation names and structure
+        // Row 4 of spritesheet (Y=75) - Pink/Magenta wizard (PLAYER CHARACTER)
+        // Matches Python prototype EXACTLY
+        // ====================================================================
+        // Python coordinates from main.py:
+        // "walk_left":  { "x": 0,   "y": 75, "count": 4, "spacing": 1}
+        // "idle_front": { "x": 100, "y": 75, "count": 4, "spacing": 1}
+        // "walk_right": { "x": 200, "y": 75, "count": 4, "spacing": 1}
+        //
+        // With 1px spacing, frames are 25 pixels apart (24 width + 1 spacing)
         // ====================================================================
 
         /// <summary>
-        /// IDLE_FRONT animation (Python prototype name).
+        /// WALK_LEFT animation - First 4 sprites on row 4.
+        /// Separate left-facing frames (NOT flipped).
+        /// Python: x=0, y=75, count=4, spacing=1
+        /// </summary>
+        public static readonly Rectangle[] PLAYER_WALK_LEFT = new Rectangle[]
+        {
+            new Rectangle(0, 75, SPRITE_WIDTH, SPRITE_HEIGHT),   // Frame 0: X=0
+            new Rectangle(25, 75, SPRITE_WIDTH, SPRITE_HEIGHT),  // Frame 1: X=25 (24+1)
+            new Rectangle(50, 75, SPRITE_WIDTH, SPRITE_HEIGHT),  // Frame 2: X=50 (24+1+24+1)
+            new Rectangle(75, 75, SPRITE_WIDTH, SPRITE_HEIGHT),  // Frame 3: X=75
+        };
+
+        /// <summary>
+        /// IDLE_FRONT animation - Middle 4 sprites on row 4.
         /// Front-facing idle/hovering animation.
-        /// Yellow wizard at top of spritesheet.
-        /// 4 frames for smooth idle bob.
+        /// Python: x=100, y=75, count=4, spacing=1
         /// </summary>
         public static readonly Rectangle[] PLAYER_IDLE_FRONT = new Rectangle[]
         {
-            new Rectangle(0, 0, SPRITE_WIDTH, SPRITE_HEIGHT),    // Frame 0
-            new Rectangle(24, 0, SPRITE_WIDTH, SPRITE_HEIGHT),   // Frame 1
-            new Rectangle(48, 0, SPRITE_WIDTH, SPRITE_HEIGHT),   // Frame 2
-            new Rectangle(72, 0, SPRITE_WIDTH, SPRITE_HEIGHT),   // Frame 3
+            new Rectangle(100, 75, SPRITE_WIDTH, SPRITE_HEIGHT),  // Frame 0: X=100
+            new Rectangle(125, 75, SPRITE_WIDTH, SPRITE_HEIGHT),  // Frame 1: X=125
+            new Rectangle(150, 75, SPRITE_WIDTH, SPRITE_HEIGHT),  // Frame 2: X=150
+            new Rectangle(175, 75, SPRITE_WIDTH, SPRITE_HEIGHT),  // Frame 3: X=175
         };
 
         /// <summary>
-        /// WALK_RIGHT animation (Python prototype name).
-        /// Flying/walking right animation.
-        /// 4 frames for smooth horizontal movement.
+        /// WALK_RIGHT animation - Last 4 sprites on row 4.
+        /// Right-facing walking animation.
+        /// Python: x=200, y=75, count=4, spacing=1
         /// </summary>
         public static readonly Rectangle[] PLAYER_WALK_RIGHT = new Rectangle[]
         {
-            new Rectangle(96, 0, SPRITE_WIDTH, SPRITE_HEIGHT),   // Frame 0
-            new Rectangle(120, 0, SPRITE_WIDTH, SPRITE_HEIGHT),  // Frame 1
-            new Rectangle(144, 0, SPRITE_WIDTH, SPRITE_HEIGHT),  // Frame 2
-            new Rectangle(168, 0, SPRITE_WIDTH, SPRITE_HEIGHT),  // Frame 3
+            new Rectangle(200, 75, SPRITE_WIDTH, SPRITE_HEIGHT),  // Frame 0: X=200
+            new Rectangle(225, 75, SPRITE_WIDTH, SPRITE_HEIGHT),  // Frame 1: X=225
+            new Rectangle(250, 75, SPRITE_WIDTH, SPRITE_HEIGHT),  // Frame 2: X=250
+            new Rectangle(275, 75, SPRITE_WIDTH, SPRITE_HEIGHT),  // Frame 3: X=275
         };
 
-        /// <summary>
-        /// WALK_LEFT animation (Python prototype name).
-        /// Flying/walking left animation.
-        /// Uses WALK_RIGHT frames with horizontal flip (FlipHorizontal = true).
-        /// </summary>
-        public static readonly Rectangle[] PLAYER_WALK_LEFT = PLAYER_WALK_RIGHT;
+        // ====================================================================
+        // NOTE: Flying_up and Falling animations don't exist on row 4
+        // Python prototype only used walk_left, idle_front, and walk_right
+        // Vertical movement in Python just showed idle_front
+        // ====================================================================
 
         /// <summary>
-        /// Flying up (thrusting) animation.
-        /// For Mode 0 flight physics when pressing Up.
+        /// Flying up - Use IDLE for now (matches Python behavior).
+        /// No specific flying_up animation on row 4.
         /// </summary>
-        public static readonly Rectangle[] PLAYER_FLYING_UP = new Rectangle[]
-        {
-            new Rectangle(192, 0, SPRITE_WIDTH, SPRITE_HEIGHT),  // Frame 0
-            new Rectangle(216, 0, SPRITE_WIDTH, SPRITE_HEIGHT),  // Frame 1
-        };
+        public static readonly Rectangle[] PLAYER_FLYING_UP = PLAYER_IDLE_FRONT;
 
         /// <summary>
-        /// Falling down animation.
-        /// Triggered when falling fast (velocity.Y > threshold).
+        /// Falling - Use IDLE for now (matches Python behavior).
+        /// No specific falling animation on row 4.
         /// </summary>
-        public static readonly Rectangle[] PLAYER_FALLING = new Rectangle[]
-        {
-            new Rectangle(240, 0, SPRITE_WIDTH, SPRITE_HEIGHT),  // Frame 0
-            new Rectangle(264, 0, SPRITE_WIDTH, SPRITE_HEIGHT),  // Frame 1
-        };
+        public static readonly Rectangle[] PLAYER_FALLING = PLAYER_IDLE_FRONT;
 
         // ====================================================================
         // LEGACY ANIMATION ALIASES (For backward compatibility)
