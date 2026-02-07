@@ -20,6 +20,7 @@ using Microsoft.Xna.Framework.Input;
 using SorceryRemake.Core;
 using SorceryRemake.Physics;
 using SorceryRemake.Graphics;
+using SorceryRemake.Tiles;
 using System;
 
 namespace SorceryRemake
@@ -74,6 +75,13 @@ namespace SorceryRemake
         // ====================================================================
 
         private Texture2D _spriteSheet;
+        private Texture2D _tilesetTexture;
+
+        // ====================================================================
+        // TILEMAP
+        // ====================================================================
+
+        private TileMapComponent _currentRoom;
 
         // ====================================================================
         // DEBUG
@@ -188,6 +196,29 @@ namespace SorceryRemake
             var sprite = new SpriteComponent(_spriteSheet, SpriteConfig.PLAYER_IDLE_FRONT[0]);
             _player.AddComponent(sprite);
 
+            // ----------------------------------------------------------------
+            // Load tileset and create test room (Phase 2A)
+            // ----------------------------------------------------------------
+
+            try
+            {
+                _tilesetTexture = Content.Load<Texture2D>("Tiles");
+                System.Diagnostics.Debug.WriteLine($"Tileset loaded: {_tilesetTexture.Width}x{_tilesetTexture.Height}");
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Failed to load tileset: {ex.Message}");
+                // Create a fallback tileset
+                _tilesetTexture = new Texture2D(GraphicsDevice, 64, 64);
+                Color[] tileData = new Color[64 * 64];
+                for (int i = 0; i < tileData.Length; i++)
+                    tileData[i] = Color.Gray;
+                _tilesetTexture.SetData(tileData);
+            }
+
+            // Create test room (40x18 tiles = 320x144 pixels)
+            CreateTestRoom();
+
             // Try to load debug font
             try
             {
@@ -248,9 +279,13 @@ namespace SorceryRemake
                 sortMode: SpriteSortMode.Deferred
             );
 
-            // Black background only (no test room graphics)
+            // Draw tilemap (background tiles)
+            if (_currentRoom != null)
+            {
+                _currentRoom.Draw(_spriteBatch, RENDER_SCALE);
+            }
 
-            // Draw player sprite
+            // Draw player sprite (on top of tiles)
             DrawPlayer();
 
             _spriteBatch.End();
@@ -289,6 +324,46 @@ namespace SorceryRemake
             }
 
             base.Draw(gameTime);
+        }
+
+        // ====================================================================
+        // ROOM CREATION
+        // ====================================================================
+
+        /// <summary>
+        /// Create a simple test room to verify tile rendering (Phase 2A).
+        /// </summary>
+        private void CreateTestRoom()
+        {
+            // Create tilemap (40 tiles wide, 18 tiles tall = 320x144 pixels)
+            _currentRoom = new TileMapComponent(_tilesetTexture, 40, 18);
+
+            // Fill entire room with empty tiles initially
+            _currentRoom.FillRect(0, 0, 40, 18, TileConfig.EMPTY);
+
+            // Create floor (bottom 2 rows)
+            _currentRoom.FillRect(0, 16, 40, 2, TileConfig.FLOOR_TAN);
+
+            // Create left wall
+            _currentRoom.FillRect(0, 0, 2, 18, TileConfig.WALL_DARK_GRAY);
+
+            // Create right wall
+            _currentRoom.FillRect(38, 0, 2, 18, TileConfig.WALL_DARK_GRAY);
+
+            // Create ceiling
+            _currentRoom.FillRect(0, 0, 40, 2, TileConfig.WALL_DARK_GRAY);
+
+            // Create some platforms for testing
+            _currentRoom.DrawHorizontalLine(10, 12, 8, TileConfig.PLATFORM_LIGHT);
+            _currentRoom.DrawHorizontalLine(22, 10, 8, TileConfig.PLATFORM_MEDIUM);
+            _currentRoom.DrawHorizontalLine(10, 8, 6, TileConfig.PLATFORM_DARK);
+
+            // Add some decorative tiles
+            _currentRoom.SetTile(5, 15, TileConfig.DECO_BRICK);
+            _currentRoom.SetTile(6, 15, TileConfig.DECO_LIGHT_BRICK);
+            _currentRoom.SetTile(7, 15, TileConfig.DECO_DARK_BRICK);
+
+            System.Diagnostics.Debug.WriteLine("Test room created: 40x18 tiles");
         }
 
         // ====================================================================
