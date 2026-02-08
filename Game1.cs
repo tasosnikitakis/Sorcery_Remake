@@ -21,7 +21,10 @@ using SorceryRemake.Core;
 using SorceryRemake.Physics;
 using SorceryRemake.Graphics;
 using SorceryRemake.Tiles;
+using SorceryRemake.Doors;
+using SorceryRemake.Rooms;
 using System;
+using System.Collections.Generic;
 
 namespace SorceryRemake
 {
@@ -76,12 +79,14 @@ namespace SorceryRemake
 
         private Texture2D _spriteSheet;
         private Texture2D _tilesetTexture;
+        private Texture2D _leftDoorTexture;
+        private Texture2D _rightDoorTexture;
 
         // ====================================================================
-        // TILEMAP
+        // ROOM MANAGER
         // ====================================================================
 
-        private TileMapComponent _currentRoom;
+        private RoomManager _roomManager;
 
         // ====================================================================
         // DEBUG
@@ -195,34 +200,30 @@ namespace SorceryRemake
             _player.AddComponent(sprite);
 
             // ----------------------------------------------------------------
-            // Load tileset and create test room (Phase 2A)
+            // Load tileset, door spritesheet, and set up rooms (Phase 2C)
             // ----------------------------------------------------------------
 
-            try
-            {
-                _tilesetTexture = Content.Load<Texture2D>("Tiles");
-                System.Diagnostics.Debug.WriteLine($"Tileset loaded: {_tilesetTexture.Width}x{_tilesetTexture.Height}");
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"Failed to load tileset: {ex.Message}");
-                // Create a fallback tileset
-                _tilesetTexture = new Texture2D(GraphicsDevice, 64, 64);
-                Color[] tileData = new Color[64 * 64];
-                for (int i = 0; i < tileData.Length; i++)
-                    tileData[i] = Color.Gray;
-                _tilesetTexture.SetData(tileData);
-            }
+            _tilesetTexture = Content.Load<Texture2D>("Tiles");
 
-            // Create test room (40x18 tiles = 320x144 pixels)
-            CreateTestRoom();
+            _leftDoorTexture = Content.Load<Texture2D>("LeftDoorFrames");
+            _rightDoorTexture = Content.Load<Texture2D>("RightDoorFrames");
 
-            // Wire tilemap to physics for collision detection
+            // Set up room manager
+            _roomManager = new RoomManager();
+            _roomManager.SetTextures(_tilesetTexture, _leftDoorTexture, _rightDoorTexture);
+            RegisterTestRooms();
+            _roomManager.LoadRoom("room_1");
+
+            // Wire tilemap and door collision to physics
             var physics = _player.GetComponent<PhysicsComponent>();
             if (physics != null)
             {
-                physics.TileMap = _currentRoom;
+                physics.TileMap = _roomManager.CurrentTileMap;
+                UpdateDoorCollision(physics);
             }
+
+            // Set player start position for room 1
+            _player.Position = new Vector2(40f, 96f);
 
             // Try to load debug font
             try
@@ -256,11 +257,44 @@ namespace SorceryRemake
             if (Keyboard.GetState().IsKeyDown(Keys.F1))
                 _showDebugInfo = !_showDebugInfo;
 
+            float dt = (float)gameTime.ElapsedGameTime.TotalSeconds;
+
             // ----------------------------------------------------------------
-            // Update player entity (this updates all components)
+            // Door transition logic (freezes all gameplay during animation)
             // ----------------------------------------------------------------
 
-            _player.Update(gameTime);
+            if (_roomManager.IsGameFrozen)
+            {
+                var result = _roomManager.Update(dt);
+                if (result.HasValue)
+                {
+                    // Animation done - execute room switch
+                    Vector2 newPos = _roomManager.ExecuteTransition(PhysicsComponent.HITBOX_WIDTH);
+                    _player.Position = newPos;
+
+                    // Re-wire physics to new tilemap and door collision
+                    var phys = _player.GetComponent<PhysicsComponent>();
+                    if (phys != null)
+                    {
+                        phys.TileMap = _roomManager.CurrentTileMap;
+                        phys.Velocity = Vector2.Zero;
+                        UpdateDoorCollision(phys);
+                    }
+                }
+                // Skip all other updates while frozen
+            }
+            else
+            {
+                // Normal gameplay
+                _player.Update(gameTime);
+
+                // Check door triggers
+                _roomManager.CheckDoorTriggers(
+                    _player.Position,
+                    PhysicsComponent.HITBOX_WIDTH,
+                    PhysicsComponent.HITBOX_HEIGHT
+                );
+            }
 
             base.Update(gameTime);
         }
@@ -285,10 +319,10 @@ namespace SorceryRemake
             );
 
             // Draw tilemap (background tiles)
-            if (_currentRoom != null)
-            {
-                _currentRoom.Draw(_spriteBatch, RENDER_SCALE);
-            }
+            _roomManager.CurrentTileMap?.Draw(_spriteBatch, RENDER_SCALE);
+
+            // Draw doors
+            _roomManager.DrawDoors(_spriteBatch, RENDER_SCALE);
 
             // Draw player sprite (on top of tiles)
             DrawPlayer();
@@ -336,65 +370,80 @@ namespace SorceryRemake
         // ====================================================================
 
         /// <summary>
-        /// Create a simple test room to verify tile rendering (Phase 2A).
+        /// Register test rooms for Phase 2C door testing.
+        /// Room 1: Floor + platform, LEFT-opening door at bottom-right.
+        /// Room 2: Floor only (empty), RIGHT-opening door at bottom-left.
         /// </summary>
-        private void CreateTestRoom()
+        private void RegisterTestRooms()
         {
-            // Room: 40x18 tiles = 320x144 pixels
-            _currentRoom = new TileMapComponent(_tilesetTexture, 40, 18);
+            _roomManager.RegisterRoom("room_1", () =>
+            {
+                var map = new TileMapComponent(_tilesetTexture, 40, 18);
+                map.FillRect(0, 0, 40, 18, TileConfig.EMPTY);
 
-            // Fill with empty air
-            _currentRoom.FillRect(0, 0, 40, 18, TileConfig.EMPTY);
+                // Floor
+                map.DrawHorizontalLine(0, 17, 40, TileConfig.FLOOR_TAN);
 
-            // Floor: solid across entire bottom row (row 17)
-            _currentRoom.DrawHorizontalLine(0, 17, 40, TileConfig.FLOOR_TAN);
+                // Platform in the middle
+                map.DrawHorizontalLine(14, 12, 8, TileConfig.PLATFORM_LIGHT);
 
-            // Single platform: 8 tiles wide, 1 tile tall, 5 rows above the floor
-            // Floor is row 17, platform at row 12, centered horizontally
-            // Center: (40-8)/2 = 16, so cols 16-23
-            _currentRoom.DrawHorizontalLine(16, 12, 8, TileConfig.PLATFORM_LIGHT);
+                _roomManager.SetTileMap(map);
 
-            System.Diagnostics.Debug.WriteLine("Test room created: floor + platform");
+                // Left-opening door at the right side of the room
+                // Door is 24px tall, bottom at floor row 17: Y = (17*8) - 24 = 112
+                // Placed at right edge: X = 320 - 24 = 296
+                var door = new DoorComponent(DoorType.LeftOpening, new Vector2(296, 112));
+                door.DoorId = "room1_door_right";
+                door.TargetRoomId = "room_2";
+                door.TargetDoorId = "room2_door_left";
+
+                _roomManager.SetDoors(new List<DoorComponent> { door });
+            });
+
+            _roomManager.RegisterRoom("room_2", () =>
+            {
+                var map = new TileMapComponent(_tilesetTexture, 40, 18);
+                map.FillRect(0, 0, 40, 18, TileConfig.EMPTY);
+
+                // Floor only - empty room
+                map.DrawHorizontalLine(0, 17, 40, TileConfig.FLOOR_BROWN);
+
+                _roomManager.SetTileMap(map);
+
+                // Right-opening door at the left side of the room
+                // Placed at left edge: X = 0
+                var door = new DoorComponent(DoorType.RightOpening, new Vector2(0, 112));
+                door.DoorId = "room2_door_left";
+                door.TargetRoomId = "room_1";
+                door.TargetDoorId = "room1_door_right";
+
+                _roomManager.SetDoors(new List<DoorComponent> { door });
+            });
+        }
+
+        // ====================================================================
+        // DOOR COLLISION WIRING
+        // ====================================================================
+
+        /// <summary>
+        /// Update the physics solid rects from current room doors.
+        /// Called after loading a room or executing a transition.
+        /// </summary>
+        private void UpdateDoorCollision(PhysicsComponent physics)
+        {
+            physics.SolidRects.Clear();
+            foreach (var door in _roomManager.CurrentDoors)
+            {
+                physics.SolidRects.Add(new Rectangle(
+                    (int)door.Position.X, (int)door.Position.Y,
+                    DoorConfig.DOOR_WIDTH, DoorConfig.DOOR_HEIGHT
+                ));
+            }
         }
 
         // ====================================================================
         // RENDERING HELPERS
         // ====================================================================
-
-        /// <summary>
-        /// Draw a simple test room (placeholder for Phase 1).
-        /// </summary>
-        private void DrawTestRoom()
-        {
-            // Create a simple room with walls
-            // For Phase 1, we'll just draw colored rectangles
-
-            // Floor (green)
-            var floorRect = new Rectangle(
-                0,
-                (int)(120 * RENDER_SCALE),  // Adjusted for new height (144)
-                BASE_GAME_WIDTH * RENDER_SCALE,
-                BASE_GAME_HEIGHT * RENDER_SCALE
-            );
-            DrawFilledRectangle(_spriteBatch, floorRect, new Color(0, 128, 0));
-
-            // Left wall (dark gray)
-            var leftWall = new Rectangle(0, 0, 10 * RENDER_SCALE, BASE_GAME_HEIGHT * RENDER_SCALE);
-            DrawFilledRectangle(_spriteBatch, leftWall, new Color(64, 64, 64));
-
-            // Right wall (dark gray)
-            var rightWall = new Rectangle(
-                (BASE_GAME_WIDTH - 10) * RENDER_SCALE,
-                0,
-                10 * RENDER_SCALE,
-                BASE_GAME_HEIGHT * RENDER_SCALE
-            );
-            DrawFilledRectangle(_spriteBatch, rightWall, new Color(64, 64, 64));
-
-            // Ceiling (dark blue)
-            var ceiling = new Rectangle(0, 0, BASE_GAME_WIDTH * RENDER_SCALE, 10 * RENDER_SCALE);
-            DrawFilledRectangle(_spriteBatch, ceiling, new Color(0, 0, 128));
-        }
 
         /// <summary>
         /// Draw the player sprite at the correct scaled position.

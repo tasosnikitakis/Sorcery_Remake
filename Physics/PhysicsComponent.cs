@@ -17,6 +17,7 @@ using Microsoft.Xna.Framework;
 using SorceryRemake.Core;
 using SorceryRemake.Tiles;
 using System;
+using System.Collections.Generic;
 
 namespace SorceryRemake.Physics
 {
@@ -58,6 +59,12 @@ namespace SorceryRemake.Physics
 
         public TileMapComponent? TileMap { get; set; }
 
+        /// <summary>
+        /// Solid rectangles for non-tile collision (doors, etc.).
+        /// Updated by Game1 when rooms change.
+        /// </summary>
+        public List<Rectangle> SolidRects { get; set; } = new();
+
         // ====================================================================
         // CONSTRUCTOR
         // ====================================================================
@@ -88,13 +95,15 @@ namespace SorceryRemake.Physics
                 // --- X AXIS ---
                 pos.X += vel.X * dt;
                 pos = ResolveHorizontalCollision(pos, ref vel);
+                pos = ResolveSolidRectsHorizontal(pos, ref vel);
 
                 // --- Y AXIS ---
                 pos.Y += vel.Y * dt;
                 pos = ResolveVerticalCollision(pos, ref vel);
+                pos = ResolveSolidRectsVertical(pos, ref vel);
 
                 // --- GROUND CHECK ---
-                IsOnGround = CheckOnGround(pos);
+                IsOnGround = CheckOnGround(pos) || CheckOnGroundSolidRects(pos);
             }
             else
             {
@@ -239,6 +248,69 @@ namespace SorceryRemake.Physics
                     return true;
             }
 
+            return false;
+        }
+
+        // ====================================================================
+        // SOLID RECT COLLISION (doors, etc.)
+        // ====================================================================
+
+        private Vector2 ResolveSolidRectsHorizontal(Vector2 pos, ref Vector2 vel)
+        {
+            Rectangle playerRect = new Rectangle((int)pos.X, (int)pos.Y, HITBOX_WIDTH, HITBOX_HEIGHT);
+
+            foreach (var rect in SolidRects)
+            {
+                if (!playerRect.Intersects(rect)) continue;
+
+                if (vel.X > 0)
+                {
+                    pos.X = rect.Left - HITBOX_WIDTH;
+                    vel.X = 0;
+                }
+                else if (vel.X < 0)
+                {
+                    pos.X = rect.Right;
+                    vel.X = 0;
+                }
+                playerRect = new Rectangle((int)pos.X, (int)pos.Y, HITBOX_WIDTH, HITBOX_HEIGHT);
+            }
+
+            return pos;
+        }
+
+        private Vector2 ResolveSolidRectsVertical(Vector2 pos, ref Vector2 vel)
+        {
+            Rectangle playerRect = new Rectangle((int)pos.X, (int)pos.Y, HITBOX_WIDTH, HITBOX_HEIGHT);
+
+            foreach (var rect in SolidRects)
+            {
+                if (!playerRect.Intersects(rect)) continue;
+
+                if (vel.Y > 0)
+                {
+                    pos.Y = rect.Top - HITBOX_HEIGHT;
+                    vel.Y = 0;
+                }
+                else if (vel.Y < 0)
+                {
+                    pos.Y = rect.Bottom;
+                    vel.Y = 0;
+                }
+                playerRect = new Rectangle((int)pos.X, (int)pos.Y, HITBOX_WIDTH, HITBOX_HEIGHT);
+            }
+
+            return pos;
+        }
+
+        private bool CheckOnGroundSolidRects(Vector2 pos)
+        {
+            Rectangle feetCheck = new Rectangle((int)pos.X, (int)(pos.Y + HITBOX_HEIGHT), HITBOX_WIDTH, 1);
+            foreach (var rect in SolidRects)
+            {
+                if (feetCheck.Intersects(rect))
+                    return true;
+            }
             return false;
         }
 
