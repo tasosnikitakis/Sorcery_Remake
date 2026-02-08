@@ -128,10 +128,8 @@ namespace SorceryRemake
 
             _player = new Entity("Player");
 
-            // Set starting position (matches Python: tile col=5, row=5 in 24x24 grid)
-            // Python: PLAYER_START_TILE_COL = 5, PLAYER_START_TILE_ROW = 5
-            // Position = (5 * 24, 5 * 24) = (120, 120)
-            _player.Position = new Vector2(120f, 120f);
+            // Start near top-center so player falls to floor
+            _player.Position = new Vector2(148f, 16f);
 
             // Add physics component for flight mechanics
             var physics = new PhysicsComponent();
@@ -218,6 +216,13 @@ namespace SorceryRemake
 
             // Create test room (40x18 tiles = 320x144 pixels)
             CreateTestRoom();
+
+            // Wire tilemap to physics for collision detection
+            var physics = _player.GetComponent<PhysicsComponent>();
+            if (physics != null)
+            {
+                physics.TileMap = _currentRoom;
+            }
 
             // Try to load debug font
             try
@@ -335,35 +340,21 @@ namespace SorceryRemake
         /// </summary>
         private void CreateTestRoom()
         {
-            // Create tilemap (40 tiles wide, 18 tiles tall = 320x144 pixels)
+            // Room: 40x18 tiles = 320x144 pixels
             _currentRoom = new TileMapComponent(_tilesetTexture, 40, 18);
 
-            // Fill entire room with empty tiles initially
+            // Fill with empty air
             _currentRoom.FillRect(0, 0, 40, 18, TileConfig.EMPTY);
 
-            // Create floor (bottom 2 rows)
-            _currentRoom.FillRect(0, 16, 40, 2, TileConfig.FLOOR_TAN);
+            // Floor: solid across entire bottom row (row 17)
+            _currentRoom.DrawHorizontalLine(0, 17, 40, TileConfig.FLOOR_TAN);
 
-            // Create left wall
-            _currentRoom.FillRect(0, 0, 2, 18, TileConfig.WALL_DARK_GRAY);
+            // Single platform: 8 tiles wide, 1 tile tall, 5 rows above the floor
+            // Floor is row 17, platform at row 12, centered horizontally
+            // Center: (40-8)/2 = 16, so cols 16-23
+            _currentRoom.DrawHorizontalLine(16, 12, 8, TileConfig.PLATFORM_LIGHT);
 
-            // Create right wall
-            _currentRoom.FillRect(38, 0, 2, 18, TileConfig.WALL_DARK_GRAY);
-
-            // Create ceiling
-            _currentRoom.FillRect(0, 0, 40, 2, TileConfig.WALL_DARK_GRAY);
-
-            // Create some platforms for testing
-            _currentRoom.DrawHorizontalLine(10, 12, 8, TileConfig.PLATFORM_LIGHT);
-            _currentRoom.DrawHorizontalLine(22, 10, 8, TileConfig.PLATFORM_MEDIUM);
-            _currentRoom.DrawHorizontalLine(10, 8, 6, TileConfig.PLATFORM_DARK);
-
-            // Add some decorative tiles
-            _currentRoom.SetTile(5, 15, TileConfig.DECO_BRICK);
-            _currentRoom.SetTile(6, 15, TileConfig.DECO_LIGHT_BRICK);
-            _currentRoom.SetTile(7, 15, TileConfig.DECO_DARK_BRICK);
-
-            System.Diagnostics.Debug.WriteLine("Test room created: 40x18 tiles");
+            System.Diagnostics.Debug.WriteLine("Test room created: floor + platform");
         }
 
         // ====================================================================
