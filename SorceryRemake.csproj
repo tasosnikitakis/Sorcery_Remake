@@ -44,4 +44,15 @@
     </None>
   </ItemGroup>
 
+  <!-- ========================================
+       ROOM DATA FILES
+       JSON collision grids and room definitions
+       ======================================== -->
+
+  <ItemGroup>
+    <Content Include="assets\data\*.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
 </Project>

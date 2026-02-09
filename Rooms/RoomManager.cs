@@ -20,6 +20,8 @@ namespace SorceryRemake.Rooms
     {
         // Current room state
         public TileMapComponent? CurrentTileMap { get; private set; }
+        public Texture2D? CurrentBackground { get; private set; }
+        public bool HasBackground => CurrentBackground != null;
         public List<DoorComponent> CurrentDoors { get; private set; } = new List<DoorComponent>();
         public string CurrentRoomId { get; private set; } = "";
 
@@ -58,6 +60,9 @@ namespace SorceryRemake.Rooms
         {
             if (_roomBuilders.TryGetValue(roomId, out var builder))
             {
+                // Clear previous room state
+                CurrentBackground = null;
+
                 builder();
                 CurrentRoomId = roomId;
                 State = TransitionState.None;
@@ -71,6 +76,29 @@ namespace SorceryRemake.Rooms
         public void SetTileMap(TileMapComponent tileMap)
         {
             CurrentTileMap = tileMap;
+        }
+
+        /// <summary>
+        /// Set the current room's background image (called by room builders).
+        /// When a background is set, it renders instead of the tilemap visuals.
+        /// The tilemap still provides collision data.
+        /// </summary>
+        public void SetBackground(Texture2D? background)
+        {
+            CurrentBackground = background;
+        }
+
+        /// <summary>
+        /// Draw the room background image (if any). Call before drawing tiles/entities.
+        /// </summary>
+        public void DrawBackground(SpriteBatch spriteBatch, float scale)
+        {
+            if (CurrentBackground == null) return;
+
+            spriteBatch.Draw(
+                CurrentBackground,
+                new Rectangle(0, 0, (int)(320 * scale), (int)(144 * scale)),
+                Color.White);
         }
 
         /// <summary>

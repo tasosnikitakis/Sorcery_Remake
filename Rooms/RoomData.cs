@@ -102,6 +102,24 @@ namespace SorceryRemake.Rooms
         /// Default: black (0, 0, 0).
         /// </summary>
         public Color BackgroundColor { get; set; } = Color.Black;
+
+        // ====================================================================
+        // BACKGROUND IMAGE
+        // ====================================================================
+
+        /// <summary>
+        /// Name of the background texture asset (loaded via Content pipeline).
+        /// If set, this texture is drawn as the room background before any tiles.
+        /// Example: "RoomBG_Stonehenge" (without file extension).
+        /// </summary>
+        public string? BackgroundTextureName { get; set; }
+
+        /// <summary>
+        /// Collision grid for background-image rooms (40x18).
+        /// Each cell: 0=empty/air, 1=solid (blocks movement).
+        /// Used when the room relies on a background image rather than tile-based rendering.
+        /// </summary>
+        public byte[,]? CollisionGrid { get; set; }
     }
 
     // ========================================================================

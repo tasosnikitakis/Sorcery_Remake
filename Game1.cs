@@ -24,6 +24,7 @@ using SorceryRemake.Tiles;
 using SorceryRemake.Doors;
 using SorceryRemake.Rooms;
 using System;
+using System.IO;
 using System.Collections.Generic;
 
 namespace SorceryRemake
@@ -81,6 +82,11 @@ namespace SorceryRemake
         private Texture2D _tilesetTexture;
         private Texture2D _leftDoorTexture;
         private Texture2D _rightDoorTexture;
+
+        // Room background textures (screenshot-based rooms)
+        private Texture2D _bgStonehenge;
+        private Texture2D _bgWastelands;
+        private Texture2D _bgTunnelMouth;
 
         // ====================================================================
         // ROOM MANAGER
@@ -208,10 +214,18 @@ namespace SorceryRemake
             _leftDoorTexture = Content.Load<Texture2D>("LeftDoorFrames");
             _rightDoorTexture = Content.Load<Texture2D>("RightDoorFrames");
 
+            // Load room background textures (available for background rooms)
+            _bgStonehenge = Content.Load<Texture2D>("RoomBG_Stonehenge");
+            _bgWastelands = Content.Load<Texture2D>("RoomBG_Wastelands");
+            _bgTunnelMouth = Content.Load<Texture2D>("RoomBG_TunnelMouth");
+
             // Set up room manager
             _roomManager = new RoomManager();
             _roomManager.SetTextures(_tilesetTexture, _leftDoorTexture, _rightDoorTexture);
             RegisterTestRooms();
+            RegisterBackgroundRooms();
+
+            // Start with the two-room tile prototype
             _roomManager.LoadRoom("room_1");
 
             // Wire tilemap and door collision to physics
@@ -318,8 +332,12 @@ namespace SorceryRemake
                 sortMode: SpriteSortMode.Deferred
             );
 
-            // Draw tilemap (background tiles)
-            _roomManager.CurrentTileMap?.Draw(_spriteBatch, RENDER_SCALE);
+            // Draw room background image (if any) - renders the screenshot-based room
+            _roomManager.DrawBackground(_spriteBatch, RENDER_SCALE);
+
+            // Draw tilemap (only if no background image, otherwise collision-only)
+            if (!_roomManager.HasBackground)
+                _roomManager.CurrentTileMap?.Draw(_spriteBatch, RENDER_SCALE);
 
             // Draw doors
             _roomManager.DrawDoors(_spriteBatch, RENDER_SCALE);
@@ -418,6 +436,81 @@ namespace SorceryRemake
                 door.TargetDoorId = "room1_door_right";
 
                 _roomManager.SetDoors(new List<DoorComponent> { door });
+            });
+        }
+
+        // ====================================================================
+        // BACKGROUND ROOM REGISTRATION
+        // ====================================================================
+
+        /// <summary>
+        /// Register rooms that use screenshot backgrounds with collision-only tilemaps.
+        /// Chain: Stonehenge <-> Wastelands <-> TunnelMouth
+        /// </summary>
+        private void RegisterBackgroundRooms()
+        {
+            string dataDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "assets", "data");
+
+            // --- STONEHENGE ---
+            _roomManager.RegisterRoom("stonehenge", () =>
+            {
+                // Background image
+                _roomManager.SetBackground(_bgStonehenge);
+
+                // Collision-only tilemap from auto-detected grid
+                string jsonPath = Path.Combine(dataDir, "collision_stonehenge.json");
+                var map = RoomLoader.BuildCollisionTileMap(_tilesetTexture, jsonPath);
+                _roomManager.SetTileMap(map);
+
+                // Right door -> Wastelands
+                var doorRight = new DoorComponent(DoorType.LeftOpening, new Vector2(296, 112));
+                doorRight.DoorId = "stonehenge_door_right";
+                doorRight.TargetRoomId = "wastelands";
+                doorRight.TargetDoorId = "wastelands_door_left";
+
+                _roomManager.SetDoors(new List<DoorComponent> { doorRight });
+            });
+
+            // --- WASTELANDS ---
+            _roomManager.RegisterRoom("wastelands", () =>
+            {
+                _roomManager.SetBackground(_bgWastelands);
+
+                string jsonPath = Path.Combine(dataDir, "collision_wastelands.json");
+                var map = RoomLoader.BuildCollisionTileMap(_tilesetTexture, jsonPath);
+                _roomManager.SetTileMap(map);
+
+                // Left door -> Stonehenge
+                var doorLeft = new DoorComponent(DoorType.RightOpening, new Vector2(0, 112));
+                doorLeft.DoorId = "wastelands_door_left";
+                doorLeft.TargetRoomId = "stonehenge";
+                doorLeft.TargetDoorId = "stonehenge_door_right";
+
+                // Right door -> Tunnel Mouth
+                var doorRight = new DoorComponent(DoorType.LeftOpening, new Vector2(296, 112));
+                doorRight.DoorId = "wastelands_door_right";
+                doorRight.TargetRoomId = "tunnelmouth";
+                doorRight.TargetDoorId = "tunnelmouth_door_left";
+
+                _roomManager.SetDoors(new List<DoorComponent> { doorLeft, doorRight });
+            });
+
+            // --- TUNNEL MOUTH ---
+            _roomManager.RegisterRoom("tunnelmouth", () =>
+            {
+                _roomManager.SetBackground(_bgTunnelMouth);
+
+                string jsonPath = Path.Combine(dataDir, "collision_tunnelmouth.json");
+                var map = RoomLoader.BuildCollisionTileMap(_tilesetTexture, jsonPath);
+                _roomManager.SetTileMap(map);
+
+                // Left door -> Wastelands
+                var doorLeft = new DoorComponent(DoorType.RightOpening, new Vector2(0, 96));
+                doorLeft.DoorId = "tunnelmouth_door_left";
+                doorLeft.TargetRoomId = "wastelands";
+                doorLeft.TargetDoorId = "wastelands_door_right";
+
+                _roomManager.SetDoors(new List<DoorComponent> { doorLeft });
             });
         }
 
