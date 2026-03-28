@@ -125,14 +125,60 @@ namespace SorceryRemake.Graphics
         public static readonly Rectangle[] PLAYER_FLYING_RIGHT = PLAYER_WALK_RIGHT;
 
         // ====================================================================
-        // ENEMY SPRITES (For future phases)
-        // Rows 3-5 of spritesheet
+        // HOODED GUARD ANIMATIONS
+        // Dedicated spritesheet: GuardSheet.png (extracted from Characters.png row 2)
+        // Green top-line cropped, 12 frames at Y=0 with 1px spacing
+        // 4 walk left, 4 direction change/idle, 4 walk right
         // ====================================================================
 
         /// <summary>
-        /// Example enemy sprite (to be defined later).
+        /// Guard WALK_LEFT animation - First 4 frames.
         /// </summary>
-        public static readonly Rectangle ENEMY_GHOST = new Rectangle(0, 32, SPRITE_WIDTH, SPRITE_HEIGHT);
+        public static readonly Rectangle[] GUARD_WALK_LEFT = new Rectangle[]
+        {
+            new Rectangle(0, 0, SPRITE_WIDTH, SPRITE_HEIGHT),   // Frame 0
+            new Rectangle(25, 0, SPRITE_WIDTH, SPRITE_HEIGHT),  // Frame 1
+            new Rectangle(50, 0, SPRITE_WIDTH, SPRITE_HEIGHT),  // Frame 2
+            new Rectangle(75, 0, SPRITE_WIDTH, SPRITE_HEIGHT),  // Frame 3
+        };
+
+        /// <summary>
+        /// Guard IDLE animation - Middle 4 frames.
+        /// Shown when guard is idle or changing direction.
+        /// </summary>
+        public static readonly Rectangle[] GUARD_IDLE = new Rectangle[]
+        {
+            new Rectangle(100, 0, SPRITE_WIDTH, SPRITE_HEIGHT),  // Frame 0
+            new Rectangle(125, 0, SPRITE_WIDTH, SPRITE_HEIGHT),  // Frame 1
+            new Rectangle(150, 0, SPRITE_WIDTH, SPRITE_HEIGHT),  // Frame 2
+            new Rectangle(175, 0, SPRITE_WIDTH, SPRITE_HEIGHT),  // Frame 3
+        };
+
+        /// <summary>
+        /// Guard WALK_RIGHT animation - Last 4 frames.
+        /// </summary>
+        public static readonly Rectangle[] GUARD_WALK_RIGHT = new Rectangle[]
+        {
+            new Rectangle(200, 0, SPRITE_WIDTH, SPRITE_HEIGHT),  // Frame 0
+            new Rectangle(225, 0, SPRITE_WIDTH, SPRITE_HEIGHT),  // Frame 1
+            new Rectangle(250, 0, SPRITE_WIDTH, SPRITE_HEIGHT),  // Frame 2
+            new Rectangle(275, 0, SPRITE_WIDTH, SPRITE_HEIGHT),  // Frame 3
+        };
+
+        /// <summary>
+        /// Guard animation speed (seconds per frame).
+        /// </summary>
+        public const float GUARD_ANIMATION_SPEED = 0.12f;
+
+        /// <summary>
+        /// Guard movement speed (pixels/second). Slower than player.
+        /// </summary>
+        public const float GUARD_SPEED = 80f;
+
+        /// <summary>
+        /// Dead zone threshold to prevent guard jitter when near player.
+        /// </summary>
+        public const float GUARD_FOLLOW_THRESHOLD = 2f;
 
         // ====================================================================
         // ANIMATION TIMING CONSTANTS

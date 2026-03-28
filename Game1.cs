@@ -23,6 +23,7 @@ using SorceryRemake.Graphics;
 using SorceryRemake.Tiles;
 using SorceryRemake.Doors;
 using SorceryRemake.Rooms;
+using SorceryRemake.Enemies;
 using System;
 using System.IO;
 using System.Collections.Generic;
@@ -73,6 +74,7 @@ namespace SorceryRemake
         // ====================================================================
 
         private Entity _player;
+        private Entity _guard;
 
         // ====================================================================
         // ASSETS
@@ -82,6 +84,7 @@ namespace SorceryRemake
         private Texture2D _tilesetTexture;
         private Texture2D _leftDoorTexture;
         private Texture2D _rightDoorTexture;
+        private Texture2D _guardSheet;
 
         // Room background textures (screenshot-based rooms)
         private Texture2D _bgStonehenge;
@@ -214,6 +217,9 @@ namespace SorceryRemake
             _leftDoorTexture = Content.Load<Texture2D>("LeftDoorFrames");
             _rightDoorTexture = Content.Load<Texture2D>("RightDoorFrames");
 
+            _guardSheet = Content.Load<Texture2D>("GuardSheet");
+            MakeColorTransparent(_guardSheet, Color.Black);
+
             // Load room background textures (available for background rooms)
             _bgStonehenge = Content.Load<Texture2D>("RoomBG_Stonehenge");
             _bgWastelands = Content.Load<Texture2D>("RoomBG_Wastelands");
@@ -238,6 +244,29 @@ namespace SorceryRemake
 
             // Set player start position for room 1
             _player.Position = new Vector2(40f, 96f);
+
+            // ----------------------------------------------------------------
+            // Create hooded guard enemy in room 1
+            // ----------------------------------------------------------------
+            _guard = new Entity("HoodedGuard");
+            _guard.Position = new Vector2(160f, 112f); // Center of room, on floor
+
+            var guardPhysics = new PhysicsComponent();
+            guardPhysics.Speed = SpriteConfig.GUARD_SPEED;
+            // GravitySpeed stays at default 120f
+            _guard.AddComponent(guardPhysics);
+
+            var guardSprite = new SpriteComponent(_guardSheet, SpriteConfig.GUARD_IDLE[0]);
+            _guard.AddComponent(guardSprite);
+
+            var guardController = new GuardController(_player);
+            _guard.AddComponent(guardController);
+
+            // Wire guard physics to tilemap and doors
+            guardPhysics.TileMap = _roomManager.CurrentTileMap;
+            UpdateDoorCollision(guardPhysics);
+
+            guardController.Initialize();
 
             // Try to load debug font
             try
@@ -294,6 +323,14 @@ namespace SorceryRemake
                         phys.Velocity = Vector2.Zero;
                         UpdateDoorCollision(phys);
                     }
+
+                    // Re-wire guard physics to new room
+                    var guardPhys = _guard.GetComponent<PhysicsComponent>();
+                    if (guardPhys != null)
+                    {
+                        guardPhys.TileMap = _roomManager.CurrentTileMap;
+                        UpdateDoorCollision(guardPhys);
+                    }
                 }
                 // Skip all other updates while frozen
             }
@@ -301,6 +338,7 @@ namespace SorceryRemake
             {
                 // Normal gameplay
                 _player.Update(gameTime);
+                _guard.Update(gameTime);
 
                 // Check door triggers
                 _roomManager.CheckDoorTriggers(
@@ -344,6 +382,9 @@ namespace SorceryRemake
 
             // Draw player sprite (on top of tiles)
             DrawPlayer();
+
+            // Draw guard enemy
+            DrawGuard();
 
             _spriteBatch.End();
 
@@ -549,6 +590,18 @@ namespace SorceryRemake
             // Convert Amstrad coordinates to render target coordinates
             Vector2 renderPos = _player.Position * RENDER_SCALE;
 
+            sprite.Draw(_spriteBatch, renderPos, RENDER_SCALE);
+        }
+
+        /// <summary>
+        /// Draw the guard sprite at the correct scaled position.
+        /// </summary>
+        private void DrawGuard()
+        {
+            var sprite = _guard.GetComponent<SpriteComponent>();
+            if (sprite == null) return;
+
+            Vector2 renderPos = _guard.Position * RENDER_SCALE;
             sprite.Draw(_spriteBatch, renderPos, RENDER_SCALE);
         }
 
