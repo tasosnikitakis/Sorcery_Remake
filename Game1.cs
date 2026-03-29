@@ -90,6 +90,11 @@ namespace SorceryRemake
         private HashSet<string> _pickedUpItems = new HashSet<string>(); // permanently picked up
         private List<Projectile> _projectiles = new List<Projectile>();
 
+        // Captive wizard system
+        private List<CaptiveWizard> _roomWizards = new List<CaptiveWizard>();
+        private HashSet<string> _savedWizards = new HashSet<string>(); // permanently saved
+        private int _savedWizardCount = 0;
+
         // ====================================================================
         // ASSETS
         // ====================================================================
@@ -109,6 +114,8 @@ namespace SorceryRemake
         private Texture2D _axeSheet;
         private Texture2D _shootingStarSheet;
         private Texture2D _pixelTexture; // 1x1 white texture for projectile rendering
+        private Texture2D _captiveWizardSheet;
+        private Texture2D _starSheet;
 
         // Room background textures (screenshot-based rooms)
         private Texture2D _bgStonehenge;
@@ -126,7 +133,7 @@ namespace SorceryRemake
         // ====================================================================
 
         private SpriteFont _debugFont;
-        private bool _showDebugInfo = true;
+        private bool _showDebugInfo = false;
 
         // ====================================================================
         // CONSTRUCTOR
@@ -275,6 +282,12 @@ namespace SorceryRemake
             _pixelTexture = new Texture2D(GraphicsDevice, 1, 1);
             _pixelTexture.SetData(new[] { Color.White });
 
+            _captiveWizardSheet = Content.Load<Texture2D>("CaptiveWizardSheet");
+            MakeColorTransparent(_captiveWizardSheet, Color.Black);
+
+            _starSheet = Content.Load<Texture2D>("StarSheet");
+            MakeColorTransparent(_starSheet, Color.Black);
+
             // Load room background textures (available for background rooms)
             _bgStonehenge = Content.Load<Texture2D>("RoomBG_Stonehenge");
             _bgWastelands = Content.Load<Texture2D>("RoomBG_Wastelands");
@@ -300,9 +313,10 @@ namespace SorceryRemake
             // Set player start position for room 1
             _player.Position = new Vector2(40f, 96f);
 
-            // Spawn enemies and items for the initial room
+            // Spawn enemies, items, and wizards for the initial room
             SpawnRoomEnemies("room_1");
             SpawnRoomItems("room_1");
+            SpawnRoomWizards("room_1");
 
             // Try to load debug font
             try
@@ -388,6 +402,7 @@ namespace SorceryRemake
                     // Restore or spawn enemies and items for the new room
                     LoadRoomEnemies(_roomManager.CurrentRoomId);
                     SpawnRoomItems(_roomManager.CurrentRoomId);
+                    SpawnRoomWizards(_roomManager.CurrentRoomId);
                 }
                 // Skip all other updates while frozen
             }
@@ -489,6 +504,54 @@ namespace SorceryRemake
                     enemy.Entity.Update(gameTime);
                 }
 
+                // Update captive wizards
+                float wizSpeed = SpriteConfig.PROJECTILE_SPEED; // same as player speed
+                for (int i = _roomWizards.Count - 1; i >= 0; i--)
+                {
+                    var wiz = _roomWizards[i];
+                    wiz.UpdateAnimation(dt);
+
+                    if (wiz.IsSaving)
+                    {
+                        // Fly upward
+                        wiz.Position.Y -= wizSpeed * dt;
+
+                        // Remove when off screen
+                        if (wiz.Position.Y + SpriteConfig.ITEM_DISPLAY_SIZE < 0)
+                        {
+                            _roomWizards.RemoveAt(i);
+                        }
+                    }
+                    else
+                    {
+                        // Check player touch
+                        var wizRect = new Rectangle(
+                            (int)wiz.Position.X, (int)wiz.Position.Y,
+                            SpriteConfig.ITEM_DISPLAY_SIZE, SpriteConfig.ITEM_DISPLAY_SIZE);
+                        var playerRect = new Rectangle(
+                            (int)_player.Position.X - 1, (int)_player.Position.Y - 1,
+                            PhysicsComponent.HITBOX_WIDTH + 2, PhysicsComponent.HITBOX_HEIGHT + 2);
+
+                        if (wizRect.Intersects(playerRect))
+                        {
+                            // Transform to star and start flying up
+                            wiz.IsSaving = true;
+                            wiz.Texture = _starSheet;
+                            wiz.AnimFrames = SpriteConfig.STAR_ANIM;
+                            wiz.FrameTime = SpriteConfig.STAR_ANIMATION_SPEED;
+                            wiz.CurrentFrame = 0;
+                            wiz.FrameTimer = 0;
+
+                            if (!wiz.CountedAsSaved)
+                            {
+                                _savedWizardCount++;
+                                _savedWizards.Add(wiz.Id);
+                                wiz.CountedAsSaved = true;
+                            }
+                        }
+                    }
+                }
+
                 // Update projectiles
                 UpdateProjectiles(dt);
 
@@ -533,6 +596,21 @@ namespace SorceryRemake
 
             // Draw doors
             _roomManager.DrawDoors(_spriteBatch, RENDER_SCALE);
+
+            // Draw captive wizards (48x48 source rendered at 24x24)
+            foreach (var wiz in _roomWizards)
+            {
+                Vector2 renderPos = wiz.Position * RENDER_SCALE;
+                int destSize = SpriteConfig.ITEM_DISPLAY_SIZE * RENDER_SCALE;
+                var destRect = new Rectangle(
+                    (int)renderPos.X, (int)renderPos.Y,
+                    destSize, destSize);
+                _spriteBatch.Draw(
+                    wiz.Texture,
+                    destRect,
+                    wiz.CurrentSourceRect,
+                    Color.White);
+            }
 
             // Draw room items (48x48 source rendered at 24x24)
             foreach (var item in _roomItems)
@@ -803,6 +881,46 @@ namespace SorceryRemake
         /// <summary>
         /// Tracks a placed item in the room.
         /// </summary>
+        private class CaptiveWizard
+        {
+            public string Id;
+            public Vector2 Position;
+            public Texture2D Texture;
+            public Rectangle[] AnimFrames;
+            public float FrameTime;
+            public int CurrentFrame;
+            public float FrameTimer;
+            public bool IsSaving; // true = transforming to star and flying up
+            public bool CountedAsSaved; // true = already incremented saved count
+
+            public CaptiveWizard(string id, Vector2 pos, Texture2D tex, Rectangle[] frames, float frameTime)
+            {
+                Id = id;
+                Position = pos;
+                Texture = tex;
+                AnimFrames = frames;
+                FrameTime = frameTime;
+                CurrentFrame = 0;
+                FrameTimer = 0;
+                IsSaving = false;
+                CountedAsSaved = false;
+            }
+
+            public Rectangle CurrentSourceRect => AnimFrames[CurrentFrame];
+
+            public void UpdateAnimation(float dt)
+            {
+                FrameTimer += dt;
+                if (FrameTimer >= FrameTime)
+                {
+                    FrameTimer -= FrameTime;
+                    CurrentFrame++;
+                    if (CurrentFrame >= AnimFrames.Length)
+                        CurrentFrame = 0; // loop for idle, star will be removed before looping
+                }
+            }
+        }
+
         private class Projectile
         {
             public Vector2 Position;
@@ -912,17 +1030,11 @@ namespace SorceryRemake
             switch (roomId)
             {
                 case "room_1":
-                    // Guard on the floor
-                    SpawnEnemy("room_1_guard", "guard", new Vector2(160f, 112f));
-                    // Eye floating
-                    SpawnEnemy("room_1_eye", "eye", new Vector2(80f, 40f));
+                    // No enemies for now (use keys 2-5 to spawn)
                     break;
 
                 case "room_2":
-                    // Mask floating
-                    SpawnEnemy("room_2_mask", "mask", new Vector2(160f, 60f));
-                    // Wraith floating
-                    SpawnEnemy("room_2_wraith", "wraith", new Vector2(240f, 40f));
+                    // No enemies for now (use keys 2-5 to spawn)
                     break;
             }
         }
@@ -1119,6 +1231,30 @@ namespace SorceryRemake
         /// <summary>
         /// Spawn items for a given room, skipping any that are permanently picked up.
         /// </summary>
+        /// <summary>
+        /// Spawn captive wizards for a given room, skipping already saved ones.
+        /// </summary>
+        private void SpawnRoomWizards(string roomId)
+        {
+            _roomWizards.Clear();
+
+            switch (roomId)
+            {
+                case "room_1":
+                    // Wizard on top of platform (row 12, Y = 12*8 - 24 = 72)
+                    if (!_savedWizards.Contains("room_1_wizard"))
+                    {
+                        _roomWizards.Add(new CaptiveWizard(
+                            "room_1_wizard",
+                            new Vector2(160f, 72f),
+                            _captiveWizardSheet,
+                            SpriteConfig.CAPTIVE_WIZARD_ANIM,
+                            SpriteConfig.CAPTIVE_WIZARD_ANIMATION_SPEED));
+                    }
+                    break;
+            }
+        }
+
         private void SpawnRoomItems(string roomId)
         {
             _roomItems.Clear();
@@ -1296,6 +1432,9 @@ namespace SorceryRemake
             _roomItems.Clear();
             _savedRoomEnemies.Clear();
             _projectiles.Clear();
+            _roomWizards.Clear();
+            _savedWizards.Clear();
+            _savedWizardCount = 0;
             _carriedItem = ItemType.None;
             _spawnCounter = 0;
 
@@ -1312,9 +1451,10 @@ namespace SorceryRemake
                 UpdateDoorCollision(physics);
             }
 
-            // Spawn enemies and items
+            // Spawn enemies, items, and wizards
             SpawnRoomEnemies("room_1");
             SpawnRoomItems("room_1");
+            SpawnRoomWizards("room_1");
         }
 
         /// <summary>
@@ -1339,6 +1479,8 @@ namespace SorceryRemake
                 string itemName = _carriedItem == ItemType.None ? "Nothing" : _carriedItem.ToString();
                 _spriteBatch.DrawString(_debugFont, $"Carrying: {itemName}",
                     new Vector2(10, GAME_AREA_HEIGHT + 10), Color.Yellow);
+                _spriteBatch.DrawString(_debugFont, $"Saved Wizards: {_savedWizardCount}",
+                    new Vector2(10, GAME_AREA_HEIGHT + 30), Color.Yellow);
             }
 
             // Draw carried item icon

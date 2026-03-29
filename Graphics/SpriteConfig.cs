@@ -399,6 +399,44 @@ namespace SorceryRemake.Graphics
         /// </summary>
         public const float PROJECTILE_SPEED = 200f;
 
+        // ====================================================================
+        // CAPTIVE WIZARD
+        // CaptiveWizardSheet.png: 48x192, 4 frames of 48x48 vertical
+        // Cycles bottom to top continuously. Rendered at 24x24.
+        // ====================================================================
+
+        /// <summary>
+        /// Captive wizard animation - 4 frames of 48x48, bottom to top.
+        /// </summary>
+        public static readonly Rectangle[] CAPTIVE_WIZARD_ANIM = new Rectangle[]
+        {
+            new Rectangle(0, 144, ITEM_SOURCE_SIZE, ITEM_SOURCE_SIZE), // Frame 3 (bottom)
+            new Rectangle(0, 96, ITEM_SOURCE_SIZE, ITEM_SOURCE_SIZE),  // Frame 2
+            new Rectangle(0, 48, ITEM_SOURCE_SIZE, ITEM_SOURCE_SIZE),  // Frame 1
+            new Rectangle(0, 0, ITEM_SOURCE_SIZE, ITEM_SOURCE_SIZE),   // Frame 0 (top)
+        };
+
+        public const float CAPTIVE_WIZARD_ANIMATION_SPEED = 0.15f;
+
+        // ====================================================================
+        // STAR (saved wizard transformation)
+        // StarSheet.png: 48x192, 4 frames of 48x48 vertical
+        // Plays top to bottom once, then wizard flies upward.
+        // ====================================================================
+
+        /// <summary>
+        /// Star animation - 4 frames of 48x48, top to bottom.
+        /// </summary>
+        public static readonly Rectangle[] STAR_ANIM = new Rectangle[]
+        {
+            new Rectangle(0, 0, ITEM_SOURCE_SIZE, ITEM_SOURCE_SIZE),   // Frame 0 (top)
+            new Rectangle(0, 48, ITEM_SOURCE_SIZE, ITEM_SOURCE_SIZE),  // Frame 1
+            new Rectangle(0, 96, ITEM_SOURCE_SIZE, ITEM_SOURCE_SIZE),  // Frame 2
+            new Rectangle(0, 144, ITEM_SOURCE_SIZE, ITEM_SOURCE_SIZE), // Frame 3 (bottom)
+        };
+
+        public const float STAR_ANIMATION_SPEED = 0.12f;
+
         /// <summary>
         /// Guard movement speed (pixels/second). Slower than player.
         /// </summary>
