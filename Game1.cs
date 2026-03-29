@@ -84,7 +84,7 @@ namespace SorceryRemake
         private KeyboardState _previousKeyState;
 
         // Item/inventory system
-        private enum ItemType { None, Sword, BallAndChain, Axe, ShootingStar }
+        private enum ItemType { None, Sword, BallAndChain, Axe, ShootingStar, Lyre }
         private ItemType _carriedItem = ItemType.None;
         private List<ItemInstance> _roomItems = new List<ItemInstance>();
         private HashSet<string> _pickedUpItems = new HashSet<string>(); // permanently picked up
@@ -94,6 +94,10 @@ namespace SorceryRemake
         private List<CaptiveWizard> _roomWizards = new List<CaptiveWizard>();
         private HashSet<string> _savedWizards = new HashSet<string>(); // permanently saved
         private int _savedWizardCount = 0;
+
+        // Blocked door system
+        private List<BlockedDoorInstance> _roomBlockedDoors = new List<BlockedDoorInstance>();
+        private HashSet<string> _unlockedDoors = new HashSet<string>(); // permanently unlocked
 
         // ====================================================================
         // ASSETS
@@ -116,6 +120,8 @@ namespace SorceryRemake
         private Texture2D _pixelTexture; // 1x1 white texture for projectile rendering
         private Texture2D _captiveWizardSheet;
         private Texture2D _starSheet;
+        private Texture2D _blockedDoorSheet;
+        private Texture2D _lyreSheet;
 
         // Room background textures (screenshot-based rooms)
         private Texture2D _bgStonehenge;
@@ -288,6 +294,12 @@ namespace SorceryRemake
             _starSheet = Content.Load<Texture2D>("StarSheet");
             MakeColorTransparent(_starSheet, Color.Black);
 
+            _blockedDoorSheet = Content.Load<Texture2D>("BlockedDoorSheet");
+            MakeColorTransparent(_blockedDoorSheet, Color.Black);
+
+            _lyreSheet = Content.Load<Texture2D>("LyreSheet");
+            MakeColorTransparent(_lyreSheet, Color.Black);
+
             // Load room background textures (available for background rooms)
             _bgStonehenge = Content.Load<Texture2D>("RoomBG_Stonehenge");
             _bgWastelands = Content.Load<Texture2D>("RoomBG_Wastelands");
@@ -313,10 +325,11 @@ namespace SorceryRemake
             // Set player start position for room 1
             _player.Position = new Vector2(40f, 96f);
 
-            // Spawn enemies, items, and wizards for the initial room
+            // Spawn enemies, items, wizards, and blocked doors for the initial room
             SpawnRoomEnemies("room_1");
             SpawnRoomItems("room_1");
             SpawnRoomWizards("room_1");
+            SpawnRoomBlockedDoors("room_1");
 
             // Try to load debug font
             try
@@ -403,6 +416,7 @@ namespace SorceryRemake
                     LoadRoomEnemies(_roomManager.CurrentRoomId);
                     SpawnRoomItems(_roomManager.CurrentRoomId);
                     SpawnRoomWizards(_roomManager.CurrentRoomId);
+                    SpawnRoomBlockedDoors(_roomManager.CurrentRoomId);
                 }
                 // Skip all other updates while frozen
             }
@@ -504,6 +518,28 @@ namespace SorceryRemake
                     enemy.Entity.Update(gameTime);
                 }
 
+                // Update blocked doors — unlock by touching while carrying correct item (no button needed)
+                for (int i = _roomBlockedDoors.Count - 1; i >= 0; i--)
+                {
+                    var bd = _roomBlockedDoors[i];
+                    var doorHitbox = bd.GetHitbox();
+                    var playerRect = new Rectangle(
+                        (int)_player.Position.X - 1, (int)_player.Position.Y - 1,
+                        PhysicsComponent.HITBOX_WIDTH + 2, PhysicsComponent.HITBOX_HEIGHT + 2);
+
+                    if (playerRect.Intersects(doorHitbox) &&
+                        _carriedItem == bd.RequiredItem)
+                    {
+                        // Unlock: remove door, consume item, remove from physics
+                        _unlockedDoors.Add(bd.Id);
+                        _carriedItem = ItemType.None;
+                        _roomBlockedDoors.RemoveAt(i);
+
+                        // Re-wire physics solid rects without this door
+                        RebuildSolidRects();
+                    }
+                }
+
                 // Update captive wizards
                 float wizSpeed = SpriteConfig.PROJECTILE_SPEED; // same as player speed
                 for (int i = _roomWizards.Count - 1; i >= 0; i--)
@@ -596,6 +632,21 @@ namespace SorceryRemake
 
             // Draw doors
             _roomManager.DrawDoors(_spriteBatch, RENDER_SCALE);
+
+            // Draw blocked doors (48x48 source rendered at 24x24)
+            foreach (var bd in _roomBlockedDoors)
+            {
+                Vector2 renderPos = bd.Position * RENDER_SCALE;
+                int destSize = SpriteConfig.ITEM_DISPLAY_SIZE * RENDER_SCALE;
+                var destRect = new Rectangle(
+                    (int)renderPos.X, (int)renderPos.Y,
+                    destSize, destSize);
+                _spriteBatch.Draw(
+                    bd.Texture,
+                    destRect,
+                    bd.SourceRect,
+                    Color.White);
+            }
 
             // Draw captive wizards (48x48 source rendered at 24x24)
             foreach (var wiz in _roomWizards)
@@ -745,8 +796,15 @@ namespace SorceryRemake
                 var map = new TileMapComponent(_tilesetTexture, 40, 18);
                 map.FillRect(0, 0, 40, 18, TileConfig.EMPTY);
 
-                // Floor only - empty room
+                // Floor
                 map.DrawHorizontalLine(0, 17, 40, TileConfig.FLOOR_BROWN);
+
+                // Tunnel for captive wizard (right side, cols 28-39 = X 224-320)
+                // Top wall: single tile row 8 (Y=64)
+                map.DrawHorizontalLine(28, 8, 12, TileConfig.FLOOR_TAN);
+                // Bottom wall: single tile row 12 (Y=96)
+                // Gap = rows 9,10,11 = 24px (enough for player)
+                map.DrawHorizontalLine(28, 12, 12, TileConfig.FLOOR_TAN);
 
                 _roomManager.SetTileMap(map);
 
@@ -881,6 +939,36 @@ namespace SorceryRemake
         /// <summary>
         /// Tracks a placed item in the room.
         /// </summary>
+        private class BlockedDoorInstance
+        {
+            public string Id;
+            public Vector2 Position;
+            public Texture2D Texture;
+            public Rectangle SourceRect;
+            public ItemType RequiredItem; // which item unlocks this door
+
+            public BlockedDoorInstance(string id, Vector2 pos, Texture2D tex, Rectangle src, ItemType required)
+            {
+                Id = id;
+                Position = pos;
+                Texture = tex;
+                SourceRect = src;
+                RequiredItem = required;
+            }
+
+            /// <summary>
+            /// Get the solid hitbox in world coordinates (centered 12px bar within 24x24).
+            /// </summary>
+            public Rectangle GetHitbox()
+            {
+                return new Rectangle(
+                    (int)Position.X + SpriteConfig.BLOCKED_DOOR_HITBOX_OFFSET_X,
+                    (int)Position.Y,
+                    SpriteConfig.BLOCKED_DOOR_HITBOX_WIDTH,
+                    SpriteConfig.BLOCKED_DOOR_HITBOX_HEIGHT);
+            }
+        }
+
         private class CaptiveWizard
         {
             public string Id;
@@ -1234,6 +1322,60 @@ namespace SorceryRemake
         /// <summary>
         /// Spawn captive wizards for a given room, skipping already saved ones.
         /// </summary>
+        /// <summary>
+        /// Spawn blocked doors for a room, skipping already unlocked ones.
+        /// Also wires their hitboxes into physics.
+        /// </summary>
+        private void SpawnRoomBlockedDoors(string roomId)
+        {
+            _roomBlockedDoors.Clear();
+
+            switch (roomId)
+            {
+                case "room_2":
+                    // Iron door at left edge of tunnel (X=224, between rows 8 and 12)
+                    // Door sits between top platform (row 8, Y=64) and bottom platform (row 12, Y=96)
+                    // Door Y = top platform bottom edge = row 9 * 8 = 72
+                    if (!_unlockedDoors.Contains("room_2_iron_door"))
+                    {
+                        _roomBlockedDoors.Add(new BlockedDoorInstance(
+                            "room_2_iron_door",
+                            new Vector2(216f, 72f),
+                            _blockedDoorSheet,
+                            SpriteConfig.BLOCKED_DOOR_FRAME,
+                            ItemType.Lyre));
+                    }
+                    break;
+            }
+
+            // Wire blocked door hitboxes into player physics
+            RebuildSolidRects();
+        }
+
+        /// <summary>
+        /// Rebuild physics solid rects from room doors + blocked doors.
+        /// </summary>
+        private void RebuildSolidRects()
+        {
+            var physics = _player.GetComponent<PhysicsComponent>();
+            if (physics == null) return;
+
+            // Start with room transition doors
+            physics.SolidRects.Clear();
+            foreach (var door in _roomManager.CurrentDoors)
+            {
+                physics.SolidRects.Add(new Rectangle(
+                    (int)door.Position.X, (int)door.Position.Y,
+                    DoorConfig.DOOR_WIDTH, DoorConfig.DOOR_HEIGHT));
+            }
+
+            // Add blocked door hitboxes
+            foreach (var bd in _roomBlockedDoors)
+            {
+                physics.SolidRects.Add(bd.GetHitbox());
+            }
+        }
+
         private void SpawnRoomWizards(string roomId)
         {
             _roomWizards.Clear();
@@ -1241,12 +1383,25 @@ namespace SorceryRemake
             switch (roomId)
             {
                 case "room_1":
-                    // Wizard on top of platform (row 12, Y = 12*8 - 24 = 72)
+                    // Wizard on top of platform
                     if (!_savedWizards.Contains("room_1_wizard"))
                     {
                         _roomWizards.Add(new CaptiveWizard(
                             "room_1_wizard",
                             new Vector2(160f, 72f),
+                            _captiveWizardSheet,
+                            SpriteConfig.CAPTIVE_WIZARD_ANIM,
+                            SpriteConfig.CAPTIVE_WIZARD_ANIMATION_SPEED));
+                    }
+                    break;
+
+                case "room_2":
+                    // Wizard at right end of tunnel (inside, X=296, Y = row 9*8 = 72)
+                    if (!_savedWizards.Contains("room_2_wizard"))
+                    {
+                        _roomWizards.Add(new CaptiveWizard(
+                            "room_2_wizard",
+                            new Vector2(296f, 72f),
                             _captiveWizardSheet,
                             SpriteConfig.CAPTIVE_WIZARD_ANIM,
                             SpriteConfig.CAPTIVE_WIZARD_ANIMATION_SPEED));
@@ -1268,6 +1423,8 @@ namespace SorceryRemake
                     SpawnItem("room_1_ballchain", ItemType.BallAndChain, new Vector2(60f, 112f));
                     // Shooting star on the floor
                     SpawnItem("room_1_star", ItemType.ShootingStar, new Vector2(120f, 112f));
+                    // Lyre on the floor
+                    SpawnItem("room_1_lyre", ItemType.Lyre, new Vector2(240f, 112f));
                     break;
 
                 case "room_2":
@@ -1322,6 +1479,7 @@ namespace SorceryRemake
                 case ItemType.BallAndChain: return _ballAndChainSheet;
                 case ItemType.Axe: return _axeSheet;
                 case ItemType.ShootingStar: return _shootingStarSheet;
+                case ItemType.Lyre: return _lyreSheet;
                 default: return null;
             }
         }
@@ -1337,6 +1495,7 @@ namespace SorceryRemake
                 case ItemType.BallAndChain: return SpriteConfig.BALL_AND_CHAIN_FRAME;
                 case ItemType.Axe: return SpriteConfig.AXE_FRAME;
                 case ItemType.ShootingStar: return SpriteConfig.SHOOTING_STAR_FRAME;
+                case ItemType.Lyre: return SpriteConfig.LYRE_FRAME;
                 default: return Rectangle.Empty;
             }
         }
@@ -1435,6 +1594,8 @@ namespace SorceryRemake
             _roomWizards.Clear();
             _savedWizards.Clear();
             _savedWizardCount = 0;
+            _roomBlockedDoors.Clear();
+            _unlockedDoors.Clear();
             _carriedItem = ItemType.None;
             _spawnCounter = 0;
 
@@ -1451,10 +1612,11 @@ namespace SorceryRemake
                 UpdateDoorCollision(physics);
             }
 
-            // Spawn enemies, items, and wizards
+            // Spawn enemies, items, wizards, and blocked doors
             SpawnRoomEnemies("room_1");
             SpawnRoomItems("room_1");
             SpawnRoomWizards("room_1");
+            SpawnRoomBlockedDoors("room_1");
         }
 
         /// <summary>

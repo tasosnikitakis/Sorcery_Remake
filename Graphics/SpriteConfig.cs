@@ -437,6 +437,29 @@ namespace SorceryRemake.Graphics
 
         public const float STAR_ANIMATION_SPEED = 0.12f;
 
+        // ====================================================================
+        // BLOCKED DOOR
+        // BlockedDoorSheet.png: 48x48, single frame
+        // Rendered at 24x24, solid hitbox is the visible 12x24 centered area
+        // ====================================================================
+
+        public static readonly Rectangle BLOCKED_DOOR_FRAME = new Rectangle(0, 0, ITEM_SOURCE_SIZE, ITEM_SOURCE_SIZE);
+
+        /// <summary>
+        /// Blocked door solid hitbox within 24x24 game space (centered 12px wide bar).
+        /// </summary>
+        /// Hitbox covers the main vertical bar +2px margin each side.
+        public const int BLOCKED_DOOR_HITBOX_OFFSET_X = 8;
+        public const int BLOCKED_DOOR_HITBOX_WIDTH = 8;
+        public const int BLOCKED_DOOR_HITBOX_HEIGHT = 24;
+
+        // ====================================================================
+        // LYRE (special key item)
+        // LyreSheet.png: 48x48, single frame
+        // ====================================================================
+
+        public static readonly Rectangle LYRE_FRAME = new Rectangle(0, 0, ITEM_SOURCE_SIZE, ITEM_SOURCE_SIZE);
+
         /// <summary>
         /// Guard movement speed (pixels/second). Slower than player.
         /// </summary>
