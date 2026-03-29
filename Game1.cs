@@ -84,10 +84,11 @@ namespace SorceryRemake
         private KeyboardState _previousKeyState;
 
         // Item/inventory system
-        private enum ItemType { None, Sword, BallAndChain, Axe }
+        private enum ItemType { None, Sword, BallAndChain, Axe, ShootingStar }
         private ItemType _carriedItem = ItemType.None;
         private List<ItemInstance> _roomItems = new List<ItemInstance>();
         private HashSet<string> _pickedUpItems = new HashSet<string>(); // permanently picked up
+        private List<Projectile> _projectiles = new List<Projectile>();
 
         // ====================================================================
         // ASSETS
@@ -106,6 +107,8 @@ namespace SorceryRemake
         private Texture2D _swordSheet;
         private Texture2D _ballAndChainSheet;
         private Texture2D _axeSheet;
+        private Texture2D _shootingStarSheet;
+        private Texture2D _pixelTexture; // 1x1 white texture for projectile rendering
 
         // Room background textures (screenshot-based rooms)
         private Texture2D _bgStonehenge;
@@ -265,6 +268,13 @@ namespace SorceryRemake
             _axeSheet = Content.Load<Texture2D>("AxeSheet");
             MakeColorTransparent(_axeSheet, Color.Black);
 
+            _shootingStarSheet = Content.Load<Texture2D>("ShootingStarSheet");
+            MakeColorTransparent(_shootingStarSheet, Color.Black);
+
+            // Create 1x1 white pixel texture for projectile rendering
+            _pixelTexture = new Texture2D(GraphicsDevice, 1, 1);
+            _pixelTexture.SetData(new[] { Color.White });
+
             // Load room background textures (available for background rooms)
             _bgStonehenge = Content.Load<Texture2D>("RoomBG_Stonehenge");
             _bgWastelands = Content.Load<Texture2D>("RoomBG_Wastelands");
@@ -358,7 +368,8 @@ namespace SorceryRemake
                 var result = _roomManager.Update(dt);
                 if (result.HasValue)
                 {
-                    // Save current room's enemies (freeze in place)
+                    // Clear projectiles and save current room's enemies
+                    _projectiles.Clear();
                     SaveRoomEnemies(_roomManager.CurrentRoomId);
 
                     // Animation done - execute room switch
@@ -387,6 +398,7 @@ namespace SorceryRemake
                 // --- SPACE ACTIONS (before movement updates for snappy response) ---
 
                 // Item pickup/swap: on press (not hold, to prevent rapid re-swapping)
+                bool pickedUpItem = false;
                 if (currentKeyState.IsKeyDown(Keys.Space) &&
                     !_previousKeyState.IsKeyDown(Keys.Space))
                 {
@@ -413,12 +425,24 @@ namespace SorceryRemake
                             }
 
                             _carriedItem = pickedType;
+                            pickedUpItem = true;
                             break;
                         }
                     }
                 }
 
-                // Kill enemy: while space is held + touching + correct weapon
+                // Shooting Star: on press, fire 8 projectiles and consume
+                // Skip if we just picked up an item on this frame
+                if (!pickedUpItem &&
+                    currentKeyState.IsKeyDown(Keys.Space) &&
+                    !_previousKeyState.IsKeyDown(Keys.Space) &&
+                    _carriedItem == ItemType.ShootingStar)
+                {
+                    FireShootingStar();
+                    _carriedItem = ItemType.None;
+                }
+
+                // Kill enemy: while space is held + touching + correct melee weapon
                 // Checks ALL overlapping enemies and kills the first one that matches
                 if (currentKeyState.IsKeyDown(Keys.Space) && _carriedItem != ItemType.None)
                 {
@@ -464,6 +488,9 @@ namespace SorceryRemake
 
                     enemy.Entity.Update(gameTime);
                 }
+
+                // Update projectiles
+                UpdateProjectiles(dt);
 
                 // Check door triggers
                 _roomManager.CheckDoorTriggers(
@@ -550,6 +577,16 @@ namespace SorceryRemake
                     Vector2 renderPos = enemy.Entity.Position * RENDER_SCALE;
                     sprite.Draw(_spriteBatch, renderPos, RENDER_SCALE);
                 }
+            }
+
+            // Draw projectiles (1 pixel each, scaled to RENDER_SCALE)
+            foreach (var proj in _projectiles)
+            {
+                var destRect = new Rectangle(
+                    (int)(proj.Position.X * RENDER_SCALE),
+                    (int)(proj.Position.Y * RENDER_SCALE),
+                    RENDER_SCALE, RENDER_SCALE);
+                _spriteBatch.Draw(_pixelTexture, destRect, proj.Color);
             }
 
             _spriteBatch.End();
@@ -766,6 +803,20 @@ namespace SorceryRemake
         /// <summary>
         /// Tracks a placed item in the room.
         /// </summary>
+        private class Projectile
+        {
+            public Vector2 Position;
+            public Vector2 Velocity;
+            public Color Color;
+
+            public Projectile(Vector2 pos, Vector2 vel, Color color)
+            {
+                Position = pos;
+                Velocity = vel;
+                Color = color;
+            }
+        }
+
         private class ItemInstance
         {
             public string Id;
@@ -970,6 +1021,76 @@ namespace SorceryRemake
         /// <summary>
         /// Begin the death animation for an enemy — stop movement, swap to death sprite.
         /// </summary>
+        /// <summary>
+        /// Fire 8 projectiles from the player's sprite edges in 8 directions.
+        /// </summary>
+        private void FireShootingStar()
+        {
+            float cx = _player.Position.X + PhysicsComponent.HITBOX_WIDTH / 2f;
+            float cy = _player.Position.Y + PhysicsComponent.HITBOX_HEIGHT / 2f;
+            float left = _player.Position.X;
+            float right = _player.Position.X + PhysicsComponent.HITBOX_WIDTH;
+            float top = _player.Position.Y;
+            float bottom = _player.Position.Y + PhysicsComponent.HITBOX_HEIGHT;
+
+            float speed = SpriteConfig.PROJECTILE_SPEED;
+            float diag = speed * 0.7071f; // 1/sqrt(2)
+
+            // Projectile colors (bright, visible)
+            Color c = Color.Yellow;
+
+            // 4 cardinal directions (from edge centers)
+            _projectiles.Add(new Projectile(new Vector2(cx, top), new Vector2(0, -speed), c));       // Up
+            _projectiles.Add(new Projectile(new Vector2(cx, bottom), new Vector2(0, speed), c));     // Down
+            _projectiles.Add(new Projectile(new Vector2(left, cy), new Vector2(-speed, 0), c));      // Left
+            _projectiles.Add(new Projectile(new Vector2(right, cy), new Vector2(speed, 0), c));      // Right
+
+            // 4 diagonal directions (from corners)
+            _projectiles.Add(new Projectile(new Vector2(left, top), new Vector2(-diag, -diag), c));      // Top-left
+            _projectiles.Add(new Projectile(new Vector2(right, top), new Vector2(diag, -diag), c));      // Top-right
+            _projectiles.Add(new Projectile(new Vector2(left, bottom), new Vector2(-diag, diag), c));    // Bottom-left
+            _projectiles.Add(new Projectile(new Vector2(right, bottom), new Vector2(diag, diag), c));    // Bottom-right
+        }
+
+        /// <summary>
+        /// Update projectile positions, check enemy hits, remove off-screen projectiles.
+        /// </summary>
+        private void UpdateProjectiles(float dt)
+        {
+            for (int i = _projectiles.Count - 1; i >= 0; i--)
+            {
+                var proj = _projectiles[i];
+
+                // Move
+                proj.Position += proj.Velocity * dt;
+
+                // Check off-screen
+                if (proj.Position.X < 0 || proj.Position.X > BASE_GAME_WIDTH ||
+                    proj.Position.Y < 0 || proj.Position.Y > BASE_GAME_HEIGHT)
+                {
+                    _projectiles.RemoveAt(i);
+                    continue;
+                }
+
+                // Check enemy collision (1px projectile vs enemy hitbox)
+                // Projectiles pass through enemies — kill on touch and continue
+                for (int j = _roomEnemies.Count - 1; j >= 0; j--)
+                {
+                    var enemy = _roomEnemies[j];
+                    if (enemy.IsDying) continue;
+
+                    var enemyRect = new Rectangle(
+                        (int)enemy.Entity.Position.X, (int)enemy.Entity.Position.Y,
+                        PhysicsComponent.HITBOX_WIDTH, PhysicsComponent.HITBOX_HEIGHT);
+
+                    if (enemyRect.Contains((int)proj.Position.X, (int)proj.Position.Y))
+                    {
+                        StartEnemyDeath(enemy);
+                    }
+                }
+            }
+        }
+
         private void StartEnemyDeath(EnemyInstance enemy)
         {
             enemy.IsDying = true;
@@ -1009,6 +1130,8 @@ namespace SorceryRemake
                     SpawnItem("room_1_sword", ItemType.Sword, new Vector2(140f, 72f));
                     // Ball and chain on the floor
                     SpawnItem("room_1_ballchain", ItemType.BallAndChain, new Vector2(60f, 112f));
+                    // Shooting star on the floor
+                    SpawnItem("room_1_star", ItemType.ShootingStar, new Vector2(120f, 112f));
                     break;
 
                 case "room_2":
@@ -1062,6 +1185,7 @@ namespace SorceryRemake
                 case ItemType.Sword: return _swordSheet;
                 case ItemType.BallAndChain: return _ballAndChainSheet;
                 case ItemType.Axe: return _axeSheet;
+                case ItemType.ShootingStar: return _shootingStarSheet;
                 default: return null;
             }
         }
@@ -1076,6 +1200,7 @@ namespace SorceryRemake
                 case ItemType.Sword: return SpriteConfig.SWORD_FRAME;
                 case ItemType.BallAndChain: return SpriteConfig.BALL_AND_CHAIN_FRAME;
                 case ItemType.Axe: return SpriteConfig.AXE_FRAME;
+                case ItemType.ShootingStar: return SpriteConfig.SHOOTING_STAR_FRAME;
                 default: return Rectangle.Empty;
             }
         }
@@ -1170,6 +1295,7 @@ namespace SorceryRemake
             _roomEnemies.Clear();
             _roomItems.Clear();
             _savedRoomEnemies.Clear();
+            _projectiles.Clear();
             _carriedItem = ItemType.None;
             _spawnCounter = 0;
 

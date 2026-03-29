@@ -390,6 +390,16 @@ namespace SorceryRemake.Graphics
         public static readonly Rectangle AXE_FRAME = new Rectangle(0, 0, ITEM_SOURCE_SIZE, ITEM_SOURCE_SIZE);
 
         /// <summary>
+        /// Shooting Star sprite frame (full 48x48 sheet).
+        /// </summary>
+        public static readonly Rectangle SHOOTING_STAR_FRAME = new Rectangle(0, 0, ITEM_SOURCE_SIZE, ITEM_SOURCE_SIZE);
+
+        /// <summary>
+        /// Projectile speed (pixels/second). Same as player speed.
+        /// </summary>
+        public const float PROJECTILE_SPEED = 200f;
+
+        /// <summary>
         /// Guard movement speed (pixels/second). Slower than player.
         /// </summary>
         public const float GUARD_SPEED = 80f;
