@@ -107,19 +107,9 @@ namespace SorceryRemake.Physics
             }
             else
             {
-                // No tilemap: just move with screen bounds (legacy)
+                // No tilemap: just move with screen bounds only
                 pos += vel * dt;
-
-                if (pos.Y > 144 - HITBOX_HEIGHT)
-                {
-                    pos.Y = 144 - HITBOX_HEIGHT;
-                    vel.Y = 0;
-                    IsOnGround = true;
-                }
-                else
-                {
-                    IsOnGround = false;
-                }
+                IsOnGround = false;
             }
 
             // Screen edge boundaries (always enforced)

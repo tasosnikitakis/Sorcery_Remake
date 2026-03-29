@@ -170,6 +170,167 @@ namespace SorceryRemake.Graphics
         /// </summary>
         public const float GUARD_ANIMATION_SPEED = 0.12f;
 
+        // ====================================================================
+        // MASK ENEMY ANIMATIONS
+        // Dedicated spritesheet: MaskSheet.png (extracted from Characters.png row 1)
+        // 4 frames at Y=0 with 1px spacing, single looping animation
+        // ====================================================================
+
+        /// <summary>
+        /// Mask animation - 4 frames, loops continuously regardless of state.
+        /// </summary>
+        public static readonly Rectangle[] MASK_ANIM = new Rectangle[]
+        {
+            new Rectangle(0, 0, SPRITE_WIDTH, SPRITE_HEIGHT),   // Frame 0
+            new Rectangle(25, 0, SPRITE_WIDTH, SPRITE_HEIGHT),  // Frame 1
+            new Rectangle(50, 0, SPRITE_WIDTH, SPRITE_HEIGHT),  // Frame 2
+            new Rectangle(75, 0, SPRITE_WIDTH, SPRITE_HEIGHT),  // Frame 3
+        };
+
+        /// <summary>
+        /// Mask animation speed (seconds per frame).
+        /// </summary>
+        public const float MASK_ANIMATION_SPEED = 0.12f;
+
+        /// <summary>
+        /// Mask movement speed (pixels/second). Slightly slower than player (200).
+        /// </summary>
+        public const float MASK_SPEED = 150f;
+
+        // ====================================================================
+        // WILD BOAR ENEMY ANIMATIONS
+        // Dedicated spritesheet: BoarSheet.png (extracted from Characters.png row 1, frames 5-8)
+        // 4 frames at Y=0 with 1px spacing, single looping animation
+        // Same floating behavior as mask
+        // ====================================================================
+
+        /// <summary>
+        /// Boar sprite width (22px, 2px thinner than standard 24px).
+        /// </summary>
+        public const int BOAR_SPRITE_WIDTH = 22;
+
+        /// <summary>
+        /// Boar animation - 4 frames of 22x24, loops continuously regardless of state.
+        /// BoarSheet.png layout: 22px frames with 1px gaps (22+1+22+1+22+1+22 = 91px wide).
+        /// Green line cropped: frame 1=0, frame 2=1px, frame 3=2px, frame 4=1px from top.
+        /// </summary>
+        public static readonly Rectangle[] BOAR_ANIM = new Rectangle[]
+        {
+            new Rectangle(0, 0, BOAR_SPRITE_WIDTH, SPRITE_HEIGHT),    // Frame 0
+            new Rectangle(23, 1, BOAR_SPRITE_WIDTH, SPRITE_HEIGHT - 1),  // Frame 1 (1px top crop)
+            new Rectangle(46, 2, BOAR_SPRITE_WIDTH, SPRITE_HEIGHT - 2),  // Frame 2 (2px top crop)
+            new Rectangle(69, 1, BOAR_SPRITE_WIDTH, SPRITE_HEIGHT - 1),  // Frame 3 (1px top crop)
+        };
+
+        /// <summary>
+        /// Boar animation speed (seconds per frame).
+        /// </summary>
+        public const float BOAR_ANIMATION_SPEED = 0.12f;
+
+        /// <summary>
+        /// Boar movement speed (pixels/second). Slightly slower than player (200).
+        /// </summary>
+        public const float BOAR_SPEED = 150f;
+
+        // ====================================================================
+        // EYE ENEMY ANIMATIONS
+        // Dedicated spritesheet: EyeSheet.png (extracted from Characters.png row 1, last 4 frames)
+        // 4 frames at Y=0 with 1px spacing, 24x17 per frame, single looping animation
+        // Same floating behavior as mask/boar
+        // ====================================================================
+
+        /// <summary>
+        /// Eye sprite height (17px, shorter than standard 24px).
+        /// </summary>
+        public const int EYE_SPRITE_HEIGHT = 17;
+
+        /// <summary>
+        /// Eye animation - 4 frames of 24x17, loops continuously regardless of state.
+        /// EyeSheet.png layout: 24px frames with 1px gaps (24+1+24+1+24+1+24 = 99px wide).
+        /// </summary>
+        public static readonly Rectangle[] EYE_ANIM = new Rectangle[]
+        {
+            new Rectangle(0, 0, SPRITE_WIDTH, EYE_SPRITE_HEIGHT),    // Frame 0
+            new Rectangle(25, 0, SPRITE_WIDTH, EYE_SPRITE_HEIGHT),   // Frame 1
+            new Rectangle(50, 0, SPRITE_WIDTH, EYE_SPRITE_HEIGHT),   // Frame 2
+            new Rectangle(75, 0, SPRITE_WIDTH, EYE_SPRITE_HEIGHT),   // Frame 3
+        };
+
+        /// <summary>
+        /// Eye animation speed (seconds per frame).
+        /// </summary>
+        public const float EYE_ANIMATION_SPEED = 0.12f;
+
+        /// <summary>
+        /// Eye movement speed (pixels/second). Slightly slower than player (200).
+        /// </summary>
+        public const float EYE_SPEED = 150f;
+
+        // ====================================================================
+        // WRAITH ENEMY ANIMATIONS
+        // Dedicated spritesheet: WraithSheet.png (extracted from Characters.png)
+        // 12 frames at Y=0 with 1px spacing, 24x23 per frame
+        // Same pattern as guard: 4 walk left, 4 idle, 4 walk right
+        // Frames 1,5,6,7,8,9 (1-indexed) need 1px top crop
+        // Wraith passes through all world geometry, slightly faster than player
+        // ====================================================================
+
+        /// <summary>
+        /// Wraith sprite height (23px).
+        /// </summary>
+        public const int WRAITH_SPRITE_HEIGHT = 23;
+
+        /// <summary>
+        /// Wraith WALK_LEFT animation - First 4 frames.
+        /// Frame 1 (index 0) has 1px top crop.
+        /// </summary>
+        public static readonly Rectangle[] WRAITH_WALK_LEFT = new Rectangle[]
+        {
+            new Rectangle(0, 1, SPRITE_WIDTH, WRAITH_SPRITE_HEIGHT - 1),    // Frame 0 (1px crop)
+            new Rectangle(25, 0, SPRITE_WIDTH, WRAITH_SPRITE_HEIGHT),       // Frame 1
+            new Rectangle(50, 0, SPRITE_WIDTH, WRAITH_SPRITE_HEIGHT),       // Frame 2
+            new Rectangle(75, 0, SPRITE_WIDTH, WRAITH_SPRITE_HEIGHT),       // Frame 3
+        };
+
+        /// <summary>
+        /// Wraith IDLE animation - Middle 4 frames.
+        /// Frames 5,6,7,8 (1-indexed, index 4-7) all have 1px top crop.
+        /// </summary>
+        public static readonly Rectangle[] WRAITH_IDLE = new Rectangle[]
+        {
+            new Rectangle(100, 1, SPRITE_WIDTH, WRAITH_SPRITE_HEIGHT - 1),  // Frame 4 (1px crop)
+            new Rectangle(125, 1, SPRITE_WIDTH, WRAITH_SPRITE_HEIGHT - 1),  // Frame 5 (1px crop)
+            new Rectangle(150, 1, SPRITE_WIDTH, WRAITH_SPRITE_HEIGHT - 1),  // Frame 6 (1px crop)
+            new Rectangle(175, 1, SPRITE_WIDTH, WRAITH_SPRITE_HEIGHT - 1),  // Frame 7 (1px crop)
+        };
+
+        /// <summary>
+        /// Wraith WALK_RIGHT animation - Last 4 frames.
+        /// Frame 9 (1-indexed, index 8) has 1px top crop.
+        /// </summary>
+        public static readonly Rectangle[] WRAITH_WALK_RIGHT = new Rectangle[]
+        {
+            new Rectangle(200, 1, SPRITE_WIDTH, WRAITH_SPRITE_HEIGHT - 1),  // Frame 8 (1px crop)
+            new Rectangle(225, 0, SPRITE_WIDTH, WRAITH_SPRITE_HEIGHT),      // Frame 9
+            new Rectangle(250, 0, SPRITE_WIDTH, WRAITH_SPRITE_HEIGHT),      // Frame 10
+            new Rectangle(275, 0, SPRITE_WIDTH, WRAITH_SPRITE_HEIGHT),      // Frame 11
+        };
+
+        /// <summary>
+        /// Wraith animation speed (seconds per frame).
+        /// </summary>
+        public const float WRAITH_ANIMATION_SPEED = 0.12f;
+
+        /// <summary>
+        /// Wraith movement speed (pixels/second). Slightly faster than player (200).
+        /// </summary>
+        public const float WRAITH_SPEED = 220f;
+
+        /// <summary>
+        /// Dead zone threshold to prevent wraith jitter when near player.
+        /// </summary>
+        public const float WRAITH_FOLLOW_THRESHOLD = 2f;
+
         /// <summary>
         /// Guard movement speed (pixels/second). Slower than player.
         /// </summary>

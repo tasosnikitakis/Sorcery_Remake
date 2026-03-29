@@ -75,6 +75,9 @@ namespace SorceryRemake
 
         private Entity _player;
         private Entity _guard;
+        private Entity _boar;
+        private Entity _eye;
+        private Entity _wraith;
 
         // ====================================================================
         // ASSETS
@@ -85,6 +88,10 @@ namespace SorceryRemake
         private Texture2D _leftDoorTexture;
         private Texture2D _rightDoorTexture;
         private Texture2D _guardSheet;
+        private Texture2D _maskSheet;
+        private Texture2D _boarSheet;
+        private Texture2D _eyeSheet;
+        private Texture2D _wraithSheet;
 
         // Room background textures (screenshot-based rooms)
         private Texture2D _bgStonehenge;
@@ -220,6 +227,18 @@ namespace SorceryRemake
             _guardSheet = Content.Load<Texture2D>("GuardSheet");
             MakeColorTransparent(_guardSheet, Color.Black);
 
+            _maskSheet = Content.Load<Texture2D>("MaskSheet");
+            MakeColorTransparent(_maskSheet, Color.Black);
+
+            _boarSheet = Content.Load<Texture2D>("BoarSheet");
+            MakeColorTransparent(_boarSheet, Color.Black);
+
+            _eyeSheet = Content.Load<Texture2D>("EyeSheet");
+            MakeColorTransparent(_eyeSheet, Color.Black);
+
+            _wraithSheet = Content.Load<Texture2D>("WraithSheet");
+            MakeColorTransparent(_wraithSheet, Color.Black);
+
             // Load room background textures (available for background rooms)
             _bgStonehenge = Content.Load<Texture2D>("RoomBG_Stonehenge");
             _bgWastelands = Content.Load<Texture2D>("RoomBG_Wastelands");
@@ -267,6 +286,72 @@ namespace SorceryRemake
             UpdateDoorCollision(guardPhysics);
 
             guardController.Initialize();
+
+            // ----------------------------------------------------------------
+            // Create wild boar enemy in room 1
+            // ----------------------------------------------------------------
+            _boar = new Entity("WildBoar");
+            _boar.Position = new Vector2(240f, 40f); // Upper-right area, floating
+
+            var boarPhysics = new PhysicsComponent();
+            boarPhysics.Speed = SpriteConfig.BOAR_SPEED;
+            boarPhysics.GravitySpeed = 0f; // No gravity - floats
+            _boar.AddComponent(boarPhysics);
+
+            var boarSprite = new SpriteComponent(_boarSheet, SpriteConfig.BOAR_ANIM[0]);
+            _boar.AddComponent(boarSprite);
+
+            var boarController = new BoarController(_player);
+            _boar.AddComponent(boarController);
+
+            // Wire boar physics to tilemap and doors
+            boarPhysics.TileMap = _roomManager.CurrentTileMap;
+            UpdateDoorCollision(boarPhysics);
+
+            boarController.Initialize();
+
+            // ----------------------------------------------------------------
+            // Create eye enemy in room 1
+            // ----------------------------------------------------------------
+            _eye = new Entity("Eye");
+            _eye.Position = new Vector2(80f, 40f); // Upper-left area, floating
+
+            var eyePhysics = new PhysicsComponent();
+            eyePhysics.Speed = SpriteConfig.EYE_SPEED;
+            eyePhysics.GravitySpeed = 0f; // No gravity - floats
+            _eye.AddComponent(eyePhysics);
+
+            var eyeSprite = new SpriteComponent(_eyeSheet, SpriteConfig.EYE_ANIM[0]);
+            _eye.AddComponent(eyeSprite);
+
+            var eyeController = new EyeController(_player);
+            _eye.AddComponent(eyeController);
+
+            // Wire eye physics to tilemap and doors
+            eyePhysics.TileMap = _roomManager.CurrentTileMap;
+            UpdateDoorCollision(eyePhysics);
+
+            eyeController.Initialize();
+
+            // ----------------------------------------------------------------
+            // Create wraith enemy in room 1
+            // ----------------------------------------------------------------
+            _wraith = new Entity("Wraith");
+            _wraith.Position = new Vector2(200f, 30f); // Upper area, floating
+
+            var wraithPhysics = new PhysicsComponent();
+            wraithPhysics.Speed = SpriteConfig.WRAITH_SPEED;
+            wraithPhysics.GravitySpeed = 0f; // No gravity - floats
+            // No TileMap or SolidRects - wraith passes through everything
+            _wraith.AddComponent(wraithPhysics);
+
+            var wraithSprite = new SpriteComponent(_wraithSheet, SpriteConfig.WRAITH_IDLE[0]);
+            _wraith.AddComponent(wraithSprite);
+
+            var wraithController = new WraithController(_player);
+            _wraith.AddComponent(wraithController);
+
+            wraithController.Initialize();
 
             // Try to load debug font
             try
@@ -331,6 +416,22 @@ namespace SorceryRemake
                         guardPhys.TileMap = _roomManager.CurrentTileMap;
                         UpdateDoorCollision(guardPhys);
                     }
+
+                    // Re-wire boar physics to new room
+                    var boarPhys = _boar.GetComponent<PhysicsComponent>();
+                    if (boarPhys != null)
+                    {
+                        boarPhys.TileMap = _roomManager.CurrentTileMap;
+                        UpdateDoorCollision(boarPhys);
+                    }
+
+                    // Re-wire eye physics to new room
+                    var eyePhys = _eye.GetComponent<PhysicsComponent>();
+                    if (eyePhys != null)
+                    {
+                        eyePhys.TileMap = _roomManager.CurrentTileMap;
+                        UpdateDoorCollision(eyePhys);
+                    }
                 }
                 // Skip all other updates while frozen
             }
@@ -339,6 +440,9 @@ namespace SorceryRemake
                 // Normal gameplay
                 _player.Update(gameTime);
                 _guard.Update(gameTime);
+                // _boar.Update(gameTime);
+                // _eye.Update(gameTime);
+                _wraith.Update(gameTime);
 
                 // Check door triggers
                 _roomManager.CheckDoorTriggers(
@@ -385,6 +489,9 @@ namespace SorceryRemake
 
             // Draw guard enemy
             DrawGuard();
+
+            // Draw wraith enemy
+            DrawWraith();
 
             _spriteBatch.End();
 
@@ -602,6 +709,42 @@ namespace SorceryRemake
             if (sprite == null) return;
 
             Vector2 renderPos = _guard.Position * RENDER_SCALE;
+            sprite.Draw(_spriteBatch, renderPos, RENDER_SCALE);
+        }
+
+        /// <summary>
+        /// Draw the boar sprite at the correct scaled position.
+        /// </summary>
+        private void DrawBoar()
+        {
+            var sprite = _boar.GetComponent<SpriteComponent>();
+            if (sprite == null) return;
+
+            Vector2 renderPos = _boar.Position * RENDER_SCALE;
+            sprite.Draw(_spriteBatch, renderPos, RENDER_SCALE);
+        }
+
+        /// <summary>
+        /// Draw the eye sprite at the correct scaled position.
+        /// </summary>
+        private void DrawEye()
+        {
+            var sprite = _eye.GetComponent<SpriteComponent>();
+            if (sprite == null) return;
+
+            Vector2 renderPos = _eye.Position * RENDER_SCALE;
+            sprite.Draw(_spriteBatch, renderPos, RENDER_SCALE);
+        }
+
+        /// <summary>
+        /// Draw the wraith sprite at the correct scaled position.
+        /// </summary>
+        private void DrawWraith()
+        {
+            var sprite = _wraith.GetComponent<SpriteComponent>();
+            if (sprite == null) return;
+
+            Vector2 renderPos = _wraith.Position * RENDER_SCALE;
             sprite.Draw(_spriteBatch, renderPos, RENDER_SCALE);
         }
 
