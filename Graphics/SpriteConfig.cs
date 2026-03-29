@@ -331,6 +331,64 @@ namespace SorceryRemake.Graphics
         /// </summary>
         public const float WRAITH_FOLLOW_THRESHOLD = 2f;
 
+        // ====================================================================
+        // ENEMY DEATH ANIMATION
+        // Dedicated spritesheet: EnemyDeathSheet.png
+        // 4 frames of 48x48, stacked vertically, plays once top to bottom
+        // ====================================================================
+
+        /// <summary>
+        /// Death animation frame size.
+        /// </summary>
+        public const int DEATH_FRAME_WIDTH = 48;
+        public const int DEATH_FRAME_HEIGHT = 48;
+
+        /// <summary>
+        /// Death animation - 4 frames of 48x48, vertical strip, plays once.
+        /// </summary>
+        public static readonly Rectangle[] ENEMY_DEATH_ANIM = new Rectangle[]
+        {
+            new Rectangle(0, 0, DEATH_FRAME_WIDTH, DEATH_FRAME_HEIGHT),    // Frame 0
+            new Rectangle(0, 48, DEATH_FRAME_WIDTH, DEATH_FRAME_HEIGHT),   // Frame 1
+            new Rectangle(0, 96, DEATH_FRAME_WIDTH, DEATH_FRAME_HEIGHT),   // Frame 2
+            new Rectangle(0, 144, DEATH_FRAME_WIDTH, DEATH_FRAME_HEIGHT),  // Frame 3
+        };
+
+        /// <summary>
+        /// Death animation speed (seconds per frame).
+        /// </summary>
+        public const float DEATH_ANIMATION_SPEED = 0.12f;
+
+        // ====================================================================
+        // ITEM SPRITES
+        // Items are 48x48 source, rendered at 24x24 in the game world
+        // ====================================================================
+
+        /// <summary>
+        /// Item source frame size (48x48 on spritesheet).
+        /// </summary>
+        public const int ITEM_SOURCE_SIZE = 48;
+
+        /// <summary>
+        /// Item display size in game world (24x24).
+        /// </summary>
+        public const int ITEM_DISPLAY_SIZE = 24;
+
+        /// <summary>
+        /// Sword sprite frame (full 48x48 sheet).
+        /// </summary>
+        public static readonly Rectangle SWORD_FRAME = new Rectangle(0, 0, ITEM_SOURCE_SIZE, ITEM_SOURCE_SIZE);
+
+        /// <summary>
+        /// Ball and Chain sprite frame (full 48x48 sheet).
+        /// </summary>
+        public static readonly Rectangle BALL_AND_CHAIN_FRAME = new Rectangle(0, 0, ITEM_SOURCE_SIZE, ITEM_SOURCE_SIZE);
+
+        /// <summary>
+        /// Axe sprite frame (full 48x48 sheet).
+        /// </summary>
+        public static readonly Rectangle AXE_FRAME = new Rectangle(0, 0, ITEM_SOURCE_SIZE, ITEM_SOURCE_SIZE);
+
         /// <summary>
         /// Guard movement speed (pixels/second). Slower than player.
         /// </summary>

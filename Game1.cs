@@ -74,10 +74,20 @@ namespace SorceryRemake
         // ====================================================================
 
         private Entity _player;
-        private Entity _guard;
-        private Entity _boar;
-        private Entity _eye;
-        private Entity _wraith;
+
+        // Per-room enemy system
+        private List<EnemyInstance> _roomEnemies = new List<EnemyInstance>();
+        private HashSet<string> _deadEnemies = new HashSet<string>(); // permanently killed
+        private Dictionary<string, List<EnemyInstance>> _savedRoomEnemies = new Dictionary<string, List<EnemyInstance>>();
+        private int _spawnCounter = 0; // unique IDs for debug-spawned enemies
+        private Random _rng = new Random();
+        private KeyboardState _previousKeyState;
+
+        // Item/inventory system
+        private enum ItemType { None, Sword, BallAndChain, Axe }
+        private ItemType _carriedItem = ItemType.None;
+        private List<ItemInstance> _roomItems = new List<ItemInstance>();
+        private HashSet<string> _pickedUpItems = new HashSet<string>(); // permanently picked up
 
         // ====================================================================
         // ASSETS
@@ -92,6 +102,10 @@ namespace SorceryRemake
         private Texture2D _boarSheet;
         private Texture2D _eyeSheet;
         private Texture2D _wraithSheet;
+        private Texture2D _deathSheet;
+        private Texture2D _swordSheet;
+        private Texture2D _ballAndChainSheet;
+        private Texture2D _axeSheet;
 
         // Room background textures (screenshot-based rooms)
         private Texture2D _bgStonehenge;
@@ -239,6 +253,18 @@ namespace SorceryRemake
             _wraithSheet = Content.Load<Texture2D>("WraithSheet");
             MakeColorTransparent(_wraithSheet, Color.Black);
 
+            _deathSheet = Content.Load<Texture2D>("EnemyDeathSheet");
+            MakeColorTransparent(_deathSheet, Color.Black);
+
+            _swordSheet = Content.Load<Texture2D>("SwordSheet");
+            MakeColorTransparent(_swordSheet, Color.Black);
+
+            _ballAndChainSheet = Content.Load<Texture2D>("BallandChainSheet");
+            MakeColorTransparent(_ballAndChainSheet, Color.Black);
+
+            _axeSheet = Content.Load<Texture2D>("AxeSheet");
+            MakeColorTransparent(_axeSheet, Color.Black);
+
             // Load room background textures (available for background rooms)
             _bgStonehenge = Content.Load<Texture2D>("RoomBG_Stonehenge");
             _bgWastelands = Content.Load<Texture2D>("RoomBG_Wastelands");
@@ -264,94 +290,9 @@ namespace SorceryRemake
             // Set player start position for room 1
             _player.Position = new Vector2(40f, 96f);
 
-            // ----------------------------------------------------------------
-            // Create hooded guard enemy in room 1
-            // ----------------------------------------------------------------
-            _guard = new Entity("HoodedGuard");
-            _guard.Position = new Vector2(160f, 112f); // Center of room, on floor
-
-            var guardPhysics = new PhysicsComponent();
-            guardPhysics.Speed = SpriteConfig.GUARD_SPEED;
-            // GravitySpeed stays at default 120f
-            _guard.AddComponent(guardPhysics);
-
-            var guardSprite = new SpriteComponent(_guardSheet, SpriteConfig.GUARD_IDLE[0]);
-            _guard.AddComponent(guardSprite);
-
-            var guardController = new GuardController(_player);
-            _guard.AddComponent(guardController);
-
-            // Wire guard physics to tilemap and doors
-            guardPhysics.TileMap = _roomManager.CurrentTileMap;
-            UpdateDoorCollision(guardPhysics);
-
-            guardController.Initialize();
-
-            // ----------------------------------------------------------------
-            // Create wild boar enemy in room 1
-            // ----------------------------------------------------------------
-            _boar = new Entity("WildBoar");
-            _boar.Position = new Vector2(240f, 40f); // Upper-right area, floating
-
-            var boarPhysics = new PhysicsComponent();
-            boarPhysics.Speed = SpriteConfig.BOAR_SPEED;
-            boarPhysics.GravitySpeed = 0f; // No gravity - floats
-            _boar.AddComponent(boarPhysics);
-
-            var boarSprite = new SpriteComponent(_boarSheet, SpriteConfig.BOAR_ANIM[0]);
-            _boar.AddComponent(boarSprite);
-
-            var boarController = new BoarController(_player);
-            _boar.AddComponent(boarController);
-
-            // Wire boar physics to tilemap and doors
-            boarPhysics.TileMap = _roomManager.CurrentTileMap;
-            UpdateDoorCollision(boarPhysics);
-
-            boarController.Initialize();
-
-            // ----------------------------------------------------------------
-            // Create eye enemy in room 1
-            // ----------------------------------------------------------------
-            _eye = new Entity("Eye");
-            _eye.Position = new Vector2(80f, 40f); // Upper-left area, floating
-
-            var eyePhysics = new PhysicsComponent();
-            eyePhysics.Speed = SpriteConfig.EYE_SPEED;
-            eyePhysics.GravitySpeed = 0f; // No gravity - floats
-            _eye.AddComponent(eyePhysics);
-
-            var eyeSprite = new SpriteComponent(_eyeSheet, SpriteConfig.EYE_ANIM[0]);
-            _eye.AddComponent(eyeSprite);
-
-            var eyeController = new EyeController(_player);
-            _eye.AddComponent(eyeController);
-
-            // Wire eye physics to tilemap and doors
-            eyePhysics.TileMap = _roomManager.CurrentTileMap;
-            UpdateDoorCollision(eyePhysics);
-
-            eyeController.Initialize();
-
-            // ----------------------------------------------------------------
-            // Create wraith enemy in room 1
-            // ----------------------------------------------------------------
-            _wraith = new Entity("Wraith");
-            _wraith.Position = new Vector2(200f, 30f); // Upper area, floating
-
-            var wraithPhysics = new PhysicsComponent();
-            wraithPhysics.Speed = SpriteConfig.WRAITH_SPEED;
-            wraithPhysics.GravitySpeed = 0f; // No gravity - floats
-            // No TileMap or SolidRects - wraith passes through everything
-            _wraith.AddComponent(wraithPhysics);
-
-            var wraithSprite = new SpriteComponent(_wraithSheet, SpriteConfig.WRAITH_IDLE[0]);
-            _wraith.AddComponent(wraithSprite);
-
-            var wraithController = new WraithController(_player);
-            _wraith.AddComponent(wraithController);
-
-            wraithController.Initialize();
+            // Spawn enemies and items for the initial room
+            SpawnRoomEnemies("room_1");
+            SpawnRoomItems("room_1");
 
             // Try to load debug font
             try
@@ -378,12 +319,33 @@ namespace SorceryRemake
             if (Keyboard.GetState().IsKeyDown(Keys.Escape))
                 Exit();
 
+            // Restart game
+            if (Keyboard.GetState().IsKeyDown(Keys.R))
+            {
+                RestartGame();
+                return;
+            }
+
             // ----------------------------------------------------------------
             // Toggle debug info
             // ----------------------------------------------------------------
 
             if (Keyboard.GetState().IsKeyDown(Keys.F1))
                 _showDebugInfo = !_showDebugInfo;
+
+            var currentKeyState = Keyboard.GetState();
+
+            // ----------------------------------------------------------------
+            // Debug spawn: keys 2-5 spawn floating enemies at player position
+            // ----------------------------------------------------------------
+            if (currentKeyState.IsKeyDown(Keys.D2) && !_previousKeyState.IsKeyDown(Keys.D2))
+                SpawnEnemy($"spawned_mask_{_spawnCounter++}", "mask", FindRandomEmptyPosition());
+            else if (currentKeyState.IsKeyDown(Keys.D3) && !_previousKeyState.IsKeyDown(Keys.D3))
+                SpawnEnemy($"spawned_boar_{_spawnCounter++}", "boar", FindRandomEmptyPosition());
+            else if (currentKeyState.IsKeyDown(Keys.D4) && !_previousKeyState.IsKeyDown(Keys.D4))
+                SpawnEnemy($"spawned_eye_{_spawnCounter++}", "eye", FindRandomEmptyPosition());
+            else if (currentKeyState.IsKeyDown(Keys.D5) && !_previousKeyState.IsKeyDown(Keys.D5))
+                SpawnEnemy($"spawned_wraith_{_spawnCounter++}", "wraith", FindRandomEmptyPosition());
 
             float dt = (float)gameTime.ElapsedGameTime.TotalSeconds;
 
@@ -396,6 +358,9 @@ namespace SorceryRemake
                 var result = _roomManager.Update(dt);
                 if (result.HasValue)
                 {
+                    // Save current room's enemies (freeze in place)
+                    SaveRoomEnemies(_roomManager.CurrentRoomId);
+
                     // Animation done - execute room switch
                     Vector2 newPos = _roomManager.ExecuteTransition(PhysicsComponent.HITBOX_WIDTH);
                     _player.Position = newPos;
@@ -409,40 +374,96 @@ namespace SorceryRemake
                         UpdateDoorCollision(phys);
                     }
 
-                    // Re-wire guard physics to new room
-                    var guardPhys = _guard.GetComponent<PhysicsComponent>();
-                    if (guardPhys != null)
-                    {
-                        guardPhys.TileMap = _roomManager.CurrentTileMap;
-                        UpdateDoorCollision(guardPhys);
-                    }
-
-                    // Re-wire boar physics to new room
-                    var boarPhys = _boar.GetComponent<PhysicsComponent>();
-                    if (boarPhys != null)
-                    {
-                        boarPhys.TileMap = _roomManager.CurrentTileMap;
-                        UpdateDoorCollision(boarPhys);
-                    }
-
-                    // Re-wire eye physics to new room
-                    var eyePhys = _eye.GetComponent<PhysicsComponent>();
-                    if (eyePhys != null)
-                    {
-                        eyePhys.TileMap = _roomManager.CurrentTileMap;
-                        UpdateDoorCollision(eyePhys);
-                    }
+                    // Restore or spawn enemies and items for the new room
+                    LoadRoomEnemies(_roomManager.CurrentRoomId);
+                    SpawnRoomItems(_roomManager.CurrentRoomId);
                 }
                 // Skip all other updates while frozen
             }
             else
             {
                 // Normal gameplay
+
+                // --- SPACE ACTIONS (before movement updates for snappy response) ---
+
+                // Item pickup/swap: on press (not hold, to prevent rapid re-swapping)
+                if (currentKeyState.IsKeyDown(Keys.Space) &&
+                    !_previousKeyState.IsKeyDown(Keys.Space))
+                {
+                    for (int i = _roomItems.Count - 1; i >= 0; i--)
+                    {
+                        var item = _roomItems[i];
+                        if (IsOverlapping(_player, item.Position))
+                        {
+                            ItemType pickedType = item.Type;
+                            Vector2 dropPos = item.Position;
+
+                            // Remove the picked-up item
+                            _pickedUpItems.Add(item.Id);
+                            _roomItems.RemoveAt(i);
+
+                            // If carrying something, drop it where the picked item was
+                            if (_carriedItem != ItemType.None)
+                            {
+                                string droppedId = $"dropped_{_spawnCounter++}";
+                                Texture2D dropTex = GetItemTexture(_carriedItem);
+                                Rectangle dropSrc = GetItemSourceRect(_carriedItem);
+                                if (dropTex != null)
+                                    _roomItems.Add(new ItemInstance(droppedId, _carriedItem, dropPos, dropTex, dropSrc));
+                            }
+
+                            _carriedItem = pickedType;
+                            break;
+                        }
+                    }
+                }
+
+                // Kill enemy: while space is held + touching + correct weapon
+                // Checks ALL overlapping enemies and kills the first one that matches
+                if (currentKeyState.IsKeyDown(Keys.Space) && _carriedItem != ItemType.None)
+                {
+                    for (int i = _roomEnemies.Count - 1; i >= 0; i--)
+                    {
+                        var enemy = _roomEnemies[i];
+                        if (enemy.IsDying) continue;
+
+                        if (IsOverlapping(_player, enemy.Entity) &&
+                            CanKillEnemy(enemy))
+                        {
+                            StartEnemyDeath(enemy);
+                            break;
+                        }
+                    }
+                }
+
+                // --- MOVEMENT UPDATES ---
+
                 _player.Update(gameTime);
-                _guard.Update(gameTime);
-                // _boar.Update(gameTime);
-                // _eye.Update(gameTime);
-                _wraith.Update(gameTime);
+
+                // Update all room enemies
+                for (int i = _roomEnemies.Count - 1; i >= 0; i--)
+                {
+                    var enemy = _roomEnemies[i];
+
+                    if (enemy.IsDying)
+                    {
+                        // Only tick the sprite animation, NOT the full entity
+                        var sprite = enemy.Entity.GetComponent<SpriteComponent>();
+                        if (sprite != null)
+                        {
+                            sprite.Update(gameTime);
+                            if (!sprite.IsPlaying)
+                            {
+                                // Death animation finished — permanently kill
+                                _deadEnemies.Add(enemy.Id);
+                                _roomEnemies.RemoveAt(i);
+                            }
+                        }
+                        continue;
+                    }
+
+                    enemy.Entity.Update(gameTime);
+                }
 
                 // Check door triggers
                 _roomManager.CheckDoorTriggers(
@@ -451,6 +472,8 @@ namespace SorceryRemake
                     PhysicsComponent.HITBOX_HEIGHT
                 );
             }
+
+            _previousKeyState = currentKeyState;
 
             base.Update(gameTime);
         }
@@ -484,14 +507,50 @@ namespace SorceryRemake
             // Draw doors
             _roomManager.DrawDoors(_spriteBatch, RENDER_SCALE);
 
+            // Draw room items (48x48 source rendered at 24x24)
+            foreach (var item in _roomItems)
+            {
+                Vector2 renderPos = item.Position * RENDER_SCALE;
+                int destSize = SpriteConfig.ITEM_DISPLAY_SIZE * RENDER_SCALE; // 24*3=72
+                var destRect = new Rectangle(
+                    (int)renderPos.X, (int)renderPos.Y,
+                    destSize, destSize);
+                _spriteBatch.Draw(
+                    item.Texture,
+                    destRect,
+                    item.SourceRect,
+                    Color.White);
+            }
+
             // Draw player sprite (on top of tiles)
             DrawPlayer();
 
-            // Draw guard enemy
-            DrawGuard();
+            // Draw all room enemies
+            foreach (var enemy in _roomEnemies)
+            {
+                var sprite = enemy.Entity.GetComponent<SpriteComponent>();
+                if (sprite == null || sprite.Texture == null) continue;
 
-            // Draw wraith enemy
-            DrawWraith();
+                if (enemy.IsDying)
+                {
+                    // Draw 48x48 death frame scaled down into a 24x24 destination
+                    Vector2 renderPos = enemy.Entity.Position * RENDER_SCALE;
+                    int destSize = PhysicsComponent.HITBOX_WIDTH * RENDER_SCALE; // 24*3=72
+                    var destRect = new Rectangle(
+                        (int)renderPos.X, (int)renderPos.Y,
+                        destSize, destSize);
+                    _spriteBatch.Draw(
+                        sprite.Texture,
+                        destRect,
+                        sprite.SourceRectangle,
+                        Color.White);
+                }
+                else
+                {
+                    Vector2 renderPos = enemy.Entity.Position * RENDER_SCALE;
+                    sprite.Draw(_spriteBatch, renderPos, RENDER_SCALE);
+                }
+            }
 
             _spriteBatch.End();
 
@@ -700,52 +759,436 @@ namespace SorceryRemake
             sprite.Draw(_spriteBatch, renderPos, RENDER_SCALE);
         }
 
-        /// <summary>
-        /// Draw the guard sprite at the correct scaled position.
-        /// </summary>
-        private void DrawGuard()
-        {
-            var sprite = _guard.GetComponent<SpriteComponent>();
-            if (sprite == null) return;
+        // ====================================================================
+        // ENEMY MANAGEMENT
+        // ====================================================================
 
-            Vector2 renderPos = _guard.Position * RENDER_SCALE;
-            sprite.Draw(_spriteBatch, renderPos, RENDER_SCALE);
+        /// <summary>
+        /// Tracks a placed item in the room.
+        /// </summary>
+        private class ItemInstance
+        {
+            public string Id;
+            public ItemType Type;
+            public Vector2 Position;
+            public Texture2D Texture;
+            public Rectangle SourceRect;
+
+            public ItemInstance(string id, ItemType type, Vector2 pos, Texture2D tex, Rectangle src)
+            {
+                Id = id;
+                Type = type;
+                Position = pos;
+                Texture = tex;
+                SourceRect = src;
+            }
         }
 
         /// <summary>
-        /// Draw the boar sprite at the correct scaled position.
+        /// Tracks a spawned enemy with its ID and death state.
         /// </summary>
-        private void DrawBoar()
+        private class EnemyInstance
         {
-            var sprite = _boar.GetComponent<SpriteComponent>();
-            if (sprite == null) return;
+            public string Id;
+            public Entity Entity;
+            public bool IsDying;
 
-            Vector2 renderPos = _boar.Position * RENDER_SCALE;
-            sprite.Draw(_spriteBatch, renderPos, RENDER_SCALE);
+            public EnemyInstance(string id, Entity entity)
+            {
+                Id = id;
+                Entity = entity;
+                IsDying = false;
+            }
         }
 
         /// <summary>
-        /// Draw the eye sprite at the correct scaled position.
+        /// Save current room's living enemies for later restoration.
         /// </summary>
-        private void DrawEye()
+        private void SaveRoomEnemies(string roomId)
         {
-            var sprite = _eye.GetComponent<SpriteComponent>();
-            if (sprite == null) return;
-
-            Vector2 renderPos = _eye.Position * RENDER_SCALE;
-            sprite.Draw(_spriteBatch, renderPos, RENDER_SCALE);
+            // Only save living (non-dying) enemies
+            var toSave = new List<EnemyInstance>();
+            foreach (var enemy in _roomEnemies)
+            {
+                if (!enemy.IsDying)
+                {
+                    // Freeze velocity
+                    var physics = enemy.Entity.GetComponent<PhysicsComponent>();
+                    if (physics != null)
+                        physics.Velocity = Vector2.Zero;
+                    toSave.Add(enemy);
+                }
+            }
+            _savedRoomEnemies[roomId] = toSave;
+            _roomEnemies.Clear();
         }
 
         /// <summary>
-        /// Draw the wraith sprite at the correct scaled position.
+        /// Load enemies for a room: restore saved ones or spawn fresh.
         /// </summary>
-        private void DrawWraith()
+        private void LoadRoomEnemies(string roomId)
         {
-            var sprite = _wraith.GetComponent<SpriteComponent>();
-            if (sprite == null) return;
+            if (_savedRoomEnemies.TryGetValue(roomId, out var saved))
+            {
+                _roomEnemies = saved;
+                _savedRoomEnemies.Remove(roomId);
 
-            Vector2 renderPos = _wraith.Position * RENDER_SCALE;
-            sprite.Draw(_spriteBatch, renderPos, RENDER_SCALE);
+                // Re-wire physics to new tilemap and doors
+                foreach (var enemy in _roomEnemies)
+                {
+                    var physics = enemy.Entity.GetComponent<PhysicsComponent>();
+                    if (physics != null && physics.TileMap != null)
+                    {
+                        physics.TileMap = _roomManager.CurrentTileMap;
+                        UpdateDoorCollision(physics);
+                    }
+                }
+            }
+            else
+            {
+                // First visit — spawn fresh
+                SpawnRoomEnemies(roomId);
+            }
+        }
+
+        /// <summary>
+        /// Spawn enemies for a given room, skipping any that are permanently dead.
+        /// </summary>
+        private void SpawnRoomEnemies(string roomId)
+        {
+            _roomEnemies.Clear();
+
+            switch (roomId)
+            {
+                case "room_1":
+                    // Guard on the floor
+                    SpawnEnemy("room_1_guard", "guard", new Vector2(160f, 112f));
+                    // Eye floating
+                    SpawnEnemy("room_1_eye", "eye", new Vector2(80f, 40f));
+                    break;
+
+                case "room_2":
+                    // Mask floating
+                    SpawnEnemy("room_2_mask", "mask", new Vector2(160f, 60f));
+                    // Wraith floating
+                    SpawnEnemy("room_2_wraith", "wraith", new Vector2(240f, 40f));
+                    break;
+            }
+        }
+
+        /// <summary>
+        /// Spawn a single enemy if not permanently dead.
+        /// </summary>
+        private void SpawnEnemy(string id, string type, Vector2 position)
+        {
+            if (_deadEnemies.Contains(id)) return;
+
+            var entity = new Entity(id);
+            entity.Position = position;
+
+            var physics = new PhysicsComponent();
+
+            switch (type)
+            {
+                case "guard":
+                    physics.Speed = SpriteConfig.GUARD_SPEED;
+                    physics.TileMap = _roomManager.CurrentTileMap;
+                    entity.AddComponent(physics);
+                    UpdateDoorCollision(physics);
+                    entity.AddComponent(new SpriteComponent(_guardSheet, SpriteConfig.GUARD_IDLE[0]));
+                    var guardCtrl = new GuardController(_player);
+                    entity.AddComponent(guardCtrl);
+                    guardCtrl.Initialize();
+                    break;
+
+                case "mask":
+                    physics.Speed = SpriteConfig.MASK_SPEED;
+                    physics.GravitySpeed = 0f;
+                    physics.TileMap = _roomManager.CurrentTileMap;
+                    entity.AddComponent(physics);
+                    UpdateDoorCollision(physics);
+                    entity.AddComponent(new SpriteComponent(_maskSheet, SpriteConfig.MASK_ANIM[0]));
+                    var maskCtrl = new MaskController(_player);
+                    entity.AddComponent(maskCtrl);
+                    maskCtrl.Initialize();
+                    break;
+
+                case "eye":
+                    physics.Speed = SpriteConfig.EYE_SPEED;
+                    physics.GravitySpeed = 0f;
+                    physics.TileMap = _roomManager.CurrentTileMap;
+                    entity.AddComponent(physics);
+                    UpdateDoorCollision(physics);
+                    entity.AddComponent(new SpriteComponent(_eyeSheet, SpriteConfig.EYE_ANIM[0]));
+                    var eyeCtrl = new EyeController(_player);
+                    entity.AddComponent(eyeCtrl);
+                    eyeCtrl.Initialize();
+                    break;
+
+                case "boar":
+                    physics.Speed = SpriteConfig.BOAR_SPEED;
+                    physics.GravitySpeed = 0f;
+                    physics.TileMap = _roomManager.CurrentTileMap;
+                    entity.AddComponent(physics);
+                    UpdateDoorCollision(physics);
+                    entity.AddComponent(new SpriteComponent(_boarSheet, SpriteConfig.BOAR_ANIM[0]));
+                    var boarCtrl = new BoarController(_player);
+                    entity.AddComponent(boarCtrl);
+                    boarCtrl.Initialize();
+                    break;
+
+                case "wraith":
+                    physics.Speed = SpriteConfig.WRAITH_SPEED;
+                    physics.GravitySpeed = 0f;
+                    // No TileMap - wraith passes through everything
+                    entity.AddComponent(physics);
+                    entity.AddComponent(new SpriteComponent(_wraithSheet, SpriteConfig.WRAITH_IDLE[0]));
+                    var wraithCtrl = new WraithController(_player);
+                    entity.AddComponent(wraithCtrl);
+                    wraithCtrl.Initialize();
+                    break;
+            }
+
+            _roomEnemies.Add(new EnemyInstance(id, entity));
+        }
+
+        /// <summary>
+        /// Check if player hitbox overlaps with an enemy entity.
+        /// </summary>
+        private bool IsOverlapping(Entity a, Entity b)
+        {
+            // Expand by 1px so even edge-touching (pixel-adjacent) triggers
+            var rectA = new Rectangle(
+                (int)a.Position.X - 1, (int)a.Position.Y - 1,
+                PhysicsComponent.HITBOX_WIDTH + 2, PhysicsComponent.HITBOX_HEIGHT + 2);
+            var rectB = new Rectangle(
+                (int)b.Position.X, (int)b.Position.Y,
+                PhysicsComponent.HITBOX_WIDTH, PhysicsComponent.HITBOX_HEIGHT);
+            return rectA.Intersects(rectB);
+        }
+
+        /// <summary>
+        /// Begin the death animation for an enemy — stop movement, swap to death sprite.
+        /// </summary>
+        private void StartEnemyDeath(EnemyInstance enemy)
+        {
+            enemy.IsDying = true;
+
+            // Consume the weapon used to kill
+            _carriedItem = ItemType.None;
+
+            // Stop all movement
+            var physics = enemy.Entity.GetComponent<PhysicsComponent>();
+            if (physics != null)
+                physics.Velocity = Vector2.Zero;
+
+            // Swap sprite to death animation
+            var sprite = enemy.Entity.GetComponent<SpriteComponent>();
+            if (sprite != null)
+            {
+                sprite.Texture = _deathSheet;
+                sprite.SetAnimation(
+                    SpriteConfig.ENEMY_DEATH_ANIM,
+                    SpriteConfig.DEATH_ANIMATION_SPEED,
+                    loop: false
+                );
+            }
+        }
+
+        /// <summary>
+        /// Spawn items for a given room, skipping any that are permanently picked up.
+        /// </summary>
+        private void SpawnRoomItems(string roomId)
+        {
+            _roomItems.Clear();
+
+            switch (roomId)
+            {
+                case "room_1":
+                    // Sword on top of the platform (row 12, Y = 12*8 - 24 = 72)
+                    SpawnItem("room_1_sword", ItemType.Sword, new Vector2(140f, 72f));
+                    // Ball and chain on the floor
+                    SpawnItem("room_1_ballchain", ItemType.BallAndChain, new Vector2(60f, 112f));
+                    break;
+
+                case "room_2":
+                    // Axe on the floor
+                    SpawnItem("room_2_axe", ItemType.Axe, new Vector2(160f, 112f));
+                    break;
+            }
+        }
+
+        /// <summary>
+        /// Spawn a single item if not already picked up.
+        /// </summary>
+        private void SpawnItem(string id, ItemType type, Vector2 position)
+        {
+            if (_pickedUpItems.Contains(id)) return;
+
+            Texture2D tex = GetItemTexture(type);
+            Rectangle src = GetItemSourceRect(type);
+            if (tex != null)
+                _roomItems.Add(new ItemInstance(id, type, position, tex, src));
+        }
+
+        /// <summary>
+        /// Check if an enemy can be killed with the currently carried item.
+        /// Every enemy type requires a specific weapon — no weapon = no kill.
+        /// </summary>
+        private bool CanKillEnemy(EnemyInstance enemy)
+        {
+            // Guard requires sword
+            if (enemy.Id.Contains("guard"))
+                return _carriedItem == ItemType.Sword;
+
+            // Eye, mask, boar require ball and chain
+            if (enemy.Id.Contains("eye") || enemy.Id.Contains("mask") || enemy.Id.Contains("boar"))
+                return _carriedItem == ItemType.BallAndChain;
+
+            // Wraith requires axe
+            if (enemy.Id.Contains("wraith"))
+                return _carriedItem == ItemType.Axe;
+
+            return false;
+        }
+
+        /// <summary>
+        /// Get the texture for an item type.
+        /// </summary>
+        private Texture2D GetItemTexture(ItemType type)
+        {
+            switch (type)
+            {
+                case ItemType.Sword: return _swordSheet;
+                case ItemType.BallAndChain: return _ballAndChainSheet;
+                case ItemType.Axe: return _axeSheet;
+                default: return null;
+            }
+        }
+
+        /// <summary>
+        /// Get the source rectangle for an item type.
+        /// </summary>
+        private Rectangle GetItemSourceRect(ItemType type)
+        {
+            switch (type)
+            {
+                case ItemType.Sword: return SpriteConfig.SWORD_FRAME;
+                case ItemType.BallAndChain: return SpriteConfig.BALL_AND_CHAIN_FRAME;
+                case ItemType.Axe: return SpriteConfig.AXE_FRAME;
+                default: return Rectangle.Empty;
+            }
+        }
+
+        /// <summary>
+        /// Check if player overlaps with an item position (24x24 hitbox).
+        /// </summary>
+        private bool IsOverlapping(Entity player, Vector2 itemPos)
+        {
+            var rectA = new Rectangle(
+                (int)player.Position.X - 1, (int)player.Position.Y - 1,
+                PhysicsComponent.HITBOX_WIDTH + 2, PhysicsComponent.HITBOX_HEIGHT + 2);
+            var rectB = new Rectangle(
+                (int)itemPos.X, (int)itemPos.Y,
+                SpriteConfig.ITEM_DISPLAY_SIZE, SpriteConfig.ITEM_DISPLAY_SIZE);
+            return rectA.Intersects(rectB);
+        }
+
+        /// <summary>
+        /// Find a random position in the current room that doesn't overlap solid tiles or doors.
+        /// </summary>
+        private Vector2 FindRandomEmptyPosition()
+        {
+            var tileMap = _roomManager.CurrentTileMap;
+            int hitW = PhysicsComponent.HITBOX_WIDTH;
+            int hitH = PhysicsComponent.HITBOX_HEIGHT;
+
+            for (int attempt = 0; attempt < 100; attempt++)
+            {
+                int x = _rng.Next(0, BASE_GAME_WIDTH - hitW);
+                int y = _rng.Next(0, BASE_GAME_HEIGHT - hitH);
+
+                // Check all four corners against solid tiles
+                bool blocked = false;
+                if (tileMap != null)
+                {
+                    int[] checkXs = { x, x + hitW - 1 };
+                    int[] checkYs = { y, y + hitH - 1 };
+                    foreach (int cx in checkXs)
+                    {
+                        foreach (int cy in checkYs)
+                        {
+                            int tx = cx / TileConfig.TILE_SIZE;
+                            int ty = cy / TileConfig.TILE_SIZE;
+                            if (tx >= 0 && tx < tileMap.Width && ty >= 0 && ty < tileMap.Height)
+                            {
+                                int tileId = tileMap.GetTile(tx, ty);
+                                if (TileConfig.IsSolid(tileId) || TileConfig.IsPlatform(tileId))
+                                {
+                                    blocked = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if (blocked) break;
+                    }
+                }
+
+                // Check against doors
+                if (!blocked)
+                {
+                    var entityRect = new Rectangle(x, y, hitW, hitH);
+                    foreach (var door in _roomManager.CurrentDoors)
+                    {
+                        var doorRect = new Rectangle(
+                            (int)door.Position.X, (int)door.Position.Y,
+                            DoorConfig.DOOR_WIDTH, DoorConfig.DOOR_HEIGHT);
+                        if (entityRect.Intersects(doorRect))
+                        {
+                            blocked = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (!blocked)
+                    return new Vector2(x, y);
+            }
+
+            // Fallback: center of room
+            return new Vector2(BASE_GAME_WIDTH / 2f, BASE_GAME_HEIGHT / 2f);
+        }
+
+        /// <summary>
+        /// Reset all game state to initial conditions.
+        /// </summary>
+        private void RestartGame()
+        {
+            // Clear all persistent state
+            _deadEnemies.Clear();
+            _pickedUpItems.Clear();
+            _roomEnemies.Clear();
+            _roomItems.Clear();
+            _savedRoomEnemies.Clear();
+            _carriedItem = ItemType.None;
+            _spawnCounter = 0;
+
+            // Reload initial room
+            _roomManager.LoadRoom("room_1");
+
+            // Reset player
+            _player.Position = new Vector2(40f, 96f);
+            var physics = _player.GetComponent<PhysicsComponent>();
+            if (physics != null)
+            {
+                physics.TileMap = _roomManager.CurrentTileMap;
+                physics.Velocity = Vector2.Zero;
+                UpdateDoorCollision(physics);
+            }
+
+            // Spawn enemies and items
+            SpawnRoomEnemies("room_1");
+            SpawnRoomItems("room_1");
         }
 
         /// <summary>
@@ -764,12 +1207,29 @@ namespace SorceryRemake
             );
             DrawFilledRectangle(_spriteBatch, infoPanelRect, new Color(0, 0, 139));
 
-            // TODO: Add text rendering when font is available
-            // Python displays:
-            // - Location: "X: {player.col} Y: {player.row}"
-            // - Carrying: item name or "Nothing"
-            // - Energy: energy meter value
-            // Text color: Yellow (255, 255, 0)
+            // Show carried item
+            if (_debugFont != null)
+            {
+                string itemName = _carriedItem == ItemType.None ? "Nothing" : _carriedItem.ToString();
+                _spriteBatch.DrawString(_debugFont, $"Carrying: {itemName}",
+                    new Vector2(10, GAME_AREA_HEIGHT + 10), Color.Yellow);
+            }
+
+            // Draw carried item icon
+            if (_carriedItem != ItemType.None)
+            {
+                Texture2D itemTex = GetItemTexture(_carriedItem);
+                Rectangle itemSrc = GetItemSourceRect(_carriedItem);
+                if (itemTex != null)
+                {
+                    int iconSize = 48; // display size in info panel
+                    var iconRect = new Rectangle(
+                        WINDOW_WIDTH - iconSize - 20,
+                        GAME_AREA_HEIGHT + (INFO_PANEL_HEIGHT - iconSize) / 2,
+                        iconSize, iconSize);
+                    _spriteBatch.Draw(itemTex, iconRect, itemSrc, Color.White);
+                }
+            }
 
             _spriteBatch.End();
         }
