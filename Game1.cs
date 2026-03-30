@@ -2,16 +2,16 @@
 // MAIN GAME CLASS
 // Sorcery+ Remake - MonoGame Entry Point
 // ============================================================================
-// This is the core game loop that manages:
-// - Window initialization with correct Mode 0 aspect ratio
-// - Asset loading (spritesheet)
-// - Player entity creation with ECS components
-// - Update/Draw loops with fixed timestep physics
+// Phase 4A refactored version. Game1 is now a thin orchestrator:
+// - Initialization and asset loading
+// - Update loop dispatching to subsystems
+// - Draw loop dispatching to renderers
 //
-// RENDERING STRATEGY:
-// - Internal logic: 160x200 "Amstrad pixels"
-// - Render target: 640x400 (4x scale for modern displays)
-// - Final output: Scaled to window with letterboxing
+// Extracted systems:
+// - WorldState: persistent game state (Core/WorldState.cs)
+// - ItemSystem: item types, textures, combat rules (Core/ItemSystem.cs)
+// - GameEntities: EnemyInstance, ItemInstance, etc. (Core/GameEntities.cs)
+// - RoomRegistry: per-room content data (Rooms/RoomRegistry.cs)
 // ============================================================================
 
 using Microsoft.Xna.Framework;
@@ -33,71 +33,56 @@ namespace SorceryRemake
     public class Game1 : Game
     {
         // ====================================================================
-        // GRAPHICS DEVICES
+        // RENDERING CONSTANTS
+        // ====================================================================
+
+        private const int BASE_GAME_WIDTH = 320;
+        private const int BASE_GAME_HEIGHT = 144;
+        private const int BASE_INFO_PANEL_HEIGHT = 56;
+        private const int RENDER_SCALE = 3;
+        private const int WINDOW_WIDTH = BASE_GAME_WIDTH * RENDER_SCALE;
+        private const int GAME_AREA_HEIGHT = BASE_GAME_HEIGHT * RENDER_SCALE;
+        private const int INFO_PANEL_HEIGHT = BASE_INFO_PANEL_HEIGHT * RENDER_SCALE;
+        private const int WINDOW_HEIGHT = GAME_AREA_HEIGHT + INFO_PANEL_HEIGHT;
+
+        // ====================================================================
+        // GRAPHICS
         // ====================================================================
 
         private GraphicsDeviceManager _graphics;
         private SpriteBatch _spriteBatch;
-
-        // ====================================================================
-        // RENDERING CONSTANTS
-        // Matches Python prototype dimensions EXACTLY
-        // ====================================================================
-        // Python settings.py:
-        // BASE_GAME_AREA: 320x144, INFO_PANEL: 56px, SCALE: 3x
-        // Result: 960x600 window (960x432 game + 168px info panel)
-        // ====================================================================
-
-        // Base dimensions (unscaled Amstrad coordinates)
-        private const int BASE_GAME_WIDTH = 320;      // Python: BASE_GAME_AREA_WIDTH
-        private const int BASE_GAME_HEIGHT = 144;     // Python: BASE_GAME_AREA_HEIGHT
-        private const int BASE_INFO_PANEL_HEIGHT = 56; // Python: BASE_INFO_PANEL_HEIGHT
-
-        // Scale factor
-        private const int RENDER_SCALE = 3;           // Python: GLOBAL_SCALE_FACTOR = 3
-
-        // Final window dimensions (scaled)
-        private const int WINDOW_WIDTH = BASE_GAME_WIDTH * RENDER_SCALE;  // 320 * 3 = 960
-        private const int GAME_AREA_HEIGHT = BASE_GAME_HEIGHT * RENDER_SCALE; // 144 * 3 = 432
-        private const int INFO_PANEL_HEIGHT = BASE_INFO_PANEL_HEIGHT * RENDER_SCALE; // 56 * 3 = 168
-        private const int WINDOW_HEIGHT = GAME_AREA_HEIGHT + INFO_PANEL_HEIGHT; // 432 + 168 = 600
-
-        // ====================================================================
-        // RENDER TARGET
-        // We render to a low-res target then scale up for pixel-perfect look
-        // ====================================================================
-
         private RenderTarget2D _renderTarget;
 
         // ====================================================================
-        // GAME ENTITIES
+        // SUBSYSTEMS
+        // ====================================================================
+
+        private WorldState _worldState = new WorldState();
+        private ItemSystem _itemSystem = new ItemSystem();
+        private RoomManager _roomManager;
+
+        // ====================================================================
+        // PLAYER
         // ====================================================================
 
         private Entity _player;
 
-        // Per-room enemy system
-        private List<EnemyInstance> _roomEnemies = new List<EnemyInstance>();
-        private HashSet<string> _deadEnemies = new HashSet<string>(); // permanently killed
-        private Dictionary<string, List<EnemyInstance>> _savedRoomEnemies = new Dictionary<string, List<EnemyInstance>>();
-        private int _spawnCounter = 0; // unique IDs for debug-spawned enemies
-        private Random _rng = new Random();
-        private KeyboardState _previousKeyState;
+        // ====================================================================
+        // RUNTIME ROOM STATE (current room only)
+        // ====================================================================
 
-        // Item/inventory system
-        private enum ItemType { None, Sword, BallAndChain, Axe, ShootingStar, Lyre }
-        private ItemType _carriedItem = ItemType.None;
+        private List<EnemyInstance> _roomEnemies = new List<EnemyInstance>();
         private List<ItemInstance> _roomItems = new List<ItemInstance>();
-        private HashSet<string> _pickedUpItems = new HashSet<string>(); // permanently picked up
+        private List<CaptiveWizard> _roomWizards = new List<CaptiveWizard>();
+        private List<BlockedDoorInstance> _roomBlockedDoors = new List<BlockedDoorInstance>();
         private List<Projectile> _projectiles = new List<Projectile>();
 
-        // Captive wizard system
-        private List<CaptiveWizard> _roomWizards = new List<CaptiveWizard>();
-        private HashSet<string> _savedWizards = new HashSet<string>(); // permanently saved
-        private int _savedWizardCount = 0;
+        // ====================================================================
+        // INPUT
+        // ====================================================================
 
-        // Blocked door system
-        private List<BlockedDoorInstance> _roomBlockedDoors = new List<BlockedDoorInstance>();
-        private HashSet<string> _unlockedDoors = new HashSet<string>(); // permanently unlocked
+        private KeyboardState _previousKeyState;
+        private Random _rng = new Random();
 
         // ====================================================================
         // ASSETS
@@ -113,26 +98,15 @@ namespace SorceryRemake
         private Texture2D _eyeSheet;
         private Texture2D _wraithSheet;
         private Texture2D _deathSheet;
-        private Texture2D _swordSheet;
-        private Texture2D _ballAndChainSheet;
-        private Texture2D _axeSheet;
-        private Texture2D _shootingStarSheet;
-        private Texture2D _pixelTexture; // 1x1 white texture for projectile rendering
         private Texture2D _captiveWizardSheet;
         private Texture2D _starSheet;
         private Texture2D _blockedDoorSheet;
-        private Texture2D _lyreSheet;
+        private Texture2D _pixelTexture;
 
-        // Room background textures (screenshot-based rooms)
+        // Room backgrounds
         private Texture2D _bgStonehenge;
         private Texture2D _bgWastelands;
         private Texture2D _bgTunnelMouth;
-
-        // ====================================================================
-        // ROOM MANAGER
-        // ====================================================================
-
-        private RoomManager _roomManager;
 
         // ====================================================================
         // DEBUG
@@ -150,8 +124,6 @@ namespace SorceryRemake
             _graphics = new GraphicsDeviceManager(this);
             Content.RootDirectory = "Content";
             IsMouseVisible = true;
-
-            // Configure window for Mode 0 aspect ratio
             _graphics.PreferredBackBufferWidth = WINDOW_WIDTH;
             _graphics.PreferredBackBufferHeight = WINDOW_HEIGHT;
         }
@@ -162,37 +134,23 @@ namespace SorceryRemake
 
         protected override void Initialize()
         {
-            // ----------------------------------------------------------------
-            // PHASE 1: Initialize rendering system
-            // ----------------------------------------------------------------
-
-            // Create render target for game area (matches Python's game surface)
             _renderTarget = new RenderTarget2D(
                 GraphicsDevice,
-                BASE_GAME_WIDTH * RENDER_SCALE,  // 320 * 3 = 960
-                BASE_GAME_HEIGHT * RENDER_SCALE  // 144 * 3 = 432
+                BASE_GAME_WIDTH * RENDER_SCALE,
+                BASE_GAME_HEIGHT * RENDER_SCALE
             );
 
-            // ----------------------------------------------------------------
-            // PHASE 2: Create player entity with ECS components
-            // ----------------------------------------------------------------
-
             _player = new Entity("Player");
-
-            // Start near top-center so player falls to floor
             _player.Position = new Vector2(148f, 16f);
 
-            // Add physics component for flight mechanics
             var physics = new PhysicsComponent();
             _player.AddComponent(physics);
 
-            // Add player controller for input handling
             var controller = new PlayerController();
             _player.AddComponent(controller);
 
             base.Initialize();
 
-            // Initialize player controller after all components are added
             controller.Initialize();
         }
 
@@ -204,20 +162,13 @@ namespace SorceryRemake
         {
             _spriteBatch = new SpriteBatch(GraphicsDevice);
 
-            // ----------------------------------------------------------------
-            // Load spritesheet from assets
-            // ----------------------------------------------------------------
-
+            // --- Player spritesheet ---
             try
             {
-                // Try to load the spritesheet
-                // Note: This requires the PNG to be added to Content.mgcb
                 _spriteSheet = Content.Load<Texture2D>("Characters");
             }
             catch (Exception)
             {
-                // If content pipeline isn't set up, load directly from file
-                // This is a fallback for initial testing
                 try
                 {
                     using (var stream = System.IO.File.OpenRead(
@@ -226,462 +177,388 @@ namespace SorceryRemake
                         _spriteSheet = Texture2D.FromStream(GraphicsDevice, stream);
                     }
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
-                    System.Diagnostics.Debug.WriteLine($"Failed to load spritesheet: {ex.Message}");
-                    // Create a placeholder texture
                     _spriteSheet = new Texture2D(GraphicsDevice, 16, 16);
                     Color[] data = new Color[16 * 16];
                     for (int i = 0; i < data.Length; i++)
-                        data[i] = Color.Magenta; // Bright magenta = missing texture
+                        data[i] = Color.Magenta;
                     _spriteSheet.SetData(data);
                 }
             }
 
-            // Make black background transparent (color key transparency)
             MakeColorTransparent(_spriteSheet, Color.Black);
+            _player.AddComponent(new SpriteComponent(_spriteSheet, SpriteConfig.PLAYER_IDLE_FRONT[0]));
 
-            // Add sprite component to player now that texture is loaded
-            var sprite = new SpriteComponent(_spriteSheet, SpriteConfig.PLAYER_IDLE_FRONT[0]);
-            _player.AddComponent(sprite);
-
-            // ----------------------------------------------------------------
-            // Load tileset, door spritesheet, and set up rooms (Phase 2C)
-            // ----------------------------------------------------------------
-
+            // --- Tileset & doors ---
             _tilesetTexture = Content.Load<Texture2D>("Tiles");
-
             _leftDoorTexture = Content.Load<Texture2D>("LeftDoorFrames");
             _rightDoorTexture = Content.Load<Texture2D>("RightDoorFrames");
 
-            _guardSheet = Content.Load<Texture2D>("GuardSheet");
-            MakeColorTransparent(_guardSheet, Color.Black);
+            // --- Enemy sheets ---
+            _guardSheet = LoadAndTransparent("GuardSheet");
+            _maskSheet = LoadAndTransparent("MaskSheet");
+            _boarSheet = LoadAndTransparent("BoarSheet");
+            _eyeSheet = LoadAndTransparent("EyeSheet");
+            _wraithSheet = LoadAndTransparent("WraithSheet");
+            _deathSheet = LoadAndTransparent("EnemyDeathSheet");
 
-            _maskSheet = Content.Load<Texture2D>("MaskSheet");
-            MakeColorTransparent(_maskSheet, Color.Black);
+            // --- Item sheets (register with ItemSystem) ---
+            var swordSheet = LoadAndTransparent("SwordSheet");
+            _itemSystem.Register(ItemType.Sword, swordSheet, SpriteConfig.SWORD_FRAME);
 
-            _boarSheet = Content.Load<Texture2D>("BoarSheet");
-            MakeColorTransparent(_boarSheet, Color.Black);
+            var ballAndChainSheet = LoadAndTransparent("BallandChainSheet");
+            _itemSystem.Register(ItemType.BallAndChain, ballAndChainSheet, SpriteConfig.BALL_AND_CHAIN_FRAME);
 
-            _eyeSheet = Content.Load<Texture2D>("EyeSheet");
-            MakeColorTransparent(_eyeSheet, Color.Black);
+            var axeSheet = LoadAndTransparent("AxeSheet");
+            _itemSystem.Register(ItemType.Axe, axeSheet, SpriteConfig.AXE_FRAME);
 
-            _wraithSheet = Content.Load<Texture2D>("WraithSheet");
-            MakeColorTransparent(_wraithSheet, Color.Black);
+            var shootingStarSheet = LoadAndTransparent("ShootingStarSheet");
+            _itemSystem.Register(ItemType.ShootingStar, shootingStarSheet, SpriteConfig.SHOOTING_STAR_FRAME);
 
-            _deathSheet = Content.Load<Texture2D>("EnemyDeathSheet");
-            MakeColorTransparent(_deathSheet, Color.Black);
+            var lyreSheet = LoadAndTransparent("LyreSheet");
+            _itemSystem.Register(ItemType.Lyre, lyreSheet, SpriteConfig.LYRE_FRAME);
 
-            _swordSheet = Content.Load<Texture2D>("SwordSheet");
-            MakeColorTransparent(_swordSheet, Color.Black);
+            // --- Wizard & blocked door sheets ---
+            _captiveWizardSheet = LoadAndTransparent("CaptiveWizardSheet");
+            _starSheet = LoadAndTransparent("StarSheet");
+            _blockedDoorSheet = LoadAndTransparent("BlockedDoorSheet");
 
-            _ballAndChainSheet = Content.Load<Texture2D>("BallandChainSheet");
-            MakeColorTransparent(_ballAndChainSheet, Color.Black);
-
-            _axeSheet = Content.Load<Texture2D>("AxeSheet");
-            MakeColorTransparent(_axeSheet, Color.Black);
-
-            _shootingStarSheet = Content.Load<Texture2D>("ShootingStarSheet");
-            MakeColorTransparent(_shootingStarSheet, Color.Black);
-
-            // Create 1x1 white pixel texture for projectile rendering
+            // --- 1x1 pixel texture for projectiles & rectangles ---
             _pixelTexture = new Texture2D(GraphicsDevice, 1, 1);
             _pixelTexture.SetData(new[] { Color.White });
 
-            _captiveWizardSheet = Content.Load<Texture2D>("CaptiveWizardSheet");
-            MakeColorTransparent(_captiveWizardSheet, Color.Black);
-
-            _starSheet = Content.Load<Texture2D>("StarSheet");
-            MakeColorTransparent(_starSheet, Color.Black);
-
-            _blockedDoorSheet = Content.Load<Texture2D>("BlockedDoorSheet");
-            MakeColorTransparent(_blockedDoorSheet, Color.Black);
-
-            _lyreSheet = Content.Load<Texture2D>("LyreSheet");
-            MakeColorTransparent(_lyreSheet, Color.Black);
-
-            // Load room background textures (available for background rooms)
+            // --- Room backgrounds ---
             _bgStonehenge = Content.Load<Texture2D>("RoomBG_Stonehenge");
             _bgWastelands = Content.Load<Texture2D>("RoomBG_Wastelands");
             _bgTunnelMouth = Content.Load<Texture2D>("RoomBG_TunnelMouth");
 
-            // Set up room manager
+            // --- Room system ---
             _roomManager = new RoomManager();
             _roomManager.SetTextures(_tilesetTexture, _leftDoorTexture, _rightDoorTexture);
             RegisterTestRooms();
             RegisterBackgroundRooms();
 
-            // Start with the two-room tile prototype
+            // --- Room content registry ---
+            RoomRegistry.Initialize();
+
+            // --- Start game ---
             _roomManager.LoadRoom("room_1");
-
-            // Wire tilemap and door collision to physics
-            var physics = _player.GetComponent<PhysicsComponent>();
-            if (physics != null)
+            var phys = _player.GetComponent<PhysicsComponent>();
+            if (phys != null)
             {
-                physics.TileMap = _roomManager.CurrentTileMap;
-                UpdateDoorCollision(physics);
+                phys.TileMap = _roomManager.CurrentTileMap;
+                UpdateDoorCollision(phys);
             }
-
-            // Set player start position for room 1
             _player.Position = new Vector2(40f, 96f);
+            SpawnRoomContent("room_1");
 
-            // Spawn enemies, items, wizards, and blocked doors for the initial room
-            SpawnRoomEnemies("room_1");
-            SpawnRoomItems("room_1");
-            SpawnRoomWizards("room_1");
-            SpawnRoomBlockedDoors("room_1");
+            // --- Debug font ---
+            try { _debugFont = Content.Load<SpriteFont>("DebugFont"); }
+            catch { _debugFont = null; }
+        }
 
-            // Try to load debug font
-            try
-            {
-                _debugFont = Content.Load<SpriteFont>("DebugFont");
-            }
-            catch
-            {
-                _debugFont = null; // No debug text if font is missing
-            }
+        /// <summary>
+        /// Load a texture and make black transparent. Shorthand for repeated pattern.
+        /// </summary>
+        private Texture2D LoadAndTransparent(string assetName)
+        {
+            var tex = Content.Load<Texture2D>(assetName);
+            MakeColorTransparent(tex, Color.Black);
+            return tex;
         }
 
         // ====================================================================
         // UPDATE LOOP
-        // Called at fixed 60 FPS
         // ====================================================================
 
         protected override void Update(GameTime gameTime)
         {
-            // ----------------------------------------------------------------
-            // Global input: Exit game
-            // ----------------------------------------------------------------
-
             if (Keyboard.GetState().IsKeyDown(Keys.Escape))
                 Exit();
 
-            // Restart game
             if (Keyboard.GetState().IsKeyDown(Keys.R))
             {
                 RestartGame();
                 return;
             }
 
-            // ----------------------------------------------------------------
-            // Toggle debug info
-            // ----------------------------------------------------------------
-
             if (Keyboard.GetState().IsKeyDown(Keys.F1))
                 _showDebugInfo = !_showDebugInfo;
 
             var currentKeyState = Keyboard.GetState();
 
-            // ----------------------------------------------------------------
-            // Debug spawn: keys 2-5 spawn floating enemies at player position
-            // ----------------------------------------------------------------
+            // Debug spawn: keys 2-5
             if (currentKeyState.IsKeyDown(Keys.D2) && !_previousKeyState.IsKeyDown(Keys.D2))
-                SpawnEnemy($"spawned_mask_{_spawnCounter++}", "mask", FindRandomEmptyPosition());
+                SpawnEnemy($"spawned_mask_{_worldState.SpawnCounter++}", EnemyType.Mask, FindRandomEmptyPosition());
             else if (currentKeyState.IsKeyDown(Keys.D3) && !_previousKeyState.IsKeyDown(Keys.D3))
-                SpawnEnemy($"spawned_boar_{_spawnCounter++}", "boar", FindRandomEmptyPosition());
+                SpawnEnemy($"spawned_boar_{_worldState.SpawnCounter++}", EnemyType.Boar, FindRandomEmptyPosition());
             else if (currentKeyState.IsKeyDown(Keys.D4) && !_previousKeyState.IsKeyDown(Keys.D4))
-                SpawnEnemy($"spawned_eye_{_spawnCounter++}", "eye", FindRandomEmptyPosition());
+                SpawnEnemy($"spawned_eye_{_worldState.SpawnCounter++}", EnemyType.Eye, FindRandomEmptyPosition());
             else if (currentKeyState.IsKeyDown(Keys.D5) && !_previousKeyState.IsKeyDown(Keys.D5))
-                SpawnEnemy($"spawned_wraith_{_spawnCounter++}", "wraith", FindRandomEmptyPosition());
+                SpawnEnemy($"spawned_wraith_{_worldState.SpawnCounter++}", EnemyType.Wraith, FindRandomEmptyPosition());
 
             float dt = (float)gameTime.ElapsedGameTime.TotalSeconds;
 
-            // ----------------------------------------------------------------
-            // Door transition logic (freezes all gameplay during animation)
-            // ----------------------------------------------------------------
-
             if (_roomManager.IsGameFrozen)
             {
-                var result = _roomManager.Update(dt);
-                if (result.HasValue)
-                {
-                    // Clear projectiles and save current room's enemies
-                    _projectiles.Clear();
-                    SaveRoomEnemies(_roomManager.CurrentRoomId);
-
-                    // Animation done - execute room switch
-                    Vector2 newPos = _roomManager.ExecuteTransition(PhysicsComponent.HITBOX_WIDTH);
-                    _player.Position = newPos;
-
-                    // Re-wire physics to new tilemap and door collision
-                    var phys = _player.GetComponent<PhysicsComponent>();
-                    if (phys != null)
-                    {
-                        phys.TileMap = _roomManager.CurrentTileMap;
-                        phys.Velocity = Vector2.Zero;
-                        UpdateDoorCollision(phys);
-                    }
-
-                    // Restore or spawn enemies and items for the new room
-                    LoadRoomEnemies(_roomManager.CurrentRoomId);
-                    SpawnRoomItems(_roomManager.CurrentRoomId);
-                    SpawnRoomWizards(_roomManager.CurrentRoomId);
-                    SpawnRoomBlockedDoors(_roomManager.CurrentRoomId);
-                }
-                // Skip all other updates while frozen
+                UpdateDoorTransition(dt, gameTime);
             }
             else
             {
-                // Normal gameplay
+                UpdateGameplay(dt, gameTime, currentKeyState);
+            }
 
-                // --- SPACE ACTIONS (before movement updates for snappy response) ---
+            _previousKeyState = currentKeyState;
+            base.Update(gameTime);
+        }
 
-                // Item pickup/swap: on press (not hold, to prevent rapid re-swapping)
-                bool pickedUpItem = false;
-                if (currentKeyState.IsKeyDown(Keys.Space) &&
-                    !_previousKeyState.IsKeyDown(Keys.Space))
+        private void UpdateDoorTransition(float dt, GameTime gameTime)
+        {
+            var result = _roomManager.Update(dt);
+            if (result.HasValue)
+            {
+                _projectiles.Clear();
+                SaveRoomEnemies(_roomManager.CurrentRoomId);
+
+                Vector2 newPos = _roomManager.ExecuteTransition(PhysicsComponent.HITBOX_WIDTH);
+                _player.Position = newPos;
+
+                var phys = _player.GetComponent<PhysicsComponent>();
+                if (phys != null)
                 {
-                    for (int i = _roomItems.Count - 1; i >= 0; i--)
-                    {
-                        var item = _roomItems[i];
-                        if (IsOverlapping(_player, item.Position))
-                        {
-                            ItemType pickedType = item.Type;
-                            Vector2 dropPos = item.Position;
-
-                            // Remove the picked-up item
-                            _pickedUpItems.Add(item.Id);
-                            _roomItems.RemoveAt(i);
-
-                            // If carrying something, drop it where the picked item was
-                            if (_carriedItem != ItemType.None)
-                            {
-                                string droppedId = $"dropped_{_spawnCounter++}";
-                                Texture2D dropTex = GetItemTexture(_carriedItem);
-                                Rectangle dropSrc = GetItemSourceRect(_carriedItem);
-                                if (dropTex != null)
-                                    _roomItems.Add(new ItemInstance(droppedId, _carriedItem, dropPos, dropTex, dropSrc));
-                            }
-
-                            _carriedItem = pickedType;
-                            pickedUpItem = true;
-                            break;
-                        }
-                    }
+                    phys.TileMap = _roomManager.CurrentTileMap;
+                    phys.Velocity = Vector2.Zero;
+                    UpdateDoorCollision(phys);
                 }
 
-                // Shooting Star: on press, fire 8 projectiles and consume
-                // Skip if we just picked up an item on this frame
-                if (!pickedUpItem &&
-                    currentKeyState.IsKeyDown(Keys.Space) &&
-                    !_previousKeyState.IsKeyDown(Keys.Space) &&
-                    _carriedItem == ItemType.ShootingStar)
-                {
-                    FireShootingStar();
-                    _carriedItem = ItemType.None;
-                }
+                LoadRoomEnemies(_roomManager.CurrentRoomId);
+                SpawnRoomContent(_roomManager.CurrentRoomId);
+            }
+        }
 
-                // Kill enemy: while space is held + touching + correct melee weapon
-                // Checks ALL overlapping enemies and kills the first one that matches
-                if (currentKeyState.IsKeyDown(Keys.Space) && _carriedItem != ItemType.None)
-                {
-                    for (int i = _roomEnemies.Count - 1; i >= 0; i--)
-                    {
-                        var enemy = _roomEnemies[i];
-                        if (enemy.IsDying) continue;
+        private void UpdateGameplay(float dt, GameTime gameTime, KeyboardState currentKeyState)
+        {
+            // --- Item pickup / weapon use ---
+            bool pickedUpItem = false;
+            if (currentKeyState.IsKeyDown(Keys.Space) && !_previousKeyState.IsKeyDown(Keys.Space))
+            {
+                pickedUpItem = TryPickupItem();
+            }
 
-                        if (IsOverlapping(_player, enemy.Entity) &&
-                            CanKillEnemy(enemy))
-                        {
-                            StartEnemyDeath(enemy);
-                            break;
-                        }
-                    }
-                }
+            // Shooting Star: fire and consume
+            if (!pickedUpItem &&
+                currentKeyState.IsKeyDown(Keys.Space) &&
+                !_previousKeyState.IsKeyDown(Keys.Space) &&
+                _worldState.CarriedItem == ItemType.ShootingStar)
+            {
+                FireShootingStar();
+                _worldState.CarriedItem = ItemType.None;
+            }
 
-                // --- MOVEMENT UPDATES ---
-
-                _player.Update(gameTime);
-
-                // Update all room enemies
+            // Melee kill: space held + touching + correct weapon
+            if (currentKeyState.IsKeyDown(Keys.Space) && _worldState.CarriedItem != ItemType.None)
+            {
                 for (int i = _roomEnemies.Count - 1; i >= 0; i--)
                 {
                     var enemy = _roomEnemies[i];
-
-                    if (enemy.IsDying)
+                    if (enemy.IsDying) continue;
+                    if (IsOverlapping(_player, enemy.Entity) &&
+                        ItemSystem.CanKillEnemy(enemy.Type, _worldState.CarriedItem))
                     {
-                        // Only tick the sprite animation, NOT the full entity
-                        var sprite = enemy.Entity.GetComponent<SpriteComponent>();
-                        if (sprite != null)
-                        {
-                            sprite.Update(gameTime);
-                            if (!sprite.IsPlaying)
-                            {
-                                // Death animation finished — permanently kill
-                                _deadEnemies.Add(enemy.Id);
-                                _roomEnemies.RemoveAt(i);
-                            }
-                        }
-                        continue;
+                        StartEnemyDeath(enemy);
+                        break;
+                    }
+                }
+            }
+
+            // --- Entity updates ---
+            _player.Update(gameTime);
+            UpdateEnemies(gameTime);
+            UpdateBlockedDoors();
+            UpdateWizards(dt);
+            UpdateProjectiles(dt);
+
+            _roomManager.CheckDoorTriggers(
+                _player.Position,
+                PhysicsComponent.HITBOX_WIDTH,
+                PhysicsComponent.HITBOX_HEIGHT
+            );
+        }
+
+        /// <summary>
+        /// Try to pick up an item near the player. Returns true if picked up.
+        /// </summary>
+        private bool TryPickupItem()
+        {
+            for (int i = _roomItems.Count - 1; i >= 0; i--)
+            {
+                var item = _roomItems[i];
+                if (IsOverlapping(_player, item.Position))
+                {
+                    ItemType pickedType = item.Type;
+                    Vector2 dropPos = item.Position;
+
+                    _worldState.PickedUpItems.Add(item.Id);
+                    _roomItems.RemoveAt(i);
+
+                    // Drop current item where picked item was
+                    if (_worldState.CarriedItem != ItemType.None)
+                    {
+                        string droppedId = $"dropped_{_worldState.SpawnCounter++}";
+                        Texture2D dropTex = _itemSystem.GetTexture(_worldState.CarriedItem);
+                        Rectangle dropSrc = _itemSystem.GetSourceRect(_worldState.CarriedItem);
+                        if (dropTex != null)
+                            _roomItems.Add(new ItemInstance(droppedId, _worldState.CarriedItem, dropPos, dropTex, dropSrc));
                     }
 
-                    enemy.Entity.Update(gameTime);
+                    _worldState.CarriedItem = pickedType;
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private void UpdateEnemies(GameTime gameTime)
+        {
+            for (int i = _roomEnemies.Count - 1; i >= 0; i--)
+            {
+                var enemy = _roomEnemies[i];
+
+                if (enemy.IsDying)
+                {
+                    var sprite = enemy.Entity.GetComponent<SpriteComponent>();
+                    if (sprite != null)
+                    {
+                        sprite.Update(gameTime);
+                        if (!sprite.IsPlaying)
+                        {
+                            _worldState.DeadEnemies.Add(enemy.Id);
+                            _roomEnemies.RemoveAt(i);
+                        }
+                    }
+                    continue;
                 }
 
-                // Update blocked doors — unlock by touching while carrying correct item (no button needed)
-                for (int i = _roomBlockedDoors.Count - 1; i >= 0; i--)
+                enemy.Entity.Update(gameTime);
+            }
+        }
+
+        private void UpdateBlockedDoors()
+        {
+            for (int i = _roomBlockedDoors.Count - 1; i >= 0; i--)
+            {
+                var bd = _roomBlockedDoors[i];
+                var doorHitbox = bd.GetHitbox();
+                var playerRect = new Rectangle(
+                    (int)_player.Position.X - 1, (int)_player.Position.Y - 1,
+                    PhysicsComponent.HITBOX_WIDTH + 2, PhysicsComponent.HITBOX_HEIGHT + 2);
+
+                if (playerRect.Intersects(doorHitbox) &&
+                    _worldState.CarriedItem == bd.RequiredItem)
                 {
-                    var bd = _roomBlockedDoors[i];
-                    var doorHitbox = bd.GetHitbox();
+                    _worldState.UnlockedDoors.Add(bd.Id);
+                    _worldState.CarriedItem = ItemType.None;
+                    _roomBlockedDoors.RemoveAt(i);
+                    RebuildSolidRects();
+                }
+            }
+        }
+
+        private void UpdateWizards(float dt)
+        {
+            float wizSpeed = SpriteConfig.PROJECTILE_SPEED;
+            for (int i = _roomWizards.Count - 1; i >= 0; i--)
+            {
+                var wiz = _roomWizards[i];
+                wiz.UpdateAnimation(dt);
+
+                if (wiz.IsSaving)
+                {
+                    wiz.Position.Y -= wizSpeed * dt;
+                    if (wiz.Position.Y + SpriteConfig.ITEM_DISPLAY_SIZE < 0)
+                        _roomWizards.RemoveAt(i);
+                }
+                else
+                {
+                    var wizRect = new Rectangle(
+                        (int)wiz.Position.X, (int)wiz.Position.Y,
+                        SpriteConfig.ITEM_DISPLAY_SIZE, SpriteConfig.ITEM_DISPLAY_SIZE);
                     var playerRect = new Rectangle(
                         (int)_player.Position.X - 1, (int)_player.Position.Y - 1,
                         PhysicsComponent.HITBOX_WIDTH + 2, PhysicsComponent.HITBOX_HEIGHT + 2);
 
-                    if (playerRect.Intersects(doorHitbox) &&
-                        _carriedItem == bd.RequiredItem)
+                    if (wizRect.Intersects(playerRect))
                     {
-                        // Unlock: remove door, consume item, remove from physics
-                        _unlockedDoors.Add(bd.Id);
-                        _carriedItem = ItemType.None;
-                        _roomBlockedDoors.RemoveAt(i);
+                        wiz.IsSaving = true;
+                        wiz.Texture = _starSheet;
+                        wiz.AnimFrames = SpriteConfig.STAR_ANIM;
+                        wiz.FrameTime = SpriteConfig.STAR_ANIMATION_SPEED;
+                        wiz.CurrentFrame = 0;
+                        wiz.FrameTimer = 0;
 
-                        // Re-wire physics solid rects without this door
-                        RebuildSolidRects();
-                    }
-                }
-
-                // Update captive wizards
-                float wizSpeed = SpriteConfig.PROJECTILE_SPEED; // same as player speed
-                for (int i = _roomWizards.Count - 1; i >= 0; i--)
-                {
-                    var wiz = _roomWizards[i];
-                    wiz.UpdateAnimation(dt);
-
-                    if (wiz.IsSaving)
-                    {
-                        // Fly upward
-                        wiz.Position.Y -= wizSpeed * dt;
-
-                        // Remove when off screen
-                        if (wiz.Position.Y + SpriteConfig.ITEM_DISPLAY_SIZE < 0)
+                        if (!wiz.CountedAsSaved)
                         {
-                            _roomWizards.RemoveAt(i);
-                        }
-                    }
-                    else
-                    {
-                        // Check player touch
-                        var wizRect = new Rectangle(
-                            (int)wiz.Position.X, (int)wiz.Position.Y,
-                            SpriteConfig.ITEM_DISPLAY_SIZE, SpriteConfig.ITEM_DISPLAY_SIZE);
-                        var playerRect = new Rectangle(
-                            (int)_player.Position.X - 1, (int)_player.Position.Y - 1,
-                            PhysicsComponent.HITBOX_WIDTH + 2, PhysicsComponent.HITBOX_HEIGHT + 2);
-
-                        if (wizRect.Intersects(playerRect))
-                        {
-                            // Transform to star and start flying up
-                            wiz.IsSaving = true;
-                            wiz.Texture = _starSheet;
-                            wiz.AnimFrames = SpriteConfig.STAR_ANIM;
-                            wiz.FrameTime = SpriteConfig.STAR_ANIMATION_SPEED;
-                            wiz.CurrentFrame = 0;
-                            wiz.FrameTimer = 0;
-
-                            if (!wiz.CountedAsSaved)
-                            {
-                                _savedWizardCount++;
-                                _savedWizards.Add(wiz.Id);
-                                wiz.CountedAsSaved = true;
-                            }
+                            _worldState.SavedWizardCount++;
+                            _worldState.SavedWizards.Add(wiz.Id);
+                            wiz.CountedAsSaved = true;
                         }
                     }
                 }
-
-                // Update projectiles
-                UpdateProjectiles(dt);
-
-                // Check door triggers
-                _roomManager.CheckDoorTriggers(
-                    _player.Position,
-                    PhysicsComponent.HITBOX_WIDTH,
-                    PhysicsComponent.HITBOX_HEIGHT
-                );
             }
-
-            _previousKeyState = currentKeyState;
-
-            base.Update(gameTime);
         }
 
         // ====================================================================
         // DRAW LOOP
-        // Renders at monitor refresh rate with interpolation
         // ====================================================================
 
         protected override void Draw(GameTime gameTime)
         {
-            // ----------------------------------------------------------------
-            // STEP 1: Render to low-res render target (960x432 game area)
-            // ----------------------------------------------------------------
-
+            // Step 1: Render game area to render target
             GraphicsDevice.SetRenderTarget(_renderTarget);
             GraphicsDevice.Clear(Color.Black);
 
-            _spriteBatch.Begin(
-                samplerState: SamplerState.PointClamp, // Pixel-perfect (no blur)
-                sortMode: SpriteSortMode.Deferred
-            );
+            _spriteBatch.Begin(samplerState: SamplerState.PointClamp, sortMode: SpriteSortMode.Deferred);
 
-            // Draw room background image (if any) - renders the screenshot-based room
             _roomManager.DrawBackground(_spriteBatch, RENDER_SCALE);
-
-            // Draw tilemap (only if no background image, otherwise collision-only)
             if (!_roomManager.HasBackground)
                 _roomManager.CurrentTileMap?.Draw(_spriteBatch, RENDER_SCALE);
-
-            // Draw doors
             _roomManager.DrawDoors(_spriteBatch, RENDER_SCALE);
 
-            // Draw blocked doors (48x48 source rendered at 24x24)
+            // Blocked doors
             foreach (var bd in _roomBlockedDoors)
             {
                 Vector2 renderPos = bd.Position * RENDER_SCALE;
                 int destSize = SpriteConfig.ITEM_DISPLAY_SIZE * RENDER_SCALE;
-                var destRect = new Rectangle(
-                    (int)renderPos.X, (int)renderPos.Y,
-                    destSize, destSize);
-                _spriteBatch.Draw(
-                    bd.Texture,
-                    destRect,
-                    bd.SourceRect,
-                    Color.White);
+                _spriteBatch.Draw(bd.Texture,
+                    new Rectangle((int)renderPos.X, (int)renderPos.Y, destSize, destSize),
+                    bd.SourceRect, Color.White);
             }
 
-            // Draw captive wizards (48x48 source rendered at 24x24)
+            // Captive wizards
             foreach (var wiz in _roomWizards)
             {
                 Vector2 renderPos = wiz.Position * RENDER_SCALE;
                 int destSize = SpriteConfig.ITEM_DISPLAY_SIZE * RENDER_SCALE;
-                var destRect = new Rectangle(
-                    (int)renderPos.X, (int)renderPos.Y,
-                    destSize, destSize);
-                _spriteBatch.Draw(
-                    wiz.Texture,
-                    destRect,
-                    wiz.CurrentSourceRect,
-                    Color.White);
+                _spriteBatch.Draw(wiz.Texture,
+                    new Rectangle((int)renderPos.X, (int)renderPos.Y, destSize, destSize),
+                    wiz.CurrentSourceRect, Color.White);
             }
 
-            // Draw room items (48x48 source rendered at 24x24)
+            // Room items
             foreach (var item in _roomItems)
             {
                 Vector2 renderPos = item.Position * RENDER_SCALE;
-                int destSize = SpriteConfig.ITEM_DISPLAY_SIZE * RENDER_SCALE; // 24*3=72
-                var destRect = new Rectangle(
-                    (int)renderPos.X, (int)renderPos.Y,
-                    destSize, destSize);
-                _spriteBatch.Draw(
-                    item.Texture,
-                    destRect,
-                    item.SourceRect,
-                    Color.White);
+                int destSize = SpriteConfig.ITEM_DISPLAY_SIZE * RENDER_SCALE;
+                _spriteBatch.Draw(item.Texture,
+                    new Rectangle((int)renderPos.X, (int)renderPos.Y, destSize, destSize),
+                    item.SourceRect, Color.White);
             }
 
-            // Draw player sprite (on top of tiles)
+            // Player
             DrawPlayer();
 
-            // Draw all room enemies
+            // Enemies
             foreach (var enemy in _roomEnemies)
             {
                 var sprite = enemy.Entity.GetComponent<SpriteComponent>();
@@ -689,105 +566,66 @@ namespace SorceryRemake
 
                 if (enemy.IsDying)
                 {
-                    // Draw 48x48 death frame scaled down into a 24x24 destination
                     Vector2 renderPos = enemy.Entity.Position * RENDER_SCALE;
-                    int destSize = PhysicsComponent.HITBOX_WIDTH * RENDER_SCALE; // 24*3=72
-                    var destRect = new Rectangle(
-                        (int)renderPos.X, (int)renderPos.Y,
-                        destSize, destSize);
-                    _spriteBatch.Draw(
-                        sprite.Texture,
-                        destRect,
-                        sprite.SourceRectangle,
-                        Color.White);
+                    int destSize = PhysicsComponent.HITBOX_WIDTH * RENDER_SCALE;
+                    _spriteBatch.Draw(sprite.Texture,
+                        new Rectangle((int)renderPos.X, (int)renderPos.Y, destSize, destSize),
+                        sprite.SourceRectangle, Color.White);
                 }
                 else
                 {
-                    Vector2 renderPos = enemy.Entity.Position * RENDER_SCALE;
-                    sprite.Draw(_spriteBatch, renderPos, RENDER_SCALE);
+                    sprite.Draw(_spriteBatch, enemy.Entity.Position * RENDER_SCALE, RENDER_SCALE);
                 }
             }
 
-            // Draw projectiles (1 pixel each, scaled to RENDER_SCALE)
+            // Projectiles
             foreach (var proj in _projectiles)
             {
-                var destRect = new Rectangle(
-                    (int)(proj.Position.X * RENDER_SCALE),
-                    (int)(proj.Position.Y * RENDER_SCALE),
-                    RENDER_SCALE, RENDER_SCALE);
-                _spriteBatch.Draw(_pixelTexture, destRect, proj.Color);
+                _spriteBatch.Draw(_pixelTexture,
+                    new Rectangle((int)(proj.Position.X * RENDER_SCALE), (int)(proj.Position.Y * RENDER_SCALE),
+                        RENDER_SCALE, RENDER_SCALE),
+                    proj.Color);
             }
 
             _spriteBatch.End();
 
-            // ----------------------------------------------------------------
-            // STEP 2: Render to screen (game area + info panel)
-            // ----------------------------------------------------------------
-
+            // Step 2: Render to screen
             GraphicsDevice.SetRenderTarget(null);
             GraphicsDevice.Clear(Color.Black);
 
             _spriteBatch.Begin(samplerState: SamplerState.PointClamp);
-
-            // Draw game area (top portion of window)
-            _spriteBatch.Draw(
-                _renderTarget,
-                new Rectangle(0, 0, WINDOW_WIDTH, GAME_AREA_HEIGHT),
-                Color.White
-            );
-
+            _spriteBatch.Draw(_renderTarget,
+                new Rectangle(0, 0, WINDOW_WIDTH, GAME_AREA_HEIGHT), Color.White);
             _spriteBatch.End();
 
-            // ----------------------------------------------------------------
-            // STEP 3: Draw info panel (bottom portion, matches Python)
-            // ----------------------------------------------------------------
-
+            // Step 3: Info panel
             DrawInfoPanel();
 
-            // ----------------------------------------------------------------
-            // STEP 4: Draw debug UI (on top of everything)
-            // ----------------------------------------------------------------
-
+            // Step 4: Debug overlay
             if (_showDebugInfo && _debugFont != null)
-            {
                 DrawDebugInfo(gameTime);
-            }
 
             base.Draw(gameTime);
         }
 
         // ====================================================================
-        // ROOM CREATION
+        // ROOM LAYOUT REGISTRATION
         // ====================================================================
 
-        /// <summary>
-        /// Register test rooms for Phase 2C door testing.
-        /// Room 1: Floor + platform, LEFT-opening door at bottom-right.
-        /// Room 2: Floor only (empty), RIGHT-opening door at bottom-left.
-        /// </summary>
         private void RegisterTestRooms()
         {
             _roomManager.RegisterRoom("room_1", () =>
             {
                 var map = new TileMapComponent(_tilesetTexture, 40, 18);
                 map.FillRect(0, 0, 40, 18, TileConfig.EMPTY);
-
-                // Floor
                 map.DrawHorizontalLine(0, 17, 40, TileConfig.FLOOR_TAN);
-
-                // Platform in the middle
                 map.DrawHorizontalLine(14, 12, 8, TileConfig.PLATFORM_LIGHT);
-
                 _roomManager.SetTileMap(map);
 
-                // Left-opening door at the right side of the room
-                // Door is 24px tall, bottom at floor row 17: Y = (17*8) - 24 = 112
-                // Placed at right edge: X = 320 - 24 = 296
                 var door = new DoorComponent(DoorType.LeftOpening, new Vector2(296, 112));
                 door.DoorId = "room1_door_right";
                 door.TargetRoomId = "room_2";
                 door.TargetDoorId = "room2_door_left";
-
                 _roomManager.SetDoors(new List<DoorComponent> { door });
             });
 
@@ -795,78 +633,47 @@ namespace SorceryRemake
             {
                 var map = new TileMapComponent(_tilesetTexture, 40, 18);
                 map.FillRect(0, 0, 40, 18, TileConfig.EMPTY);
-
-                // Floor
                 map.DrawHorizontalLine(0, 17, 40, TileConfig.FLOOR_BROWN);
-
-                // Tunnel for captive wizard (right side, cols 28-39 = X 224-320)
-                // Top wall: single tile row 8 (Y=64)
                 map.DrawHorizontalLine(28, 8, 12, TileConfig.FLOOR_TAN);
-                // Bottom wall: single tile row 12 (Y=96)
-                // Gap = rows 9,10,11 = 24px (enough for player)
                 map.DrawHorizontalLine(28, 12, 12, TileConfig.FLOOR_TAN);
-
                 _roomManager.SetTileMap(map);
 
-                // Right-opening door at the left side of the room
-                // Placed at left edge: X = 0
                 var door = new DoorComponent(DoorType.RightOpening, new Vector2(0, 112));
                 door.DoorId = "room2_door_left";
                 door.TargetRoomId = "room_1";
                 door.TargetDoorId = "room1_door_right";
-
                 _roomManager.SetDoors(new List<DoorComponent> { door });
             });
         }
 
-        // ====================================================================
-        // BACKGROUND ROOM REGISTRATION
-        // ====================================================================
-
-        /// <summary>
-        /// Register rooms that use screenshot backgrounds with collision-only tilemaps.
-        /// Chain: Stonehenge <-> Wastelands <-> TunnelMouth
-        /// </summary>
         private void RegisterBackgroundRooms()
         {
             string dataDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "assets", "data");
 
-            // --- STONEHENGE ---
             _roomManager.RegisterRoom("stonehenge", () =>
             {
-                // Background image
                 _roomManager.SetBackground(_bgStonehenge);
-
-                // Collision-only tilemap from auto-detected grid
                 string jsonPath = Path.Combine(dataDir, "collision_stonehenge.json");
-                var map = RoomLoader.BuildCollisionTileMap(_tilesetTexture, jsonPath);
-                _roomManager.SetTileMap(map);
+                _roomManager.SetTileMap(RoomLoader.BuildCollisionTileMap(_tilesetTexture, jsonPath));
 
-                // Right door -> Wastelands
                 var doorRight = new DoorComponent(DoorType.LeftOpening, new Vector2(296, 112));
                 doorRight.DoorId = "stonehenge_door_right";
                 doorRight.TargetRoomId = "wastelands";
                 doorRight.TargetDoorId = "wastelands_door_left";
-
                 _roomManager.SetDoors(new List<DoorComponent> { doorRight });
             });
 
-            // --- WASTELANDS ---
             _roomManager.RegisterRoom("wastelands", () =>
             {
                 _roomManager.SetBackground(_bgWastelands);
-
                 string jsonPath = Path.Combine(dataDir, "collision_wastelands.json");
-                var map = RoomLoader.BuildCollisionTileMap(_tilesetTexture, jsonPath);
-                _roomManager.SetTileMap(map);
+                _roomManager.SetTileMap(RoomLoader.BuildCollisionTileMap(_tilesetTexture, jsonPath));
 
-                // Left door -> Stonehenge
                 var doorLeft = new DoorComponent(DoorType.RightOpening, new Vector2(0, 112));
                 doorLeft.DoorId = "wastelands_door_left";
                 doorLeft.TargetRoomId = "stonehenge";
                 doorLeft.TargetDoorId = "stonehenge_door_right";
 
-                // Right door -> Tunnel Mouth
                 var doorRight = new DoorComponent(DoorType.LeftOpening, new Vector2(296, 112));
                 doorRight.DoorId = "wastelands_door_right";
                 doorRight.TargetRoomId = "tunnelmouth";
@@ -875,222 +682,174 @@ namespace SorceryRemake
                 _roomManager.SetDoors(new List<DoorComponent> { doorLeft, doorRight });
             });
 
-            // --- TUNNEL MOUTH ---
             _roomManager.RegisterRoom("tunnelmouth", () =>
             {
                 _roomManager.SetBackground(_bgTunnelMouth);
-
                 string jsonPath = Path.Combine(dataDir, "collision_tunnelmouth.json");
-                var map = RoomLoader.BuildCollisionTileMap(_tilesetTexture, jsonPath);
-                _roomManager.SetTileMap(map);
+                _roomManager.SetTileMap(RoomLoader.BuildCollisionTileMap(_tilesetTexture, jsonPath));
 
-                // Left door -> Wastelands
                 var doorLeft = new DoorComponent(DoorType.RightOpening, new Vector2(0, 96));
                 doorLeft.DoorId = "tunnelmouth_door_left";
                 doorLeft.TargetRoomId = "wastelands";
                 doorLeft.TargetDoorId = "wastelands_door_right";
-
                 _roomManager.SetDoors(new List<DoorComponent> { doorLeft });
             });
         }
 
         // ====================================================================
-        // DOOR COLLISION WIRING
+        // ROOM CONTENT SPAWNING (data-driven via RoomRegistry)
         // ====================================================================
 
         /// <summary>
-        /// Update the physics solid rects from current room doors.
-        /// Called after loading a room or executing a transition.
+        /// Spawn all content for a room from the registry, skipping already-collected/killed/unlocked.
         /// </summary>
-        private void UpdateDoorCollision(PhysicsComponent physics)
+        private void SpawnRoomContent(string roomId)
         {
-            physics.SolidRects.Clear();
-            foreach (var door in _roomManager.CurrentDoors)
+            var content = RoomRegistry.GetContent(roomId);
+
+            // Items
+            _roomItems.Clear();
+            foreach (var spawn in content.Items)
             {
-                physics.SolidRects.Add(new Rectangle(
-                    (int)door.Position.X, (int)door.Position.Y,
-                    DoorConfig.DOOR_WIDTH, DoorConfig.DOOR_HEIGHT
-                ));
+                if (_worldState.PickedUpItems.Contains(spawn.Id)) continue;
+                var tex = _itemSystem.GetTexture(spawn.Type);
+                var src = _itemSystem.GetSourceRect(spawn.Type);
+                if (tex != null)
+                    _roomItems.Add(new ItemInstance(spawn.Id, spawn.Type, spawn.Position, tex, src));
             }
-        }
 
-        // ====================================================================
-        // RENDERING HELPERS
-        // ====================================================================
+            // Wizards
+            _roomWizards.Clear();
+            foreach (var spawn in content.Wizards)
+            {
+                if (_worldState.SavedWizards.Contains(spawn.Id)) continue;
+                _roomWizards.Add(new CaptiveWizard(
+                    spawn.Id, spawn.Position,
+                    _captiveWizardSheet,
+                    SpriteConfig.CAPTIVE_WIZARD_ANIM,
+                    SpriteConfig.CAPTIVE_WIZARD_ANIMATION_SPEED));
+            }
 
-        /// <summary>
-        /// Draw the player sprite at the correct scaled position.
-        /// </summary>
-        private void DrawPlayer()
-        {
-            var sprite = _player.GetComponent<SpriteComponent>();
-            if (sprite == null) return;
+            // Blocked doors
+            _roomBlockedDoors.Clear();
+            foreach (var spawn in content.BlockedDoors)
+            {
+                if (_worldState.UnlockedDoors.Contains(spawn.Id)) continue;
+                _roomBlockedDoors.Add(new BlockedDoorInstance(
+                    spawn.Id, spawn.Position,
+                    _blockedDoorSheet, SpriteConfig.BLOCKED_DOOR_FRAME,
+                    spawn.RequiredItem));
+            }
+            RebuildSolidRects();
 
-            // Convert Amstrad coordinates to render target coordinates
-            Vector2 renderPos = _player.Position * RENDER_SCALE;
-
-            sprite.Draw(_spriteBatch, renderPos, RENDER_SCALE);
+            // Enemies (only on first visit — restored visits use SaveRoomEnemies)
+            if (!_worldState.SavedRoomEnemies.ContainsKey(roomId))
+            {
+                _roomEnemies.Clear();
+                foreach (var spawn in content.Enemies)
+                    SpawnEnemy(spawn.Id, spawn.Type, spawn.Position);
+            }
         }
 
         // ====================================================================
         // ENEMY MANAGEMENT
         // ====================================================================
 
-        /// <summary>
-        /// Tracks a placed item in the room.
-        /// </summary>
-        private class BlockedDoorInstance
+        private void SpawnEnemy(string id, EnemyType type, Vector2 position)
         {
-            public string Id;
-            public Vector2 Position;
-            public Texture2D Texture;
-            public Rectangle SourceRect;
-            public ItemType RequiredItem; // which item unlocks this door
+            if (_worldState.DeadEnemies.Contains(id)) return;
 
-            public BlockedDoorInstance(string id, Vector2 pos, Texture2D tex, Rectangle src, ItemType required)
+            var entity = new Entity(id);
+            entity.Position = position;
+            var physics = new PhysicsComponent();
+
+            switch (type)
             {
-                Id = id;
-                Position = pos;
-                Texture = tex;
-                SourceRect = src;
-                RequiredItem = required;
+                case EnemyType.Guard:
+                    physics.Speed = SpriteConfig.GUARD_SPEED;
+                    physics.TileMap = _roomManager.CurrentTileMap;
+                    entity.AddComponent(physics);
+                    UpdateDoorCollision(physics);
+                    entity.AddComponent(new SpriteComponent(_guardSheet, SpriteConfig.GUARD_IDLE[0]));
+                    var guardCtrl = new GuardController(_player);
+                    entity.AddComponent(guardCtrl);
+                    guardCtrl.Initialize();
+                    break;
+
+                case EnemyType.Mask:
+                    physics.Speed = SpriteConfig.MASK_SPEED;
+                    physics.GravitySpeed = 0f;
+                    physics.TileMap = _roomManager.CurrentTileMap;
+                    entity.AddComponent(physics);
+                    UpdateDoorCollision(physics);
+                    entity.AddComponent(new SpriteComponent(_maskSheet, SpriteConfig.MASK_ANIM[0]));
+                    var maskCtrl = new MaskController(_player);
+                    entity.AddComponent(maskCtrl);
+                    maskCtrl.Initialize();
+                    break;
+
+                case EnemyType.Eye:
+                    physics.Speed = SpriteConfig.EYE_SPEED;
+                    physics.GravitySpeed = 0f;
+                    physics.TileMap = _roomManager.CurrentTileMap;
+                    entity.AddComponent(physics);
+                    UpdateDoorCollision(physics);
+                    entity.AddComponent(new SpriteComponent(_eyeSheet, SpriteConfig.EYE_ANIM[0]));
+                    var eyeCtrl = new EyeController(_player);
+                    entity.AddComponent(eyeCtrl);
+                    eyeCtrl.Initialize();
+                    break;
+
+                case EnemyType.Boar:
+                    physics.Speed = SpriteConfig.BOAR_SPEED;
+                    physics.GravitySpeed = 0f;
+                    physics.TileMap = _roomManager.CurrentTileMap;
+                    entity.AddComponent(physics);
+                    UpdateDoorCollision(physics);
+                    entity.AddComponent(new SpriteComponent(_boarSheet, SpriteConfig.BOAR_ANIM[0]));
+                    var boarCtrl = new BoarController(_player);
+                    entity.AddComponent(boarCtrl);
+                    boarCtrl.Initialize();
+                    break;
+
+                case EnemyType.Wraith:
+                    physics.Speed = SpriteConfig.WRAITH_SPEED;
+                    physics.GravitySpeed = 0f;
+                    entity.AddComponent(physics);
+                    entity.AddComponent(new SpriteComponent(_wraithSheet, SpriteConfig.WRAITH_IDLE[0]));
+                    var wraithCtrl = new WraithController(_player);
+                    entity.AddComponent(wraithCtrl);
+                    wraithCtrl.Initialize();
+                    break;
             }
 
-            /// <summary>
-            /// Get the solid hitbox in world coordinates (centered 12px bar within 24x24).
-            /// </summary>
-            public Rectangle GetHitbox()
-            {
-                return new Rectangle(
-                    (int)Position.X + SpriteConfig.BLOCKED_DOOR_HITBOX_OFFSET_X,
-                    (int)Position.Y,
-                    SpriteConfig.BLOCKED_DOOR_HITBOX_WIDTH,
-                    SpriteConfig.BLOCKED_DOOR_HITBOX_HEIGHT);
-            }
+            _roomEnemies.Add(new EnemyInstance(id, type, entity));
         }
 
-        private class CaptiveWizard
-        {
-            public string Id;
-            public Vector2 Position;
-            public Texture2D Texture;
-            public Rectangle[] AnimFrames;
-            public float FrameTime;
-            public int CurrentFrame;
-            public float FrameTimer;
-            public bool IsSaving; // true = transforming to star and flying up
-            public bool CountedAsSaved; // true = already incremented saved count
-
-            public CaptiveWizard(string id, Vector2 pos, Texture2D tex, Rectangle[] frames, float frameTime)
-            {
-                Id = id;
-                Position = pos;
-                Texture = tex;
-                AnimFrames = frames;
-                FrameTime = frameTime;
-                CurrentFrame = 0;
-                FrameTimer = 0;
-                IsSaving = false;
-                CountedAsSaved = false;
-            }
-
-            public Rectangle CurrentSourceRect => AnimFrames[CurrentFrame];
-
-            public void UpdateAnimation(float dt)
-            {
-                FrameTimer += dt;
-                if (FrameTimer >= FrameTime)
-                {
-                    FrameTimer -= FrameTime;
-                    CurrentFrame++;
-                    if (CurrentFrame >= AnimFrames.Length)
-                        CurrentFrame = 0; // loop for idle, star will be removed before looping
-                }
-            }
-        }
-
-        private class Projectile
-        {
-            public Vector2 Position;
-            public Vector2 Velocity;
-            public Color Color;
-
-            public Projectile(Vector2 pos, Vector2 vel, Color color)
-            {
-                Position = pos;
-                Velocity = vel;
-                Color = color;
-            }
-        }
-
-        private class ItemInstance
-        {
-            public string Id;
-            public ItemType Type;
-            public Vector2 Position;
-            public Texture2D Texture;
-            public Rectangle SourceRect;
-
-            public ItemInstance(string id, ItemType type, Vector2 pos, Texture2D tex, Rectangle src)
-            {
-                Id = id;
-                Type = type;
-                Position = pos;
-                Texture = tex;
-                SourceRect = src;
-            }
-        }
-
-        /// <summary>
-        /// Tracks a spawned enemy with its ID and death state.
-        /// </summary>
-        private class EnemyInstance
-        {
-            public string Id;
-            public Entity Entity;
-            public bool IsDying;
-
-            public EnemyInstance(string id, Entity entity)
-            {
-                Id = id;
-                Entity = entity;
-                IsDying = false;
-            }
-        }
-
-        /// <summary>
-        /// Save current room's living enemies for later restoration.
-        /// </summary>
         private void SaveRoomEnemies(string roomId)
         {
-            // Only save living (non-dying) enemies
             var toSave = new List<EnemyInstance>();
             foreach (var enemy in _roomEnemies)
             {
                 if (!enemy.IsDying)
                 {
-                    // Freeze velocity
                     var physics = enemy.Entity.GetComponent<PhysicsComponent>();
                     if (physics != null)
                         physics.Velocity = Vector2.Zero;
                     toSave.Add(enemy);
                 }
             }
-            _savedRoomEnemies[roomId] = toSave;
+            _worldState.SavedRoomEnemies[roomId] = toSave;
             _roomEnemies.Clear();
         }
 
-        /// <summary>
-        /// Load enemies for a room: restore saved ones or spawn fresh.
-        /// </summary>
         private void LoadRoomEnemies(string roomId)
         {
-            if (_savedRoomEnemies.TryGetValue(roomId, out var saved))
+            if (_worldState.SavedRoomEnemies.TryGetValue(roomId, out var saved))
             {
                 _roomEnemies = saved;
-                _savedRoomEnemies.Remove(roomId);
+                _worldState.SavedRoomEnemies.Remove(roomId);
 
-                // Re-wire physics to new tilemap and doors
                 foreach (var enemy in _roomEnemies)
                 {
                     var physics = enemy.Entity.GetComponent<PhysicsComponent>();
@@ -1103,127 +862,31 @@ namespace SorceryRemake
             }
             else
             {
-                // First visit — spawn fresh
-                SpawnRoomEnemies(roomId);
+                // First visit — enemies spawned by SpawnRoomContent
             }
         }
 
-        /// <summary>
-        /// Spawn enemies for a given room, skipping any that are permanently dead.
-        /// </summary>
-        private void SpawnRoomEnemies(string roomId)
+        private void StartEnemyDeath(EnemyInstance enemy)
         {
-            _roomEnemies.Clear();
+            enemy.IsDying = true;
+            _worldState.CarriedItem = ItemType.None;
 
-            switch (roomId)
+            var physics = enemy.Entity.GetComponent<PhysicsComponent>();
+            if (physics != null)
+                physics.Velocity = Vector2.Zero;
+
+            var sprite = enemy.Entity.GetComponent<SpriteComponent>();
+            if (sprite != null)
             {
-                case "room_1":
-                    // No enemies for now (use keys 2-5 to spawn)
-                    break;
-
-                case "room_2":
-                    // No enemies for now (use keys 2-5 to spawn)
-                    break;
+                sprite.Texture = _deathSheet;
+                sprite.SetAnimation(SpriteConfig.ENEMY_DEATH_ANIM, SpriteConfig.DEATH_ANIMATION_SPEED, loop: false);
             }
         }
 
-        /// <summary>
-        /// Spawn a single enemy if not permanently dead.
-        /// </summary>
-        private void SpawnEnemy(string id, string type, Vector2 position)
-        {
-            if (_deadEnemies.Contains(id)) return;
+        // ====================================================================
+        // PROJECTILES
+        // ====================================================================
 
-            var entity = new Entity(id);
-            entity.Position = position;
-
-            var physics = new PhysicsComponent();
-
-            switch (type)
-            {
-                case "guard":
-                    physics.Speed = SpriteConfig.GUARD_SPEED;
-                    physics.TileMap = _roomManager.CurrentTileMap;
-                    entity.AddComponent(physics);
-                    UpdateDoorCollision(physics);
-                    entity.AddComponent(new SpriteComponent(_guardSheet, SpriteConfig.GUARD_IDLE[0]));
-                    var guardCtrl = new GuardController(_player);
-                    entity.AddComponent(guardCtrl);
-                    guardCtrl.Initialize();
-                    break;
-
-                case "mask":
-                    physics.Speed = SpriteConfig.MASK_SPEED;
-                    physics.GravitySpeed = 0f;
-                    physics.TileMap = _roomManager.CurrentTileMap;
-                    entity.AddComponent(physics);
-                    UpdateDoorCollision(physics);
-                    entity.AddComponent(new SpriteComponent(_maskSheet, SpriteConfig.MASK_ANIM[0]));
-                    var maskCtrl = new MaskController(_player);
-                    entity.AddComponent(maskCtrl);
-                    maskCtrl.Initialize();
-                    break;
-
-                case "eye":
-                    physics.Speed = SpriteConfig.EYE_SPEED;
-                    physics.GravitySpeed = 0f;
-                    physics.TileMap = _roomManager.CurrentTileMap;
-                    entity.AddComponent(physics);
-                    UpdateDoorCollision(physics);
-                    entity.AddComponent(new SpriteComponent(_eyeSheet, SpriteConfig.EYE_ANIM[0]));
-                    var eyeCtrl = new EyeController(_player);
-                    entity.AddComponent(eyeCtrl);
-                    eyeCtrl.Initialize();
-                    break;
-
-                case "boar":
-                    physics.Speed = SpriteConfig.BOAR_SPEED;
-                    physics.GravitySpeed = 0f;
-                    physics.TileMap = _roomManager.CurrentTileMap;
-                    entity.AddComponent(physics);
-                    UpdateDoorCollision(physics);
-                    entity.AddComponent(new SpriteComponent(_boarSheet, SpriteConfig.BOAR_ANIM[0]));
-                    var boarCtrl = new BoarController(_player);
-                    entity.AddComponent(boarCtrl);
-                    boarCtrl.Initialize();
-                    break;
-
-                case "wraith":
-                    physics.Speed = SpriteConfig.WRAITH_SPEED;
-                    physics.GravitySpeed = 0f;
-                    // No TileMap - wraith passes through everything
-                    entity.AddComponent(physics);
-                    entity.AddComponent(new SpriteComponent(_wraithSheet, SpriteConfig.WRAITH_IDLE[0]));
-                    var wraithCtrl = new WraithController(_player);
-                    entity.AddComponent(wraithCtrl);
-                    wraithCtrl.Initialize();
-                    break;
-            }
-
-            _roomEnemies.Add(new EnemyInstance(id, entity));
-        }
-
-        /// <summary>
-        /// Check if player hitbox overlaps with an enemy entity.
-        /// </summary>
-        private bool IsOverlapping(Entity a, Entity b)
-        {
-            // Expand by 1px so even edge-touching (pixel-adjacent) triggers
-            var rectA = new Rectangle(
-                (int)a.Position.X - 1, (int)a.Position.Y - 1,
-                PhysicsComponent.HITBOX_WIDTH + 2, PhysicsComponent.HITBOX_HEIGHT + 2);
-            var rectB = new Rectangle(
-                (int)b.Position.X, (int)b.Position.Y,
-                PhysicsComponent.HITBOX_WIDTH, PhysicsComponent.HITBOX_HEIGHT);
-            return rectA.Intersects(rectB);
-        }
-
-        /// <summary>
-        /// Begin the death animation for an enemy — stop movement, swap to death sprite.
-        /// </summary>
-        /// <summary>
-        /// Fire 8 projectiles from the player's sprite edges in 8 directions.
-        /// </summary>
         private void FireShootingStar()
         {
             float cx = _player.Position.X + PhysicsComponent.HITBOX_WIDTH / 2f;
@@ -1234,37 +897,26 @@ namespace SorceryRemake
             float bottom = _player.Position.Y + PhysicsComponent.HITBOX_HEIGHT;
 
             float speed = SpriteConfig.PROJECTILE_SPEED;
-            float diag = speed * 0.7071f; // 1/sqrt(2)
-
-            // Projectile colors (bright, visible)
+            float diag = speed * 0.7071f;
             Color c = Color.Yellow;
 
-            // 4 cardinal directions (from edge centers)
-            _projectiles.Add(new Projectile(new Vector2(cx, top), new Vector2(0, -speed), c));       // Up
-            _projectiles.Add(new Projectile(new Vector2(cx, bottom), new Vector2(0, speed), c));     // Down
-            _projectiles.Add(new Projectile(new Vector2(left, cy), new Vector2(-speed, 0), c));      // Left
-            _projectiles.Add(new Projectile(new Vector2(right, cy), new Vector2(speed, 0), c));      // Right
-
-            // 4 diagonal directions (from corners)
-            _projectiles.Add(new Projectile(new Vector2(left, top), new Vector2(-diag, -diag), c));      // Top-left
-            _projectiles.Add(new Projectile(new Vector2(right, top), new Vector2(diag, -diag), c));      // Top-right
-            _projectiles.Add(new Projectile(new Vector2(left, bottom), new Vector2(-diag, diag), c));    // Bottom-left
-            _projectiles.Add(new Projectile(new Vector2(right, bottom), new Vector2(diag, diag), c));    // Bottom-right
+            _projectiles.Add(new Projectile(new Vector2(cx, top), new Vector2(0, -speed), c));
+            _projectiles.Add(new Projectile(new Vector2(cx, bottom), new Vector2(0, speed), c));
+            _projectiles.Add(new Projectile(new Vector2(left, cy), new Vector2(-speed, 0), c));
+            _projectiles.Add(new Projectile(new Vector2(right, cy), new Vector2(speed, 0), c));
+            _projectiles.Add(new Projectile(new Vector2(left, top), new Vector2(-diag, -diag), c));
+            _projectiles.Add(new Projectile(new Vector2(right, top), new Vector2(diag, -diag), c));
+            _projectiles.Add(new Projectile(new Vector2(left, bottom), new Vector2(-diag, diag), c));
+            _projectiles.Add(new Projectile(new Vector2(right, bottom), new Vector2(diag, diag), c));
         }
 
-        /// <summary>
-        /// Update projectile positions, check enemy hits, remove off-screen projectiles.
-        /// </summary>
         private void UpdateProjectiles(float dt)
         {
             for (int i = _projectiles.Count - 1; i >= 0; i--)
             {
                 var proj = _projectiles[i];
-
-                // Move
                 proj.Position += proj.Velocity * dt;
 
-                // Check off-screen
                 if (proj.Position.X < 0 || proj.Position.X > BASE_GAME_WIDTH ||
                     proj.Position.Y < 0 || proj.Position.Y > BASE_GAME_HEIGHT)
                 {
@@ -1272,8 +924,6 @@ namespace SorceryRemake
                     continue;
                 }
 
-                // Check enemy collision (1px projectile vs enemy hitbox)
-                // Projectiles pass through enemies — kill on touch and continue
                 for (int j = _roomEnemies.Count - 1; j >= 0; j--)
                 {
                     var enemy = _roomEnemies[j];
@@ -1284,83 +934,17 @@ namespace SorceryRemake
                         PhysicsComponent.HITBOX_WIDTH, PhysicsComponent.HITBOX_HEIGHT);
 
                     if (enemyRect.Contains((int)proj.Position.X, (int)proj.Position.Y))
-                    {
                         StartEnemyDeath(enemy);
-                    }
                 }
             }
         }
 
-        private void StartEnemyDeath(EnemyInstance enemy)
+        // ====================================================================
+        // COLLISION & PHYSICS HELPERS
+        // ====================================================================
+
+        private void UpdateDoorCollision(PhysicsComponent physics)
         {
-            enemy.IsDying = true;
-
-            // Consume the weapon used to kill
-            _carriedItem = ItemType.None;
-
-            // Stop all movement
-            var physics = enemy.Entity.GetComponent<PhysicsComponent>();
-            if (physics != null)
-                physics.Velocity = Vector2.Zero;
-
-            // Swap sprite to death animation
-            var sprite = enemy.Entity.GetComponent<SpriteComponent>();
-            if (sprite != null)
-            {
-                sprite.Texture = _deathSheet;
-                sprite.SetAnimation(
-                    SpriteConfig.ENEMY_DEATH_ANIM,
-                    SpriteConfig.DEATH_ANIMATION_SPEED,
-                    loop: false
-                );
-            }
-        }
-
-        /// <summary>
-        /// Spawn items for a given room, skipping any that are permanently picked up.
-        /// </summary>
-        /// <summary>
-        /// Spawn captive wizards for a given room, skipping already saved ones.
-        /// </summary>
-        /// <summary>
-        /// Spawn blocked doors for a room, skipping already unlocked ones.
-        /// Also wires their hitboxes into physics.
-        /// </summary>
-        private void SpawnRoomBlockedDoors(string roomId)
-        {
-            _roomBlockedDoors.Clear();
-
-            switch (roomId)
-            {
-                case "room_2":
-                    // Iron door at left edge of tunnel (X=224, between rows 8 and 12)
-                    // Door sits between top platform (row 8, Y=64) and bottom platform (row 12, Y=96)
-                    // Door Y = top platform bottom edge = row 9 * 8 = 72
-                    if (!_unlockedDoors.Contains("room_2_iron_door"))
-                    {
-                        _roomBlockedDoors.Add(new BlockedDoorInstance(
-                            "room_2_iron_door",
-                            new Vector2(216f, 72f),
-                            _blockedDoorSheet,
-                            SpriteConfig.BLOCKED_DOOR_FRAME,
-                            ItemType.Lyre));
-                    }
-                    break;
-            }
-
-            // Wire blocked door hitboxes into player physics
-            RebuildSolidRects();
-        }
-
-        /// <summary>
-        /// Rebuild physics solid rects from room doors + blocked doors.
-        /// </summary>
-        private void RebuildSolidRects()
-        {
-            var physics = _player.GetComponent<PhysicsComponent>();
-            if (physics == null) return;
-
-            // Start with room transition doors
             physics.SolidRects.Clear();
             foreach (var door in _roomManager.CurrentDoors)
             {
@@ -1368,141 +952,35 @@ namespace SorceryRemake
                     (int)door.Position.X, (int)door.Position.Y,
                     DoorConfig.DOOR_WIDTH, DoorConfig.DOOR_HEIGHT));
             }
+        }
 
-            // Add blocked door hitboxes
+        private void RebuildSolidRects()
+        {
+            var physics = _player.GetComponent<PhysicsComponent>();
+            if (physics == null) return;
+
+            physics.SolidRects.Clear();
+            foreach (var door in _roomManager.CurrentDoors)
+            {
+                physics.SolidRects.Add(new Rectangle(
+                    (int)door.Position.X, (int)door.Position.Y,
+                    DoorConfig.DOOR_WIDTH, DoorConfig.DOOR_HEIGHT));
+            }
             foreach (var bd in _roomBlockedDoors)
-            {
                 physics.SolidRects.Add(bd.GetHitbox());
-            }
         }
 
-        private void SpawnRoomWizards(string roomId)
+        private bool IsOverlapping(Entity a, Entity b)
         {
-            _roomWizards.Clear();
-
-            switch (roomId)
-            {
-                case "room_1":
-                    // Wizard on top of platform
-                    if (!_savedWizards.Contains("room_1_wizard"))
-                    {
-                        _roomWizards.Add(new CaptiveWizard(
-                            "room_1_wizard",
-                            new Vector2(160f, 72f),
-                            _captiveWizardSheet,
-                            SpriteConfig.CAPTIVE_WIZARD_ANIM,
-                            SpriteConfig.CAPTIVE_WIZARD_ANIMATION_SPEED));
-                    }
-                    break;
-
-                case "room_2":
-                    // Wizard at right end of tunnel (inside, X=296, Y = row 9*8 = 72)
-                    if (!_savedWizards.Contains("room_2_wizard"))
-                    {
-                        _roomWizards.Add(new CaptiveWizard(
-                            "room_2_wizard",
-                            new Vector2(296f, 72f),
-                            _captiveWizardSheet,
-                            SpriteConfig.CAPTIVE_WIZARD_ANIM,
-                            SpriteConfig.CAPTIVE_WIZARD_ANIMATION_SPEED));
-                    }
-                    break;
-            }
+            var rectA = new Rectangle(
+                (int)a.Position.X - 1, (int)a.Position.Y - 1,
+                PhysicsComponent.HITBOX_WIDTH + 2, PhysicsComponent.HITBOX_HEIGHT + 2);
+            var rectB = new Rectangle(
+                (int)b.Position.X, (int)b.Position.Y,
+                PhysicsComponent.HITBOX_WIDTH, PhysicsComponent.HITBOX_HEIGHT);
+            return rectA.Intersects(rectB);
         }
 
-        private void SpawnRoomItems(string roomId)
-        {
-            _roomItems.Clear();
-
-            switch (roomId)
-            {
-                case "room_1":
-                    // Sword on top of the platform (row 12, Y = 12*8 - 24 = 72)
-                    SpawnItem("room_1_sword", ItemType.Sword, new Vector2(140f, 72f));
-                    // Ball and chain on the floor
-                    SpawnItem("room_1_ballchain", ItemType.BallAndChain, new Vector2(60f, 112f));
-                    // Shooting star on the floor
-                    SpawnItem("room_1_star", ItemType.ShootingStar, new Vector2(120f, 112f));
-                    // Lyre on the floor
-                    SpawnItem("room_1_lyre", ItemType.Lyre, new Vector2(240f, 112f));
-                    break;
-
-                case "room_2":
-                    // Axe on the floor
-                    SpawnItem("room_2_axe", ItemType.Axe, new Vector2(160f, 112f));
-                    break;
-            }
-        }
-
-        /// <summary>
-        /// Spawn a single item if not already picked up.
-        /// </summary>
-        private void SpawnItem(string id, ItemType type, Vector2 position)
-        {
-            if (_pickedUpItems.Contains(id)) return;
-
-            Texture2D tex = GetItemTexture(type);
-            Rectangle src = GetItemSourceRect(type);
-            if (tex != null)
-                _roomItems.Add(new ItemInstance(id, type, position, tex, src));
-        }
-
-        /// <summary>
-        /// Check if an enemy can be killed with the currently carried item.
-        /// Every enemy type requires a specific weapon — no weapon = no kill.
-        /// </summary>
-        private bool CanKillEnemy(EnemyInstance enemy)
-        {
-            // Guard requires sword
-            if (enemy.Id.Contains("guard"))
-                return _carriedItem == ItemType.Sword;
-
-            // Eye, mask, boar require ball and chain
-            if (enemy.Id.Contains("eye") || enemy.Id.Contains("mask") || enemy.Id.Contains("boar"))
-                return _carriedItem == ItemType.BallAndChain;
-
-            // Wraith requires axe
-            if (enemy.Id.Contains("wraith"))
-                return _carriedItem == ItemType.Axe;
-
-            return false;
-        }
-
-        /// <summary>
-        /// Get the texture for an item type.
-        /// </summary>
-        private Texture2D GetItemTexture(ItemType type)
-        {
-            switch (type)
-            {
-                case ItemType.Sword: return _swordSheet;
-                case ItemType.BallAndChain: return _ballAndChainSheet;
-                case ItemType.Axe: return _axeSheet;
-                case ItemType.ShootingStar: return _shootingStarSheet;
-                case ItemType.Lyre: return _lyreSheet;
-                default: return null;
-            }
-        }
-
-        /// <summary>
-        /// Get the source rectangle for an item type.
-        /// </summary>
-        private Rectangle GetItemSourceRect(ItemType type)
-        {
-            switch (type)
-            {
-                case ItemType.Sword: return SpriteConfig.SWORD_FRAME;
-                case ItemType.BallAndChain: return SpriteConfig.BALL_AND_CHAIN_FRAME;
-                case ItemType.Axe: return SpriteConfig.AXE_FRAME;
-                case ItemType.ShootingStar: return SpriteConfig.SHOOTING_STAR_FRAME;
-                case ItemType.Lyre: return SpriteConfig.LYRE_FRAME;
-                default: return Rectangle.Empty;
-            }
-        }
-
-        /// <summary>
-        /// Check if player overlaps with an item position (24x24 hitbox).
-        /// </summary>
         private bool IsOverlapping(Entity player, Vector2 itemPos)
         {
             var rectA = new Rectangle(
@@ -1514,9 +992,6 @@ namespace SorceryRemake
             return rectA.Intersects(rectB);
         }
 
-        /// <summary>
-        /// Find a random position in the current room that doesn't overlap solid tiles or doors.
-        /// </summary>
         private Vector2 FindRandomEmptyPosition()
         {
             var tileMap = _roomManager.CurrentTileMap;
@@ -1528,7 +1003,6 @@ namespace SorceryRemake
                 int x = _rng.Next(0, BASE_GAME_WIDTH - hitW);
                 int y = _rng.Next(0, BASE_GAME_HEIGHT - hitH);
 
-                // Check all four corners against solid tiles
                 bool blocked = false;
                 if (tileMap != null)
                 {
@@ -1554,7 +1028,6 @@ namespace SorceryRemake
                     }
                 }
 
-                // Check against doors
                 if (!blocked)
                 {
                     var entityRect = new Rectangle(x, y, hitW, hitH);
@@ -1575,35 +1048,25 @@ namespace SorceryRemake
                     return new Vector2(x, y);
             }
 
-            // Fallback: center of room
             return new Vector2(BASE_GAME_WIDTH / 2f, BASE_GAME_HEIGHT / 2f);
         }
 
-        /// <summary>
-        /// Reset all game state to initial conditions.
-        /// </summary>
+        // ====================================================================
+        // GAME STATE
+        // ====================================================================
+
         private void RestartGame()
         {
-            // Clear all persistent state
-            _deadEnemies.Clear();
-            _pickedUpItems.Clear();
+            _worldState.Reset();
             _roomEnemies.Clear();
             _roomItems.Clear();
-            _savedRoomEnemies.Clear();
-            _projectiles.Clear();
             _roomWizards.Clear();
-            _savedWizards.Clear();
-            _savedWizardCount = 0;
             _roomBlockedDoors.Clear();
-            _unlockedDoors.Clear();
-            _carriedItem = ItemType.None;
-            _spawnCounter = 0;
+            _projectiles.Clear();
 
-            // Reload initial room
             _roomManager.LoadRoom("room_1");
-
-            // Reset player
             _player.Position = new Vector2(40f, 96f);
+
             var physics = _player.GetComponent<PhysicsComponent>();
             if (physics != null)
             {
@@ -1612,121 +1075,102 @@ namespace SorceryRemake
                 UpdateDoorCollision(physics);
             }
 
-            // Spawn enemies, items, wizards, and blocked doors
-            SpawnRoomEnemies("room_1");
-            SpawnRoomItems("room_1");
-            SpawnRoomWizards("room_1");
-            SpawnRoomBlockedDoors("room_1");
+            SpawnRoomContent("room_1");
         }
 
-        /// <summary>
-        /// Draw info panel (HUD) at bottom of screen (matches Python's draw_info_panel).
-        /// </summary>
+        // ====================================================================
+        // RENDERING HELPERS
+        // ====================================================================
+
+        private void DrawPlayer()
+        {
+            var sprite = _player.GetComponent<SpriteComponent>();
+            if (sprite == null) return;
+            sprite.Draw(_spriteBatch, _player.Position * RENDER_SCALE, RENDER_SCALE);
+        }
+
         private void DrawInfoPanel()
         {
             _spriteBatch.Begin(samplerState: SamplerState.PointClamp);
 
-            // Info panel background (dark blue, matches Python: rgb(0, 0, 139))
-            var infoPanelRect = new Rectangle(
-                0,
-                GAME_AREA_HEIGHT,
-                WINDOW_WIDTH,
-                INFO_PANEL_HEIGHT
-            );
-            DrawFilledRectangle(_spriteBatch, infoPanelRect, new Color(0, 0, 139));
+            // Info panel background (dark blue)
+            _spriteBatch.Draw(_pixelTexture,
+                new Rectangle(0, GAME_AREA_HEIGHT, WINDOW_WIDTH, INFO_PANEL_HEIGHT),
+                new Color(0, 0, 139));
 
-            // Show carried item
             if (_debugFont != null)
             {
-                string itemName = _carriedItem == ItemType.None ? "Nothing" : _carriedItem.ToString();
+                string itemName = _worldState.CarriedItem == ItemType.None ? "Nothing" : _worldState.CarriedItem.ToString();
                 _spriteBatch.DrawString(_debugFont, $"Carrying: {itemName}",
                     new Vector2(10, GAME_AREA_HEIGHT + 10), Color.Yellow);
-                _spriteBatch.DrawString(_debugFont, $"Saved Wizards: {_savedWizardCount}",
+                _spriteBatch.DrawString(_debugFont, $"Saved Wizards: {_worldState.SavedWizardCount}",
                     new Vector2(10, GAME_AREA_HEIGHT + 30), Color.Yellow);
             }
 
-            // Draw carried item icon
-            if (_carriedItem != ItemType.None)
+            if (_worldState.CarriedItem != ItemType.None)
             {
-                Texture2D itemTex = GetItemTexture(_carriedItem);
-                Rectangle itemSrc = GetItemSourceRect(_carriedItem);
+                Texture2D itemTex = _itemSystem.GetTexture(_worldState.CarriedItem);
+                Rectangle itemSrc = _itemSystem.GetSourceRect(_worldState.CarriedItem);
                 if (itemTex != null)
                 {
-                    int iconSize = 48; // display size in info panel
-                    var iconRect = new Rectangle(
-                        WINDOW_WIDTH - iconSize - 20,
-                        GAME_AREA_HEIGHT + (INFO_PANEL_HEIGHT - iconSize) / 2,
-                        iconSize, iconSize);
-                    _spriteBatch.Draw(itemTex, iconRect, itemSrc, Color.White);
+                    int iconSize = 48;
+                    _spriteBatch.Draw(itemTex,
+                        new Rectangle(
+                            WINDOW_WIDTH - iconSize - 20,
+                            GAME_AREA_HEIGHT + (INFO_PANEL_HEIGHT - iconSize) / 2,
+                            iconSize, iconSize),
+                        itemSrc, Color.White);
                 }
             }
 
             _spriteBatch.End();
         }
 
-        /// <summary>
-        /// Draw debug information overlay.
-        /// </summary>
         private void DrawDebugInfo(GameTime gameTime)
         {
             if (_debugFont == null) return;
 
             _spriteBatch.Begin();
-
             var physics = _player.GetComponent<PhysicsComponent>();
 
-            string debugText = $"SORCERY+ REMAKE - PHASE 1 PROTOTYPE\n" +
+            string debugText = $"SORCERY+ REMAKE - PHASE 4A\n" +
                                $"FPS: {1.0 / gameTime.ElapsedGameTime.TotalSeconds:F0}\n" +
+                               $"Room: {_roomManager.CurrentRoomId}\n" +
                                $"Position: ({_player.Position.X:F1}, {_player.Position.Y:F1})\n" +
                                $"Velocity: ({physics?.Velocity.X:F1}, {physics?.Velocity.Y:F1})\n" +
-                               $"\n" +
-                               $"Controls:\n" +
+                               $"Enemies: {_roomEnemies.Count}\n" +
+                               $"\nControls:\n" +
                                $"  Arrow Keys - Move\n" +
-                               $"  Up - Thrust (fight gravity)\n" +
-                               $"  F1 - Toggle debug info\n" +
+                               $"  Space - Use item\n" +
+                               $"  2-5 - Spawn enemies\n" +
+                               $"  R - Restart\n" +
+                               $"  F1 - Toggle debug\n" +
                                $"  ESC - Exit";
 
             _spriteBatch.DrawString(_debugFont, debugText, new Vector2(10, 10), Color.Yellow);
-
             _spriteBatch.End();
         }
 
-        /// <summary>
-        /// Replace a specific color in a texture with transparent pixels (color key).
-        /// Used to remove black backgrounds from sprites.
-        /// </summary>
+        // ====================================================================
+        // UTILITY
+        // ====================================================================
+
         private void MakeColorTransparent(Texture2D texture, Color colorToReplace)
         {
-            // Get all pixel data from the texture
             Color[] data = new Color[texture.Width * texture.Height];
             texture.GetData(data);
 
-            // Replace the specified color with transparent
             for (int i = 0; i < data.Length; i++)
             {
-                // Check if pixel matches the color to replace (with small tolerance)
                 if (data[i].R == colorToReplace.R &&
                     data[i].G == colorToReplace.G &&
                     data[i].B == colorToReplace.B)
                 {
-                    data[i] = Color.Transparent; // Make it transparent
+                    data[i] = Color.Transparent;
                 }
             }
 
-            // Set the modified data back to the texture
             texture.SetData(data);
-        }
-
-        /// <summary>
-        /// Helper to draw filled rectangles (for test room).
-        /// </summary>
-        private void DrawFilledRectangle(SpriteBatch spriteBatch, Rectangle rect, Color color)
-        {
-            // Create a 1x1 white texture if we don't have one
-            Texture2D pixel = new Texture2D(GraphicsDevice, 1, 1);
-            pixel.SetData(new[] { Color.White });
-
-            spriteBatch.Draw(pixel, rect, color);
         }
     }
 }

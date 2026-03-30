@@ -31,7 +31,6 @@
 /processorParam:MakeSquare=False
 /processorParam:TextureFormat=Color
 /build:Characters.png
-/copy:../assets/images/Amstrad CPC - Sorcery - Characters.png
 
 #begin Tiles.png
 /importer:TextureImporter
