@@ -889,25 +889,24 @@ namespace SorceryRemake
 
         private void FireShootingStar()
         {
+            // All projectiles start from player center
             float cx = _player.Position.X + PhysicsComponent.HITBOX_WIDTH / 2f;
             float cy = _player.Position.Y + PhysicsComponent.HITBOX_HEIGHT / 2f;
-            float left = _player.Position.X;
-            float right = _player.Position.X + PhysicsComponent.HITBOX_WIDTH;
-            float top = _player.Position.Y;
-            float bottom = _player.Position.Y + PhysicsComponent.HITBOX_HEIGHT;
+            Vector2 center = new Vector2(cx, cy);
 
             float speed = SpriteConfig.PROJECTILE_SPEED;
             float diag = speed * 0.7071f;
             Color c = Color.Yellow;
 
-            _projectiles.Add(new Projectile(new Vector2(cx, top), new Vector2(0, -speed), c));
-            _projectiles.Add(new Projectile(new Vector2(cx, bottom), new Vector2(0, speed), c));
-            _projectiles.Add(new Projectile(new Vector2(left, cy), new Vector2(-speed, 0), c));
-            _projectiles.Add(new Projectile(new Vector2(right, cy), new Vector2(speed, 0), c));
-            _projectiles.Add(new Projectile(new Vector2(left, top), new Vector2(-diag, -diag), c));
-            _projectiles.Add(new Projectile(new Vector2(right, top), new Vector2(diag, -diag), c));
-            _projectiles.Add(new Projectile(new Vector2(left, bottom), new Vector2(-diag, diag), c));
-            _projectiles.Add(new Projectile(new Vector2(right, bottom), new Vector2(diag, diag), c));
+            // 4 cardinal + 4 diagonal, all from center
+            _projectiles.Add(new Projectile(center, new Vector2(0, -speed), c));
+            _projectiles.Add(new Projectile(center, new Vector2(0, speed), c));
+            _projectiles.Add(new Projectile(center, new Vector2(-speed, 0), c));
+            _projectiles.Add(new Projectile(center, new Vector2(speed, 0), c));
+            _projectiles.Add(new Projectile(center, new Vector2(-diag, -diag), c));
+            _projectiles.Add(new Projectile(center, new Vector2(diag, -diag), c));
+            _projectiles.Add(new Projectile(center, new Vector2(-diag, diag), c));
+            _projectiles.Add(new Projectile(center, new Vector2(diag, diag), c));
         }
 
         private void UpdateProjectiles(float dt)
