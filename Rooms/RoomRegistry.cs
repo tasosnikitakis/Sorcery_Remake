@@ -145,6 +145,16 @@ namespace SorceryRemake.Rooms
             // STONEHENGE / WASTELANDS / TUNNELMOUTH
             // (No content yet — background-only rooms)
             // ================================================================
+
+            // ================================================================
+            // CHATEAU 1 — "You are above the chateau" (left screen)
+            // (Empty for now — enemies/items will be placed in next step)
+            // ================================================================
+
+            // ================================================================
+            // CHATEAU 2 — "You are above the chateau" (right screen)
+            // (Empty for now — enemies/items will be placed in next step)
+            // ================================================================
         }
     }
 }

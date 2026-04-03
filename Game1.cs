@@ -107,6 +107,8 @@ namespace SorceryRemake
         private Texture2D _bgStonehenge;
         private Texture2D _bgWastelands;
         private Texture2D _bgTunnelMouth;
+        private Texture2D _bgChateau1;
+        private Texture2D _bgChateau2;
 
         // ====================================================================
         // DEBUG
@@ -232,26 +234,29 @@ namespace SorceryRemake
             _bgStonehenge = Content.Load<Texture2D>("RoomBG_Stonehenge");
             _bgWastelands = Content.Load<Texture2D>("RoomBG_Wastelands");
             _bgTunnelMouth = Content.Load<Texture2D>("RoomBG_TunnelMouth");
+            _bgChateau1 = Content.Load<Texture2D>("RoomBG_Chateau1");
+            _bgChateau2 = Content.Load<Texture2D>("RoomBG_Chateau2");
 
             // --- Room system ---
             _roomManager = new RoomManager();
             _roomManager.SetTextures(_tilesetTexture, _leftDoorTexture, _rightDoorTexture);
             RegisterTestRooms();
             RegisterBackgroundRooms();
+            RegisterChateauRooms();
 
             // --- Room content registry ---
             RoomRegistry.Initialize();
 
             // --- Start game ---
-            _roomManager.LoadRoom("room_1");
+            _roomManager.LoadRoom("chateau_1");
             var phys = _player.GetComponent<PhysicsComponent>();
             if (phys != null)
             {
                 phys.TileMap = _roomManager.CurrentTileMap;
                 UpdateDoorCollision(phys);
             }
-            _player.Position = new Vector2(40f, 96f);
-            SpawnRoomContent("room_1");
+            _player.Position = new Vector2(160f, 80f);
+            SpawnRoomContent("chateau_1");
 
             // --- Debug font ---
             try { _debugFont = Content.Load<SpriteFont>("DebugFont"); }
@@ -697,6 +702,51 @@ namespace SorceryRemake
         }
 
         // ====================================================================
+        // CHATEAU ROOMS (screenshot-based, Phase 4A prototype)
+        // ====================================================================
+
+        private void RegisterChateauRooms()
+        {
+            string dataDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "assets", "data");
+
+            // --- CHATEAU 1 ---
+            // Screenshot background with collision grid from building silhouette.
+            // Top-right door connects to Chateau 2.
+            _roomManager.RegisterRoom("chateau_1", () =>
+            {
+                _roomManager.SetBackground(_bgChateau1);
+
+                string jsonPath = Path.Combine(dataDir, "collision_chateau1.json");
+                _roomManager.SetTileMap(RoomLoader.BuildCollisionTileMap(_tilesetTexture, jsonPath));
+
+                // Door at top-right tower (LeftOpening = triggered from left side)
+                var door = new DoorComponent(DoorType.LeftOpening, new Vector2(296, 0));
+                door.DoorId = "chateau1_door_topright";
+                door.TargetRoomId = "chateau_2";
+                door.TargetDoorId = "chateau2_door_topleft";
+                _roomManager.SetDoors(new List<DoorComponent> { door });
+            });
+
+            // --- CHATEAU 2 ---
+            // Screenshot background with collision grid.
+            // Top-left door connects back to Chateau 1.
+            _roomManager.RegisterRoom("chateau_2", () =>
+            {
+                _roomManager.SetBackground(_bgChateau2);
+
+                string jsonPath = Path.Combine(dataDir, "collision_chateau2.json");
+                _roomManager.SetTileMap(RoomLoader.BuildCollisionTileMap(_tilesetTexture, jsonPath));
+
+                // Door at top-left tower (RightOpening = triggered from right side)
+                var door = new DoorComponent(DoorType.RightOpening, new Vector2(0, 0));
+                door.DoorId = "chateau2_door_topleft";
+                door.TargetRoomId = "chateau_1";
+                door.TargetDoorId = "chateau1_door_topright";
+                _roomManager.SetDoors(new List<DoorComponent> { door });
+            });
+        }
+
+        // ====================================================================
         // ROOM CONTENT SPAWNING (data-driven via RoomRegistry)
         // ====================================================================
 
@@ -1063,8 +1113,8 @@ namespace SorceryRemake
             _roomBlockedDoors.Clear();
             _projectiles.Clear();
 
-            _roomManager.LoadRoom("room_1");
-            _player.Position = new Vector2(40f, 96f);
+            _roomManager.LoadRoom("chateau_1");
+            _player.Position = new Vector2(160f, 80f);
 
             var physics = _player.GetComponent<PhysicsComponent>();
             if (physics != null)
@@ -1074,7 +1124,7 @@ namespace SorceryRemake
                 UpdateDoorCollision(physics);
             }
 
-            SpawnRoomContent("room_1");
+            SpawnRoomContent("chateau_1");
         }
 
         // ====================================================================
