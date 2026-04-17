@@ -24,6 +24,8 @@ namespace SorceryRemake.Rooms
         public bool HasBackground => CurrentBackground != null;
         public List<DoorComponent> CurrentDoors { get; private set; } = new List<DoorComponent>();
         public string CurrentRoomId { get; private set; } = "";
+        public string CurrentRoomName =>
+            _roomNames.TryGetValue(CurrentRoomId, out var name) ? name : CurrentRoomId;
 
         // Transition state
         public TransitionState State { get; private set; } = TransitionState.None;
@@ -32,6 +34,9 @@ namespace SorceryRemake.Rooms
 
         // Room registry: roomId -> room builder action
         private readonly Dictionary<string, System.Action> _roomBuilders = new();
+
+        // Room display names: roomId -> human-readable name shown in HUD
+        private readonly Dictionary<string, string> _roomNames = new();
 
         // Shared references
         private Texture2D? _tilesetTexture;
@@ -47,10 +52,13 @@ namespace SorceryRemake.Rooms
 
         /// <summary>
         /// Register a room builder function by room ID.
+        /// Optionally provide a display name for the HUD ("You are in ...").
         /// </summary>
-        public void RegisterRoom(string roomId, System.Action builder)
+        public void RegisterRoom(string roomId, System.Action builder, string? displayName = null)
         {
             _roomBuilders[roomId] = builder;
+            if (displayName != null)
+                _roomNames[roomId] = displayName;
         }
 
         /// <summary>
@@ -72,16 +80,22 @@ namespace SorceryRemake.Rooms
 
         /// <summary>
         /// Set the current room's tilemap (called by room builders).
+        /// If a background has been set for this room, also generates a pixel-perfect
+        /// collision mask from it.
         /// </summary>
         public void SetTileMap(TileMapComponent tileMap)
         {
             CurrentTileMap = tileMap;
+            if (CurrentBackground != null)
+            {
+                CurrentTileMap.PixelMask = TileMapComponent.BuildPixelMaskFromTexture(CurrentBackground);
+            }
         }
 
         /// <summary>
         /// Set the current room's background image (called by room builders).
         /// When a background is set, it renders instead of the tilemap visuals.
-        /// The tilemap still provides collision data.
+        /// The pixel collision mask is generated in SetTileMap once both are set.
         /// </summary>
         public void SetBackground(Texture2D? background)
         {

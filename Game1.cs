@@ -107,6 +107,7 @@ namespace SorceryRemake
         private Texture2D _bgStonehenge;
         private Texture2D _bgWastelands;
         private Texture2D _bgTunnelMouth;
+        private Texture2D _bgChateau0;
         private Texture2D _bgChateau1;
         private Texture2D _bgChateau2;
 
@@ -116,6 +117,9 @@ namespace SorceryRemake
 
         private SpriteFont _debugFont;
         private bool _showDebugInfo = false;
+        private bool _showCollisionMask = false;
+        private Texture2D? _collisionOverlayTexture;
+        private bool[,]? _collisionOverlaySource;  // reference used to detect mask changes
 
         // ====================================================================
         // CONSTRUCTOR
@@ -195,7 +199,9 @@ namespace SorceryRemake
             // --- Tileset & doors ---
             _tilesetTexture = Content.Load<Texture2D>("Tiles");
             _leftDoorTexture = Content.Load<Texture2D>("LeftDoorFrames");
+            MakeColorTransparent(_leftDoorTexture, Color.Black);
             _rightDoorTexture = Content.Load<Texture2D>("RightDoorFrames");
+            MakeColorTransparent(_rightDoorTexture, Color.Black);
 
             // --- Enemy sheets ---
             _guardSheet = LoadAndTransparent("GuardSheet");
@@ -234,6 +240,7 @@ namespace SorceryRemake
             _bgStonehenge = Content.Load<Texture2D>("RoomBG_Stonehenge");
             _bgWastelands = Content.Load<Texture2D>("RoomBG_Wastelands");
             _bgTunnelMouth = Content.Load<Texture2D>("RoomBG_TunnelMouth");
+            _bgChateau0 = Content.Load<Texture2D>("RoomBG_Chateau0");
             _bgChateau1 = Content.Load<Texture2D>("RoomBG_Chateau1");
             _bgChateau2 = Content.Load<Texture2D>("RoomBG_Chateau2");
 
@@ -248,7 +255,7 @@ namespace SorceryRemake
             RoomRegistry.Initialize();
 
             // --- Start game ---
-            _roomManager.LoadRoom("chateau_1");
+            _roomManager.LoadRoom("chateau_0");
             var phys = _player.GetComponent<PhysicsComponent>();
             if (phys != null)
             {
@@ -256,7 +263,7 @@ namespace SorceryRemake
                 UpdateDoorCollision(phys);
             }
             _player.Position = new Vector2(160f, 80f);
-            SpawnRoomContent("chateau_1");
+            SpawnRoomContent("chateau_0");
 
             // --- Debug font ---
             try { _debugFont = Content.Load<SpriteFont>("DebugFont"); }
@@ -288,10 +295,13 @@ namespace SorceryRemake
                 return;
             }
 
-            if (Keyboard.GetState().IsKeyDown(Keys.F1))
+            var currentKeyState = Keyboard.GetState();
+
+            if (currentKeyState.IsKeyDown(Keys.F1) && !_previousKeyState.IsKeyDown(Keys.F1))
                 _showDebugInfo = !_showDebugInfo;
 
-            var currentKeyState = Keyboard.GetState();
+            if (currentKeyState.IsKeyDown(Keys.F2) && !_previousKeyState.IsKeyDown(Keys.F2))
+                _showCollisionMask = !_showCollisionMask;
 
             // Debug spawn: keys 2-5
             if (currentKeyState.IsKeyDown(Keys.D2) && !_previousKeyState.IsKeyDown(Keys.D2))
@@ -592,6 +602,10 @@ namespace SorceryRemake
                     proj.Color);
             }
 
+            // Collision mask debug overlay (F2 toggle)
+            if (_showCollisionMask)
+                DrawCollisionMaskOverlay();
+
             _spriteBatch.End();
 
             // Step 2: Render to screen
@@ -709,8 +723,24 @@ namespace SorceryRemake
         {
             string dataDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "assets", "data");
 
+            // --- CHATEAU 0 (starting room) ---
+            // Top-right door connects to Chateau 1.
+            _roomManager.RegisterRoom("chateau_0", () =>
+            {
+                _roomManager.SetBackground(_bgChateau0);
+
+                string jsonPath = Path.Combine(dataDir, "collision_chateau0.json");
+                _roomManager.SetTileMap(RoomLoader.BuildCollisionTileMap(_tilesetTexture, jsonPath));
+
+                var door = new DoorComponent(DoorType.LeftOpening, new Vector2(296, 0));
+                door.DoorId = "chateau0_door_topright";
+                door.TargetRoomId = "chateau_1";
+                door.TargetDoorId = "chateau1_door_topleft";
+                _roomManager.SetDoors(new List<DoorComponent> { door });
+            }, displayName: "Chateau 0");
+
             // --- CHATEAU 1 ---
-            // Screenshot background with collision grid from building silhouette.
+            // Top-left door connects back to Chateau 0.
             // Top-right door connects to Chateau 2.
             _roomManager.RegisterRoom("chateau_1", () =>
             {
@@ -719,16 +749,20 @@ namespace SorceryRemake
                 string jsonPath = Path.Combine(dataDir, "collision_chateau1.json");
                 _roomManager.SetTileMap(RoomLoader.BuildCollisionTileMap(_tilesetTexture, jsonPath));
 
-                // Door at top-right tower (LeftOpening = triggered from left side)
-                var door = new DoorComponent(DoorType.LeftOpening, new Vector2(296, 0));
-                door.DoorId = "chateau1_door_topright";
-                door.TargetRoomId = "chateau_2";
-                door.TargetDoorId = "chateau2_door_topleft";
-                _roomManager.SetDoors(new List<DoorComponent> { door });
-            });
+                var doorLeft = new DoorComponent(DoorType.RightOpening, new Vector2(0, 0));
+                doorLeft.DoorId = "chateau1_door_topleft";
+                doorLeft.TargetRoomId = "chateau_0";
+                doorLeft.TargetDoorId = "chateau0_door_topright";
+
+                var doorRight = new DoorComponent(DoorType.LeftOpening, new Vector2(296, 0));
+                doorRight.DoorId = "chateau1_door_topright";
+                doorRight.TargetRoomId = "chateau_2";
+                doorRight.TargetDoorId = "chateau2_door_topleft";
+
+                _roomManager.SetDoors(new List<DoorComponent> { doorLeft, doorRight });
+            }, displayName: "Chateau 1");
 
             // --- CHATEAU 2 ---
-            // Screenshot background with collision grid.
             // Top-left door connects back to Chateau 1.
             _roomManager.RegisterRoom("chateau_2", () =>
             {
@@ -737,13 +771,12 @@ namespace SorceryRemake
                 string jsonPath = Path.Combine(dataDir, "collision_chateau2.json");
                 _roomManager.SetTileMap(RoomLoader.BuildCollisionTileMap(_tilesetTexture, jsonPath));
 
-                // Door at top-left tower (RightOpening = triggered from right side)
-                var door = new DoorComponent(DoorType.RightOpening, new Vector2(0, 0));
+                var door = new DoorComponent(DoorType.RightOpening, new Vector2(8, 0));
                 door.DoorId = "chateau2_door_topleft";
                 door.TargetRoomId = "chateau_1";
                 door.TargetDoorId = "chateau1_door_topright";
                 _roomManager.SetDoors(new List<DoorComponent> { door });
-            });
+            }, displayName: "Chateau 2");
         }
 
         // ====================================================================
@@ -1113,7 +1146,7 @@ namespace SorceryRemake
             _roomBlockedDoors.Clear();
             _projectiles.Clear();
 
-            _roomManager.LoadRoom("chateau_1");
+            _roomManager.LoadRoom("chateau_0");
             _player.Position = new Vector2(160f, 80f);
 
             var physics = _player.GetComponent<PhysicsComponent>();
@@ -1124,7 +1157,7 @@ namespace SorceryRemake
                 UpdateDoorCollision(physics);
             }
 
-            SpawnRoomContent("chateau_1");
+            SpawnRoomContent("chateau_0");
         }
 
         // ====================================================================
@@ -1136,6 +1169,42 @@ namespace SorceryRemake
             var sprite = _player.GetComponent<SpriteComponent>();
             if (sprite == null) return;
             sprite.Draw(_spriteBatch, _player.Position * RENDER_SCALE, RENDER_SCALE);
+        }
+
+        /// <summary>
+        /// Draw a semi-transparent red overlay on every solid pixel of the current
+        /// room's collision mask. Cached texture is regenerated when the mask changes.
+        /// </summary>
+        private void DrawCollisionMaskOverlay()
+        {
+            var mask = _roomManager.CurrentTileMap?.PixelMask;
+            if (mask == null) return;
+
+            // Rebuild cached overlay texture if the mask reference changed
+            if (!ReferenceEquals(_collisionOverlaySource, mask))
+            {
+                _collisionOverlayTexture?.Dispose();
+
+                int w = mask.GetLength(0);
+                int h = mask.GetLength(1);
+                Color[] data = new Color[w * h];
+                var solid = new Color(255, 0, 0, 120);
+                for (int y = 0; y < h; y++)
+                {
+                    for (int x = 0; x < w; x++)
+                        data[y * w + x] = mask[x, y] ? solid : Color.Transparent;
+                }
+                _collisionOverlayTexture = new Texture2D(GraphicsDevice, w, h);
+                _collisionOverlayTexture.SetData(data);
+                _collisionOverlaySource = mask;
+            }
+
+            _spriteBatch.Draw(
+                _collisionOverlayTexture,
+                new Rectangle(0, 0,
+                    _collisionOverlayTexture.Width * RENDER_SCALE,
+                    _collisionOverlayTexture.Height * RENDER_SCALE),
+                Color.White);
         }
 
         private void DrawInfoPanel()
@@ -1150,10 +1219,12 @@ namespace SorceryRemake
             if (_debugFont != null)
             {
                 string itemName = _worldState.CarriedItem == ItemType.None ? "Nothing" : _worldState.CarriedItem.ToString();
-                _spriteBatch.DrawString(_debugFont, $"Carrying: {itemName}",
+                _spriteBatch.DrawString(_debugFont, $"You are in: {_roomManager.CurrentRoomName}",
                     new Vector2(10, GAME_AREA_HEIGHT + 10), Color.Yellow);
-                _spriteBatch.DrawString(_debugFont, $"Saved Wizards: {_worldState.SavedWizardCount}",
+                _spriteBatch.DrawString(_debugFont, $"Carrying: {itemName}",
                     new Vector2(10, GAME_AREA_HEIGHT + 30), Color.Yellow);
+                _spriteBatch.DrawString(_debugFont, $"Saved Wizards: {_worldState.SavedWizardCount}",
+                    new Vector2(10, GAME_AREA_HEIGHT + 50), Color.Yellow);
             }
 
             if (_worldState.CarriedItem != ItemType.None)

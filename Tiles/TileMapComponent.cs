@@ -54,6 +54,36 @@ namespace SorceryRemake.Tiles
         /// </summary>
         public int Height { get; private set; }
 
+        /// <summary>
+        /// Optional pixel-level collision mask (width x height in pixels, not tiles).
+        /// When set, PhysicsComponent uses pixel-perfect collision instead of tile collision.
+        /// Generated from a background image: any non-black pixel is solid.
+        /// </summary>
+        public bool[,]? PixelMask { get; set; }
+
+        /// <summary>
+        /// Build a pixel mask from a background texture.
+        /// Any pixel whose RGB sum > 10 is considered solid.
+        /// </summary>
+        public static bool[,] BuildPixelMaskFromTexture(Texture2D texture)
+        {
+            int w = texture.Width;
+            int h = texture.Height;
+            Color[] data = new Color[w * h];
+            texture.GetData(data);
+
+            bool[,] mask = new bool[w, h];
+            for (int y = 0; y < h; y++)
+            {
+                for (int x = 0; x < w; x++)
+                {
+                    Color c = data[y * w + x];
+                    mask[x, y] = (c.R + c.G + c.B) > 10;
+                }
+            }
+            return mask;
+        }
+
         // ====================================================================
         // CONSTRUCTOR
         // ====================================================================

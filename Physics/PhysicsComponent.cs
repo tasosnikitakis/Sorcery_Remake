@@ -33,7 +33,7 @@ namespace SorceryRemake.Physics
         // PHYSICS CONSTANTS
         // ====================================================================
 
-        public float Speed { get; set; } = 200f;
+        public float Speed { get; set; } = 140f;
         public float GravitySpeed { get; set; } = 120f;
 
         // ====================================================================
@@ -41,10 +41,21 @@ namespace SorceryRemake.Physics
         // ====================================================================
 
         /// <summary>
-        /// Player hitbox size in pixels.
+        /// Player hitbox size in pixels (full sprite — used for entity interactions
+        /// like door triggers, item pickup, enemy contact).
         /// </summary>
         public const int HITBOX_WIDTH = 24;
         public const int HITBOX_HEIGHT = 24;
+
+        /// <summary>
+        /// Horizontal inset of the collision box relative to the sprite.
+        /// The collision box is (HITBOX_WIDTH - 2*COLLISION_INSET_X) wide, centered in the sprite.
+        /// This 8-bit-era trick gives the player tolerance when fitting through gaps exactly
+        /// as wide as the sprite (e.g. the 24-pixel central shaft in Chateau 1).
+        /// </summary>
+        public const int COLLISION_INSET_X = 2;
+        public const int COLLISION_INSET_TOP = 0;
+        public const int COLLISION_INSET_BOTTOM = 0;
 
         // ====================================================================
         // PHYSICS STATE
@@ -89,21 +100,30 @@ namespace SorceryRemake.Physics
 
             if (TileMap != null)
             {
+                bool usePixelMask = TileMap.PixelMask != null;
+
                 // SEPARATE AXIS COLLISION:
                 // Move X first, resolve, then move Y, resolve.
 
                 // --- X AXIS ---
+                float oldX = pos.X;
                 pos.X += vel.X * dt;
-                pos = ResolveHorizontalCollision(pos, ref vel);
+                pos = usePixelMask
+                    ? ResolveHorizontalPixelCollision(pos, oldX, ref vel)
+                    : ResolveHorizontalCollision(pos, ref vel);
                 pos = ResolveSolidRectsHorizontal(pos, ref vel);
 
                 // --- Y AXIS ---
+                float oldY = pos.Y;
                 pos.Y += vel.Y * dt;
-                pos = ResolveVerticalCollision(pos, ref vel);
+                pos = usePixelMask
+                    ? ResolveVerticalPixelCollision(pos, oldY, ref vel)
+                    : ResolveVerticalCollision(pos, ref vel);
                 pos = ResolveSolidRectsVertical(pos, ref vel);
 
                 // --- GROUND CHECK ---
-                IsOnGround = CheckOnGround(pos) || CheckOnGroundSolidRects(pos);
+                IsOnGround = (usePixelMask ? CheckOnGroundPixel(pos) : CheckOnGround(pos))
+                             || CheckOnGroundSolidRects(pos);
             }
             else
             {
@@ -333,6 +353,153 @@ namespace SorceryRemake.Physics
             }
 
             return pos;
+        }
+
+        // ====================================================================
+        // PIXEL-PERFECT COLLISION (when PixelMask is set on TileMap)
+        // ====================================================================
+
+        /// <summary>
+        /// True if the pixel at (x, y) is solid in the current room's pixel mask.
+        /// Out-of-bounds pixels are treated as non-solid (screen edges handled by ClampToScreen).
+        /// </summary>
+        private bool IsPixelSolid(int x, int y)
+        {
+            var mask = TileMap?.PixelMask;
+            if (mask == null) return false;
+            if (x < 0 || y < 0) return false;
+            if (x >= mask.GetLength(0) || y >= mask.GetLength(1)) return false;
+            return mask[x, y];
+        }
+
+        /// <summary>
+        /// Check if the vertical strip at column `col` between [yTop, yBottom] overlaps any solid pixel.
+        /// </summary>
+        private bool AnySolidInColumn(int col, int yTop, int yBottom)
+        {
+            for (int y = yTop; y <= yBottom; y++)
+                if (IsPixelSolid(col, y)) return true;
+            return false;
+        }
+
+        /// <summary>
+        /// Check if the horizontal strip at row `row` between [xLeft, xRight] overlaps any solid pixel.
+        /// </summary>
+        private bool AnySolidInRow(int row, int xLeft, int xRight)
+        {
+            for (int x = xLeft; x <= xRight; x++)
+                if (IsPixelSolid(x, row)) return true;
+            return false;
+        }
+
+        // Collision box (inset from sprite hitbox) — the rectangle we test against scenery pixels.
+        // Returns (left, top, right, bottom) in absolute coordinates.
+        private (int l, int t, int r, int b) GetCollisionBox(Vector2 pos)
+        {
+            int l = (int)pos.X + COLLISION_INSET_X;
+            int r = (int)pos.X + HITBOX_WIDTH - 1 - COLLISION_INSET_X;
+            int t = (int)pos.Y + COLLISION_INSET_TOP;
+            int b = (int)pos.Y + HITBOX_HEIGHT - 1 - COLLISION_INSET_BOTTOM;
+            return (l, t, r, b);
+        }
+
+        /// <summary>
+        /// True if any pixel inside the collision box at `pos` overlaps a solid mask pixel.
+        /// </summary>
+        private bool CollidesAt(Vector2 pos)
+        {
+            var (l, t, r, b) = GetCollisionBox(pos);
+            for (int y = t; y <= b; y++)
+                for (int x = l; x <= r; x++)
+                    if (IsPixelSolid(x, y)) return true;
+            return false;
+        }
+
+        private Vector2 ResolveHorizontalPixelCollision(Vector2 pos, float oldX, ref Vector2 vel)
+        {
+            if (vel.X == 0) return pos;
+
+            var (l, t, r, b) = GetCollisionBox(pos);
+
+            if (vel.X > 0)
+            {
+                // Moving right: check right-edge column of the collision box.
+                if (!AnySolidInColumn(r, t, b)) return pos;
+
+                // If the OLD position's collision box right edge was already in a solid
+                // column, the player is already embedded — let them move freely this frame
+                // so they can escape.
+                int oldR = (int)oldX + HITBOX_WIDTH - 1 - COLLISION_INSET_X;
+                if (AnySolidInColumn(oldR, t, b)) return pos;
+
+                // Walk back to the last clear column, but never past the old position.
+                int clearR = r;
+                while (clearR > oldR && AnySolidInColumn(clearR, t, b))
+                    clearR -= 1;
+                pos.X = clearR - (HITBOX_WIDTH - 1 - COLLISION_INSET_X);
+                vel.X = 0;
+            }
+            else
+            {
+                // Moving left: check left-edge column.
+                if (!AnySolidInColumn(l, t, b)) return pos;
+
+                int oldL = (int)oldX + COLLISION_INSET_X;
+                if (AnySolidInColumn(oldL, t, b)) return pos;
+
+                int clearL = l;
+                while (clearL < oldL && AnySolidInColumn(clearL, t, b))
+                    clearL += 1;
+                pos.X = clearL - COLLISION_INSET_X;
+                vel.X = 0;
+            }
+
+            return pos;
+        }
+
+        private Vector2 ResolveVerticalPixelCollision(Vector2 pos, float oldY, ref Vector2 vel)
+        {
+            if (vel.Y == 0) return pos;
+
+            var (l, t, r, b) = GetCollisionBox(pos);
+
+            if (vel.Y > 0)
+            {
+                // Falling: check bottom-edge row.
+                if (!AnySolidInRow(b, l, r)) return pos;
+
+                int oldB = (int)oldY + HITBOX_HEIGHT - 1 - COLLISION_INSET_BOTTOM;
+                if (AnySolidInRow(oldB, l, r)) return pos;
+
+                int clearB = b;
+                while (clearB > oldB && AnySolidInRow(clearB, l, r))
+                    clearB -= 1;
+                pos.Y = clearB - (HITBOX_HEIGHT - 1 - COLLISION_INSET_BOTTOM);
+                vel.Y = 0;
+            }
+            else
+            {
+                // Rising: check top-edge row.
+                if (!AnySolidInRow(t, l, r)) return pos;
+
+                int oldT = (int)oldY + COLLISION_INSET_TOP;
+                if (AnySolidInRow(oldT, l, r)) return pos;
+
+                int clearT = t;
+                while (clearT < oldT && AnySolidInRow(clearT, l, r))
+                    clearT += 1;
+                pos.Y = clearT - COLLISION_INSET_TOP;
+                vel.Y = 0;
+            }
+
+            return pos;
+        }
+
+        private bool CheckOnGroundPixel(Vector2 pos)
+        {
+            // Ground = any solid pixel directly below the collision box's bottom row.
+            var (l, t, r, b) = GetCollisionBox(pos);
+            return AnySolidInRow(b + 1, l, r);
         }
 
         public void Draw(GameTime gameTime)
