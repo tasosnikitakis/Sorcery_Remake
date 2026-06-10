@@ -131,24 +131,24 @@ namespace SorceryRemake.Core
             // else: targetHorizontalVelocity = 0 (instant stop!)
 
             // VERTICAL VELOCITY (Up/Down/Gravity)
+            // Original-game behaviour: gravity ALWAYS applies. The wizard is constantly
+            // pulled downward; pressing Up actively counteracts it. Tile collision
+            // settles him on the floor naturally — no special "on ground = stop" case.
+            // This is what lets him fall through narrow shafts the moment he loses
+            // ground support, instead of needing several frames of empty-tile contact
+            // before gravity kicks in.
             bool pressingUp = _currentKeyState.IsKeyDown(Keys.Up);
             bool pressingDown = _currentKeyState.IsKeyDown(Keys.Down);
 
-            float currentVerticalVelocity = _physics.GravitySpeed; // Default: +300 px/s (fall)
+            float currentVerticalVelocity = _physics.GravitySpeed;
 
             if (pressingUp)
             {
-                currentVerticalVelocity = -_physics.Speed; // -500 px/s (fly up)
+                currentVerticalVelocity = -_physics.Speed;
             }
             else if (pressingDown)
             {
-                currentVerticalVelocity = _physics.Speed; // +500 px/s (fly down fast)
-            }
-
-            // Special case: On ground and no vertical input = stop falling
-            if (_physics.IsOnGround && !pressingUp && !pressingDown)
-            {
-                currentVerticalVelocity = 0;
+                currentVerticalVelocity = _physics.Speed;
             }
 
             // DIRECT ASSIGNMENT (create new Vector2 since it's a value type)

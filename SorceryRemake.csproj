@@ -12,6 +12,12 @@
     <PublishReadyToRun>false</PublishReadyToRun>
     <TieredCompilation>false</TieredCompilation>
     <Nullable>enable</Nullable>
+
+    <!-- The SorceryForge sibling project lives inside this directory tree
+         (D:\Sorcery_Remake\SorceryForge\). Without an explicit exclusion the
+         SDK's implicit Compile glob would pull in SorceryForge's source AND
+         its obj/ build artifacts, producing duplicate AssemblyInfo errors. -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);SorceryForge\**</DefaultItemExcludes>
   </PropertyGroup>
 
   <!-- ========================================

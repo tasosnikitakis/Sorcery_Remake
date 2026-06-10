@@ -194,7 +194,9 @@ namespace SorceryRemake.Rooms
         }
 
         /// <summary>
-        /// Draw all doors in the current room.
+        /// Draw all doors in the current room. Each DoorComponent paints
+        /// its own background mask using the sprite's alpha as a shape, so
+        /// no extra mask texture needs to be passed in here.
         /// </summary>
         public void DrawDoors(SpriteBatch spriteBatch, float scale)
         {

@@ -34,7 +34,11 @@ namespace SorceryRemake.Physics
         // ====================================================================
 
         public float Speed { get; set; } = 140f;
-        public float GravitySpeed { get; set; } = 120f;
+
+        // Gravity is intentionally a bit faster than horizontal Speed — matches the
+        // original Sorcery+ game where the wizard always falls if not actively
+        // thrusting up, and falls slightly faster than he can fly sideways.
+        public float GravitySpeed { get; set; } = 160f;
 
         // ====================================================================
         // COLLISION CONSTANTS
@@ -100,30 +104,21 @@ namespace SorceryRemake.Physics
 
             if (TileMap != null)
             {
-                bool usePixelMask = TileMap.PixelMask != null;
-
-                // SEPARATE AXIS COLLISION:
-                // Move X first, resolve, then move Y, resolve.
+                // Tile-based collision (8x8 grid, snap-to-tile resolution).
+                // The pixel mask on TileMap is kept only for the F2 debug overlay.
 
                 // --- X AXIS ---
-                float oldX = pos.X;
                 pos.X += vel.X * dt;
-                pos = usePixelMask
-                    ? ResolveHorizontalPixelCollision(pos, oldX, ref vel)
-                    : ResolveHorizontalCollision(pos, ref vel);
+                pos = ResolveHorizontalCollision(pos, ref vel);
                 pos = ResolveSolidRectsHorizontal(pos, ref vel);
 
                 // --- Y AXIS ---
-                float oldY = pos.Y;
                 pos.Y += vel.Y * dt;
-                pos = usePixelMask
-                    ? ResolveVerticalPixelCollision(pos, oldY, ref vel)
-                    : ResolveVerticalCollision(pos, ref vel);
+                pos = ResolveVerticalCollision(pos, ref vel);
                 pos = ResolveSolidRectsVertical(pos, ref vel);
 
                 // --- GROUND CHECK ---
-                IsOnGround = (usePixelMask ? CheckOnGroundPixel(pos) : CheckOnGround(pos))
-                             || CheckOnGroundSolidRects(pos);
+                IsOnGround = CheckOnGround(pos) || CheckOnGroundSolidRects(pos);
             }
             else
             {
@@ -245,20 +240,16 @@ namespace SorceryRemake.Physics
 
         private bool CheckOnGround(Vector2 pos)
         {
-            // Check tile row just below feet
+            // Center-only ground check: the player is "on ground" only if the tile
+            // directly under his CENTER is solid. This matches original Sorcery+
+            // behaviour where walking off an edge causes an immediate fall — and
+            // crucially, it lets the wizard fall through tile-aligned shafts that
+            // are exactly his sprite width (he no longer "rests" on a shaft's far
+            // wall corner just because his right edge clips one solid tile column).
             int checkY = (int)(pos.Y + HITBOX_HEIGHT);
             int tileRow = checkY / TileConfig.TILE_SIZE;
-
-            int leftTile = (int)(pos.X / TileConfig.TILE_SIZE);
-            int rightTile = (int)((pos.X + HITBOX_WIDTH - 1) / TileConfig.TILE_SIZE);
-
-            for (int col = leftTile; col <= rightTile; col++)
-            {
-                if (IsTileBlocking(col, tileRow))
-                    return true;
-            }
-
-            return false;
+            int centerCol = (int)(pos.X + HITBOX_WIDTH / 2) / TileConfig.TILE_SIZE;
+            return IsTileBlocking(centerCol, tileRow);
         }
 
         // ====================================================================

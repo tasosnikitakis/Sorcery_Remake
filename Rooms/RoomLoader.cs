@@ -1,4 +1,5 @@
 using System.IO;
+using System.Text;
 using System.Text.Json;
 using SorceryRemake.Tiles;
 
@@ -65,6 +66,40 @@ namespace SorceryRemake.Rooms
             }
 
             return map;
+        }
+
+        /// <summary>
+        /// Write a collision grid to JSON in the same shape the loader reads.
+        /// Each cell becomes 0 (empty) or 1 (solid) based on TileConfig.IsSolid;
+        /// platforms, ladders, decorations all collapse to 0/1 since the live
+        /// collision system is currently binary.
+        /// </summary>
+        public static void SaveCollisionGrid(string jsonPath, TileMapComponent map)
+        {
+            var sb = new StringBuilder();
+            sb.Append("{\n  \"collision\": [\n");
+
+            for (int y = 0; y < map.Height; y++)
+            {
+                sb.Append("    [");
+                for (int x = 0; x < map.Width; x++)
+                {
+                    int v = TileConfig.IsSolid(map.GetTile(x, y)) ? 1 : 0;
+                    sb.Append(v);
+                    if (x < map.Width - 1) sb.Append(", ");
+                }
+                sb.Append(']');
+                if (y < map.Height - 1) sb.Append(',');
+                sb.Append('\n');
+            }
+
+            sb.Append("  ],\n");
+            sb.Append($"  \"width\": {map.Width},\n");
+            sb.Append($"  \"height\": {map.Height}\n");
+            sb.Append("}\n");
+
+            Directory.CreateDirectory(Path.GetDirectoryName(jsonPath)!);
+            File.WriteAllText(jsonPath, sb.ToString());
         }
     }
 }

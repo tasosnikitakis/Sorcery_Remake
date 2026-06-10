@@ -1,0 +1,13 @@
+{
+  "roomId": "chateau_2",
+  "doors": [
+    {
+      "id": "chateau2_door_topleft",
+      "x": 8,
+      "y": 0,
+      "type": "RightOpening",
+      "targetRoom": "chateau_1",
+      "targetDoor": "chateau1_door_topright"
+    }
+  ]
+}

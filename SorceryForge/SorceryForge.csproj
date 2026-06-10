@@ -1,0 +1,74 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- ========================================
+       SORCERY FORGE — ROOM EDITOR
+       Sibling MonoGame app that shares the main game's source files via
+       <Compile Include> globs. Same rendering engine, same data types,
+       same content pipeline.
+       ======================================== -->
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RollForward>Major</RollForward>
+    <PublishReadyToRun>false</PublishReadyToRun>
+    <TieredCompilation>false</TieredCompilation>
+    <Nullable>enable</Nullable>
+    <RootNamespace>SorceryForge</RootNamespace>
+    <AssemblyName>SorceryForge</AssemblyName>
+    <!-- The editor lives in its own bin/ tree but reads/writes JSON in the
+         repo's assets/data/. The auto-detection in EditorPaths walks up
+         from the executable until it finds the repo root. -->
+  </PropertyGroup>
+
+  <!-- ========================================
+       MONOGAME FRAMEWORK
+       ======================================== -->
+
+  <ItemGroup>
+    <PackageReference Include="MonoGame.Framework.DesktopGL" Version="3.8.1.303" />
+    <PackageReference Include="MonoGame.Content.Builder.Task" Version="3.8.1.303" />
+  </ItemGroup>
+
+  <!-- ========================================
+       SHARED SOURCE (compiled into the editor)
+       Pulls in the same Core/Graphics/Tiles/Rooms/Doors/Physics types the
+       main game uses. We exclude PlayerController.cs because it is gameplay
+       input, not data. Enemies/* aren't included — the editor doesn't run
+       enemy AI, just renders them.
+       ======================================== -->
+
+  <ItemGroup>
+    <Compile Include="..\Core\**\*.cs" Exclude="..\Core\PlayerController.cs" />
+    <Compile Include="..\Graphics\**\*.cs" />
+    <Compile Include="..\Tiles\**\*.cs" />
+    <Compile Include="..\Rooms\**\*.cs" />
+    <Compile Include="..\Doors\**\*.cs" />
+    <Compile Include="..\Physics\**\*.cs" />
+  </ItemGroup>
+
+  <!-- ========================================
+       CONTENT PIPELINE
+       Reuses the main game's .mgcb file. Assets are copied into the
+       editor's own bin/Content output by MonoGame.Content.Builder.Task.
+       ======================================== -->
+
+  <ItemGroup>
+    <MonoGameContentReference Include="..\Content\Content.mgcb" />
+  </ItemGroup>
+
+  <!-- ========================================
+       ASSETS/DATA
+       Mirror collision JSONs into the editor's output so it can render
+       collision overlays. Saved content_*.json files are written back
+       to the source path (resolved via EditorPaths.RepoAssetsDataDir).
+       ======================================== -->
+
+  <ItemGroup>
+    <Content Include="..\assets\data\*.json">
+      <Link>assets\data\%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+</Project>

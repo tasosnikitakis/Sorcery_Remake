@@ -128,7 +128,18 @@ namespace SorceryRemake.Doors
         }
 
         /// <summary>
-        /// Draw the door. Source is 48x48 in spritesheet, rendered at 24x24 game size.
+        /// Draw the door. Source is 48x48 in spritesheet, rendered at 24x24
+        /// game size.
+        ///
+        /// Background masking: rooms whose backgrounds contain a baked-in
+        /// drawn door (extracted from original-game screenshots) would let
+        /// that BG visual bleed through during the open/close animation.
+        /// To hide it, we first draw the union of every animation frame at
+        /// the same destination tinted Color.Black. SpriteBatch tints
+        /// multiply RGB but preserve alpha, so the sprite's transparent
+        /// pixels stay transparent — only the panel area becomes black.
+        /// The arch / wall / decoration surrounding the door in the BG is
+        /// untouched. Then the actual current frame is drawn on top.
         /// </summary>
         public void Draw(SpriteBatch spriteBatch, float scale)
         {
@@ -143,6 +154,12 @@ namespace SorceryRemake.Doors
                 (int)(DoorConfig.DOOR_WIDTH * scale),
                 (int)(DoorConfig.DOOR_HEIGHT * scale)
             );
+
+            // Silhouette mask: union of all frames' opacity, painted black.
+            // The sprite's own alpha channel acts as the mask shape so we
+            // never blacken a pixel the artist intended to be transparent.
+            foreach (var frame in _frames)
+                spriteBatch.Draw(Texture, destRect, frame, Color.Black);
 
             spriteBatch.Draw(Texture, destRect, sourceRect, Color.White);
         }

@@ -64,6 +64,9 @@ namespace SorceryRemake.Tiles
         /// <summary>
         /// Build a pixel mask from a background texture.
         /// Any pixel whose RGB sum > 10 is considered solid.
+        /// Then a flood-fill from the bottom edge keeps only ground-connected pixels:
+        /// floating clouds (and other scenery not anchored to the floor) become passable,
+        /// matching the behaviour of the original game.
         /// </summary>
         public static bool[,] BuildPixelMaskFromTexture(Texture2D texture)
         {
@@ -72,13 +75,45 @@ namespace SorceryRemake.Tiles
             Color[] data = new Color[w * h];
             texture.GetData(data);
 
-            bool[,] mask = new bool[w, h];
+            // Pass 1: every non-black pixel is a candidate for solid.
+            bool[,] raw = new bool[w, h];
             for (int y = 0; y < h; y++)
             {
                 for (int x = 0; x < w; x++)
                 {
                     Color c = data[y * w + x];
-                    mask[x, y] = (c.R + c.G + c.B) > 10;
+                    raw[x, y] = (c.R + c.G + c.B) > 10;
+                }
+            }
+
+            // Pass 2: 8-connected flood-fill from the bottom row.
+            // Only candidates reachable from the floor stay solid.
+            bool[,] mask = new bool[w, h];
+            var stack = new System.Collections.Generic.Stack<(int x, int y)>();
+            for (int x = 0; x < w; x++)
+            {
+                if (raw[x, h - 1])
+                {
+                    mask[x, h - 1] = true;
+                    stack.Push((x, h - 1));
+                }
+            }
+            while (stack.Count > 0)
+            {
+                var (cx, cy) = stack.Pop();
+                for (int dy = -1; dy <= 1; dy++)
+                {
+                    for (int dx = -1; dx <= 1; dx++)
+                    {
+                        if (dx == 0 && dy == 0) continue;
+                        int nx = cx + dx, ny = cy + dy;
+                        if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
+                        if (raw[nx, ny] && !mask[nx, ny])
+                        {
+                            mask[nx, ny] = true;
+                            stack.Push((nx, ny));
+                        }
+                    }
                 }
             }
             return mask;

@@ -1,0 +1,13 @@
+{
+  "roomId": "stonehenge", 
+  "doors": [
+    {
+      "targetDoor": "wastelands_door_left", 
+      "targetRoom": "wastelands", 
+      "y": 112, 
+      "x": 296, 
+      "type": "LeftOpening", 
+      "id": "stonehenge_door_right"
+    }
+  ]
+}

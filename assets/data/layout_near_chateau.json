@@ -1,0 +1,13 @@
+{
+  "roomId": "near_chateau",
+  "doors": [
+    {
+      "id": "near_chateau_door_1",
+      "x": 176.25,
+      "y": 0,
+      "type": "LeftOpening",
+      "targetRoom": "chateau_0",
+      "targetDoor": "chateau_0_door_2"
+    }
+  ]
+}

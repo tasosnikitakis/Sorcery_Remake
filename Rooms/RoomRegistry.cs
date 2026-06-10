@@ -102,10 +102,17 @@ namespace SorceryRemake.Rooms
         private static readonly Dictionary<string, RoomContent> _rooms = new();
 
         /// <summary>
-        /// Get content for a room (returns empty content if not registered).
+        /// Get content for a room. Prefers JSON override at
+        /// assets/data/content_&lt;roomId&gt;.json if present, otherwise falls
+        /// back to the hardcoded entry. The JSON path is the editor's output
+        /// (SorceryForge), so saving in the editor immediately changes what
+        /// the game spawns next time the room loads.
         /// </summary>
         public static RoomContent GetContent(string roomId)
         {
+            var fromJson = RoomContentLoader.TryLoad(roomId);
+            if (fromJson != null) return fromJson;
+
             return _rooms.TryGetValue(roomId, out var content) ? content : new RoomContent();
         }
 

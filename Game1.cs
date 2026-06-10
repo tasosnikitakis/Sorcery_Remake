@@ -248,8 +248,7 @@ namespace SorceryRemake
             _roomManager = new RoomManager();
             _roomManager.SetTextures(_tilesetTexture, _leftDoorTexture, _rightDoorTexture);
             RegisterTestRooms();
-            RegisterBackgroundRooms();
-            RegisterChateauRooms();
+            RegisterRoomsFromManifest();
 
             // --- Room content registry ---
             RoomRegistry.Initialize();
@@ -268,6 +267,83 @@ namespace SorceryRemake
             // --- Debug font ---
             try { _debugFont = Content.Load<SpriteFont>("DebugFont"); }
             catch { _debugFont = null; }
+
+            // --- Editor hot-reload ---
+            // Watches assets/data/content_*.json so SorceryForge saves are
+            // picked up live: when the file for the current room changes,
+            // re-run SpawnRoomContent. Best-effort — failures here just
+            // disable hot-reload, the game keeps running.
+            StartContentWatcher();
+        }
+
+        // ====================================================================
+        // HOT-RELOAD (editor live preview)
+        // ====================================================================
+
+        private System.IO.FileSystemWatcher? _contentWatcher;
+        private volatile bool _hotReloadPending;
+        private string _hotReloadRoomId = "";
+
+        private void StartContentWatcher()
+        {
+            string dir;
+            try { dir = RoomContentLoader.DefaultDir; }
+            catch { return; }
+            if (!System.IO.Directory.Exists(dir)) return;
+
+            try
+            {
+                _contentWatcher = new System.IO.FileSystemWatcher(dir, "content_*.json")
+                {
+                    NotifyFilter = System.IO.NotifyFilters.LastWrite | System.IO.NotifyFilters.FileName,
+                    IncludeSubdirectories = false,
+                    EnableRaisingEvents = true,
+                };
+                _contentWatcher.Changed += OnContentFileChanged;
+                _contentWatcher.Created += OnContentFileChanged;
+                _contentWatcher.Renamed += OnContentFileChanged;
+            }
+            catch
+            {
+                _contentWatcher = null;
+            }
+        }
+
+        private void OnContentFileChanged(object sender, System.IO.FileSystemEventArgs e)
+        {
+            // FileSystemWatcher fires on a thread-pool thread. We only set a
+            // flag here; the actual re-spawn runs on the main thread in
+            // Update so it can touch ECS state safely.
+            string current = _roomManager.CurrentRoomId;
+            if (string.IsNullOrEmpty(current)) return;
+            string expected = $"content_{current}.json";
+            if (System.IO.Path.GetFileName(e.FullPath).Equals(expected, StringComparison.OrdinalIgnoreCase))
+            {
+                _hotReloadRoomId = current;
+                _hotReloadPending = true;
+            }
+        }
+
+        private void ConsumeHotReload()
+        {
+            if (!_hotReloadPending) return;
+            _hotReloadPending = false;
+
+            string room = _hotReloadRoomId;
+            if (room != _roomManager.CurrentRoomId) return;
+
+            // SpawnRoomContent only spawns enemies on first visit (it skips
+            // when SavedRoomEnemies has an entry for the room). Drop that
+            // snapshot so enemy edits in the editor actually appear.
+            _worldState.SavedRoomEnemies.Remove(room);
+            SpawnRoomContent(room);
+        }
+
+        protected override void UnloadContent()
+        {
+            _contentWatcher?.Dispose();
+            _contentWatcher = null;
+            base.UnloadContent();
         }
 
         /// <summary>
@@ -288,6 +364,11 @@ namespace SorceryRemake
         {
             if (Keyboard.GetState().IsKeyDown(Keys.Escape))
                 Exit();
+
+            // Apply pending editor hot-reload (FileSystemWatcher posts the
+            // request from a thread-pool thread — we drain it here on the
+            // main thread so it's safe to touch ECS state).
+            ConsumeHotReload();
 
             if (Keyboard.GetState().IsKeyDown(Keys.R))
             {
@@ -665,118 +746,66 @@ namespace SorceryRemake
             });
         }
 
-        private void RegisterBackgroundRooms()
+        // ====================================================================
+        // DATA-DRIVEN ROOM REGISTRATION
+        // Registers every room in RoomManifest.All. Backgrounds are loaded
+        // lazily via Content.Load (which is idempotent in MonoGame so the
+        // pre-loaded fields like _bgChateau0 share the same texture object).
+        // Collision tilemaps come from collision_<roomId>.json. Doors come
+        // from layout_<roomId>.json — authored in SorceryForge.
+        // ====================================================================
+
+        private void RegisterRoomsFromManifest()
         {
-            string dataDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "assets", "data");
+            string dataDir = RoomContentLoader.DefaultDir;
 
-            _roomManager.RegisterRoom("stonehenge", () =>
+            foreach (var manifest in RoomManifest.All)
             {
-                _roomManager.SetBackground(_bgStonehenge);
-                string jsonPath = Path.Combine(dataDir, "collision_stonehenge.json");
-                _roomManager.SetTileMap(RoomLoader.BuildCollisionTileMap(_tilesetTexture, jsonPath));
+                var captured = manifest;  // closure capture — the lambda runs on every room load
+                _roomManager.RegisterRoom(captured.RoomId, () =>
+                {
+                    // Background (lazy-load; missing assets are silently skipped).
+                    var bg = TryLoadBackground(captured.BackgroundAsset);
+                    if (bg != null) _roomManager.SetBackground(bg);
 
-                var doorRight = new DoorComponent(DoorType.LeftOpening, new Vector2(296, 112));
-                doorRight.DoorId = "stonehenge_door_right";
-                doorRight.TargetRoomId = "wastelands";
-                doorRight.TargetDoorId = "wastelands_door_left";
-                _roomManager.SetDoors(new List<DoorComponent> { doorRight });
-            });
+                    // Collision (skipped if the file is absent — a fresh
+                    // room with no painted geometry is a valid state).
+                    if (!string.IsNullOrEmpty(captured.CollisionFile))
+                    {
+                        string colPath = Path.Combine(dataDir, captured.CollisionFile);
+                        if (File.Exists(colPath))
+                            _roomManager.SetTileMap(RoomLoader.BuildCollisionTileMap(_tilesetTexture, colPath));
+                    }
 
-            _roomManager.RegisterRoom("wastelands", () =>
-            {
-                _roomManager.SetBackground(_bgWastelands);
-                string jsonPath = Path.Combine(dataDir, "collision_wastelands.json");
-                _roomManager.SetTileMap(RoomLoader.BuildCollisionTileMap(_tilesetTexture, jsonPath));
-
-                var doorLeft = new DoorComponent(DoorType.RightOpening, new Vector2(0, 112));
-                doorLeft.DoorId = "wastelands_door_left";
-                doorLeft.TargetRoomId = "stonehenge";
-                doorLeft.TargetDoorId = "stonehenge_door_right";
-
-                var doorRight = new DoorComponent(DoorType.LeftOpening, new Vector2(296, 112));
-                doorRight.DoorId = "wastelands_door_right";
-                doorRight.TargetRoomId = "tunnelmouth";
-                doorRight.TargetDoorId = "tunnelmouth_door_left";
-
-                _roomManager.SetDoors(new List<DoorComponent> { doorLeft, doorRight });
-            });
-
-            _roomManager.RegisterRoom("tunnelmouth", () =>
-            {
-                _roomManager.SetBackground(_bgTunnelMouth);
-                string jsonPath = Path.Combine(dataDir, "collision_tunnelmouth.json");
-                _roomManager.SetTileMap(RoomLoader.BuildCollisionTileMap(_tilesetTexture, jsonPath));
-
-                var doorLeft = new DoorComponent(DoorType.RightOpening, new Vector2(0, 96));
-                doorLeft.DoorId = "tunnelmouth_door_left";
-                doorLeft.TargetRoomId = "wastelands";
-                doorLeft.TargetDoorId = "wastelands_door_right";
-                _roomManager.SetDoors(new List<DoorComponent> { doorLeft });
-            });
+                    // Doors (read from layout JSON; empty list if no file).
+                    _roomManager.SetDoors(BuildDoorsForRoom(captured.RoomId, dataDir));
+                }, displayName: captured.DisplayName);
+            }
         }
 
-        // ====================================================================
-        // CHATEAU ROOMS (screenshot-based, Phase 4A prototype)
-        // ====================================================================
-
-        private void RegisterChateauRooms()
+        private Texture2D? TryLoadBackground(string assetName)
         {
-            string dataDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "assets", "data");
+            if (string.IsNullOrEmpty(assetName)) return null;
+            try { return Content.Load<Texture2D>(assetName); }
+            catch { return null; }
+        }
 
-            // --- CHATEAU 0 (starting room) ---
-            // Top-right door connects to Chateau 1.
-            _roomManager.RegisterRoom("chateau_0", () =>
+        private static List<DoorComponent> BuildDoorsForRoom(string roomId, string dataDir)
+        {
+            var result = new List<DoorComponent>();
+            var layout = RoomLayoutLoader.TryLoad(roomId, dataDir);
+            if (layout == null) return result;
+
+            foreach (var d in layout.doors)
             {
-                _roomManager.SetBackground(_bgChateau0);
-
-                string jsonPath = Path.Combine(dataDir, "collision_chateau0.json");
-                _roomManager.SetTileMap(RoomLoader.BuildCollisionTileMap(_tilesetTexture, jsonPath));
-
-                var door = new DoorComponent(DoorType.LeftOpening, new Vector2(296, 0));
-                door.DoorId = "chateau0_door_topright";
-                door.TargetRoomId = "chateau_1";
-                door.TargetDoorId = "chateau1_door_topleft";
-                _roomManager.SetDoors(new List<DoorComponent> { door });
-            }, displayName: "Chateau 0");
-
-            // --- CHATEAU 1 ---
-            // Top-left door connects back to Chateau 0.
-            // Top-right door connects to Chateau 2.
-            _roomManager.RegisterRoom("chateau_1", () =>
-            {
-                _roomManager.SetBackground(_bgChateau1);
-
-                string jsonPath = Path.Combine(dataDir, "collision_chateau1.json");
-                _roomManager.SetTileMap(RoomLoader.BuildCollisionTileMap(_tilesetTexture, jsonPath));
-
-                var doorLeft = new DoorComponent(DoorType.RightOpening, new Vector2(0, 0));
-                doorLeft.DoorId = "chateau1_door_topleft";
-                doorLeft.TargetRoomId = "chateau_0";
-                doorLeft.TargetDoorId = "chateau0_door_topright";
-
-                var doorRight = new DoorComponent(DoorType.LeftOpening, new Vector2(296, 0));
-                doorRight.DoorId = "chateau1_door_topright";
-                doorRight.TargetRoomId = "chateau_2";
-                doorRight.TargetDoorId = "chateau2_door_topleft";
-
-                _roomManager.SetDoors(new List<DoorComponent> { doorLeft, doorRight });
-            }, displayName: "Chateau 1");
-
-            // --- CHATEAU 2 ---
-            // Top-left door connects back to Chateau 1.
-            _roomManager.RegisterRoom("chateau_2", () =>
-            {
-                _roomManager.SetBackground(_bgChateau2);
-
-                string jsonPath = Path.Combine(dataDir, "collision_chateau2.json");
-                _roomManager.SetTileMap(RoomLoader.BuildCollisionTileMap(_tilesetTexture, jsonPath));
-
-                var door = new DoorComponent(DoorType.RightOpening, new Vector2(8, 0));
-                door.DoorId = "chateau2_door_topleft";
-                door.TargetRoomId = "chateau_1";
-                door.TargetDoorId = "chateau1_door_topright";
-                _roomManager.SetDoors(new List<DoorComponent> { door });
-            }, displayName: "Chateau 2");
+                if (!Enum.TryParse<DoorType>(d.type, ignoreCase: true, out var dt)) continue;
+                var door = new DoorComponent(dt, new Vector2(d.x, d.y));
+                door.DoorId = d.id;
+                door.TargetRoomId = d.targetRoom;
+                door.TargetDoorId = d.targetDoor;
+                result.Add(door);
+            }
+            return result;
         }
 
         // ====================================================================

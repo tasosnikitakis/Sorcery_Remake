@@ -1,0 +1,13 @@
+{
+  "roomId": "tunnelmouth", 
+  "doors": [
+    {
+      "targetDoor": "wastelands_door_right", 
+      "targetRoom": "wastelands", 
+      "y": 96, 
+      "x": 0, 
+      "type": "RightOpening", 
+      "id": "tunnelmouth_door_left"
+    }
+  ]
+}
