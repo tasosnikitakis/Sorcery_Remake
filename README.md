@@ -2,6 +2,14 @@
 
 A faithful pixel-perfect remake of the Amstrad CPC 6128 classic **Sorcery+** using C# and MonoGame.
 
+> ⚠️ **This root README is historical and partly out of date.** The project is
+> well past "Phase 1." For current, canonical documentation start here:
+> - **[`CLAUDE.md`](./CLAUDE.md)** — operating manual, design pillars, invariants, roadmap position.
+> - **[`doc/`](./doc/)** — the source of truth. Begin with
+>   **[`doc/00_GAME_DESIGN_DOCUMENT.md`](./doc/00_GAME_DESIGN_DOCUMENT.md)** (what the original game is)
+>   and **[`doc/README.md`](./doc/README.md)** (the full index).
+> - Superseded phase logs and setup notes now live in **[`docs/archive/`](./docs/archive/)**.
+
 ![Status](https://img.shields.io/badge/Status-Phase%201%20Complete-success)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-blue)
 ![Framework](https://img.shields.io/badge/Framework-MonoGame%203.8-blueviolet)

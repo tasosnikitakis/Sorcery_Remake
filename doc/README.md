@@ -10,6 +10,7 @@ This `doc/` folder is the canonical source of truth for the architecture, gamepl
 
 If you are new to the project, read the documents in this order:
 
+0. **[Game Design Document](./00_GAME_DESIGN_DOCUMENT.md)** — the *original* 1985 *Sorcery+* as the authoritative design target: premise, world, flight, energy, items, combat matrix, timer, and the CPC's mixed video mode. Read this first — it is the spec the remake conforms to, with confidence tags and an open-questions backlog.
 1. **[Project Overview](./01_PROJECT_OVERVIEW.md)** — what this game is, what's done, what's next
 2. **[Architecture](./02_ARCHITECTURE.md)** — how Game1, ECS, and subsystems fit together
 3. **[Developer Guide](./03_DEVELOPER_GUIDE.md)** — build, run, controls, debug toggles
@@ -29,6 +30,8 @@ If you are new to the project, read the documents in this order:
 
 | Topic | File |
 |-------|------|
+| What the original game *is* (design spec) | [00_GAME_DESIGN_DOCUMENT.md](./00_GAME_DESIGN_DOCUMENT.md) |
+| Verify-against-original backlog | [00_GAME_DESIGN_DOCUMENT.md](./00_GAME_DESIGN_DOCUMENT.md#11-open-questions--verify-against-original-backlog) |
 | Run the game | [03_DEVELOPER_GUIDE.md](./03_DEVELOPER_GUIDE.md#build--run) |
 | Add a new room | [07_WORLD_BUILDING.md](./07_WORLD_BUILDING.md#adding-a-new-room) |
 | Add a new enemy | [08_ENEMIES.md](./08_ENEMIES.md#adding-a-new-enemy) |
