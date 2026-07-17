@@ -23,7 +23,10 @@
       "Bash(ls:*)",
       "Bash(ConvImgCPC.exe:*)",
       "Bash(./ConvImgCpc.exe:*)",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(grep -l \"class\\\\|struct\" Enemies/*.cs)",
+      "Bash(wc -l Enemies/*.cs Core/*.cs Physics/*.cs Graphics/*.cs Doors/*.cs Tiles/*.cs Rooms/*.cs)",
+      "Bash(grep -n \"class\\\\|struct\\\\|enum\\\\|public\\\\|private\" /d/Sorcery_Remake/Enemies/*.cs)"
     ]
   }
 }

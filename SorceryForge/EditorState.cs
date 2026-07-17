@@ -11,6 +11,7 @@ namespace SorceryForge
     {
         Place,   // drag entities from the palette, move/delete on canvas
         Paint,   // paint collision tiles directly into the collision grid
+        Erase,   // erase background pixels to transparent (GIMP-style brush)
     }
 
     /// <summary>
@@ -27,6 +28,13 @@ namespace SorceryForge
         // Tracks unsaved collision-grid changes so Save knows whether to
         // rewrite collision_<roomId>.json. Cleared on save and on room load.
         public bool CollisionDirty = false;
+
+        // Tracks unsaved background pixel edits (Erase mode) so Save knows
+        // whether to rewrite Content/RoomBG_<x>.png. Cleared on save/load.
+        public bool BackgroundDirty = false;
+
+        // Erase-mode brush: side length of the square stamp, in room pixels.
+        public int BrushSize = 4;
 
         // Set of placement IDs the validator marked as unreachable from the
         // hardcoded player spawn. Cleared on every Validate run.

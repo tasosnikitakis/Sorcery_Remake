@@ -76,19 +76,59 @@ namespace SorceryForge
             StatusBarRect = new Rectangle(0, WindowHeight - StatusBarHeight, WindowWidth, StatusBarHeight);
         }
 
+        // --- View transform (zoom & pan) --------------------------------
+        // Zoom multiplies the base CanvasScale; (PanX, PanY) is the room
+        // pixel shown at the canvas's top-left corner. Zoom levels are
+        // powers of two so the visible region (RoomWidth/Zoom by
+        // RoomHeight/Zoom) always divides 320x144 exactly and background
+        // pixels stay integer-crisp.
+        public static readonly int[] ZoomLevels = { 1, 2, 4, 8, 16 };
+        public static int Zoom { get; private set; } = 1;
+        public static int PanX { get; private set; }
+        public static int PanY { get; private set; }
+
+        public static int EffScale => CanvasScale * Zoom;
+        public static int VisibleWidth => RoomWidth / Zoom;
+        public static int VisibleHeight => RoomHeight / Zoom;
+
+        public static void ResetView() { Zoom = 1; PanX = 0; PanY = 0; }
+
+        public static void SetPan(int x, int y)
+        {
+            PanX = Math.Clamp(x, 0, RoomWidth - VisibleWidth);
+            PanY = Math.Clamp(y, 0, RoomHeight - VisibleHeight);
+        }
+
+        /// <summary>
+        /// Zoom one level in (+1) or out (-1), keeping the room point under
+        /// anchorScreen stationary on screen (GIMP-style wheel zoom).
+        /// </summary>
+        public static void StepZoom(int direction, Point anchorScreen)
+        {
+            int idx = Array.IndexOf(ZoomLevels, Zoom);
+            int next = Math.Clamp(idx + direction, 0, ZoomLevels.Length - 1);
+            if (next == idx) return;
+
+            Vector2 anchorGame = ScreenToGame(anchorScreen);
+            Zoom = ZoomLevels[next];
+            SetPan(
+                (int)Math.Round(anchorGame.X - (anchorScreen.X - CanvasRect.X) / (float)EffScale),
+                (int)Math.Round(anchorGame.Y - (anchorScreen.Y - CanvasRect.Y) / (float)EffScale));
+        }
+
         public static Vector2 ScreenToGame(Point screen) =>
-            new((screen.X - CanvasRect.X) / (float)CanvasScale,
-                (screen.Y - CanvasRect.Y) / (float)CanvasScale);
+            new(PanX + (screen.X - CanvasRect.X) / (float)EffScale,
+                PanY + (screen.Y - CanvasRect.Y) / (float)EffScale);
 
         public static Point GameToScreen(Vector2 game) =>
-            new(CanvasRect.X + (int)(game.X * CanvasScale),
-                CanvasRect.Y + (int)(game.Y * CanvasScale));
+            new(CanvasRect.X + (int)((game.X - PanX) * EffScale),
+                CanvasRect.Y + (int)((game.Y - PanY) * EffScale));
 
         public static Rectangle GameRectToScreen(Rectangle game) =>
-            new(CanvasRect.X + game.X * CanvasScale,
-                CanvasRect.Y + game.Y * CanvasScale,
-                game.Width * CanvasScale,
-                game.Height * CanvasScale);
+            new(CanvasRect.X + (game.X - PanX) * EffScale,
+                CanvasRect.Y + (game.Y - PanY) * EffScale,
+                game.Width * EffScale,
+                game.Height * EffScale);
 
         public static bool IsInsideCanvas(Point screen) => CanvasRect.Contains(screen);
     }

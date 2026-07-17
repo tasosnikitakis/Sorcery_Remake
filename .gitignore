@@ -79,3 +79,6 @@ $RECYCLE.BIN/
 # Temporary files
 *.tmp
 *.temp
+
+# SorceryForge exit-time safety net for unsaved background pixel edits
+Content/*.autosave.png

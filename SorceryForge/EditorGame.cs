@@ -37,6 +37,29 @@ namespace SorceryForge
         // Per-room cached background and collision overlay (cleared on switch).
         private Texture2D? _currentBackground;
 
+        // Background pixel-edit state (Erase mode). _bgPixels mirrors the
+        // texture's data; _bgOriginal is the state at load / last save (the
+        // right-drag "restore" brush copies from it). Both are null when the
+        // room's raw PNG wasn't found — then the background is display-only
+        // (XNB fallback) and Erase mode is disabled for the room.
+        private Color[]? _bgPixels;
+        private Color[]? _bgOriginal;
+        private bool _ownsBackground;                      // true when _currentBackground came from FromStream (we must Dispose it); false for ContentManager-owned XNB
+        private readonly List<Color[]> _bgUndo = new();   // per-stroke snapshots, oldest first
+        private const int MaxUndo = 40;
+        private bool _strokeActive;
+        private bool _strokeChanged;                       // any pixel changed this stroke (no-op strokes drop their snapshot)
+        private Point _lastStamp;                          // room px, previous stamp centre
+        private (int zoom, int panX, int panY) _strokeView; // view at last stamp — a view jump must not Bresenham across it
+
+        // Middle-mouse panning of the zoomed canvas.
+        private bool _panning;
+        private Point _panStartMouse;
+        private Point _panStartPan;
+
+        // Scissor rasterizer for clipping canvas content while zoomed.
+        private static readonly RasterizerState ScissorOn = new() { ScissorTestEnable = true };
+
         // Input edge-detection.
         private MouseState _mouseNow, _mousePrev;
         private KeyboardState _keysNow, _keysPrev;
@@ -388,18 +411,30 @@ namespace SorceryForge
 
         private void ToggleMode()
         {
-            _state.Mode = _state.Mode == EditorMode.Place ? EditorMode.Paint : EditorMode.Place;
-            _buttons[_btnModeIdx].Label = _state.Mode == EditorMode.Place ? "Mode: Place" : "Mode: Paint";
+            _state.Mode = _state.Mode switch
+            {
+                EditorMode.Place => EditorMode.Paint,
+                EditorMode.Paint => EditorMode.Erase,
+                _                => EditorMode.Place,
+            };
+            _buttons[_btnModeIdx].Label = $"Mode: {_state.Mode}";
 
-            // Switching out of Place mode cancels in-progress drag/move.
+            // Switching out of Place mode cancels in-progress drag/move;
+            // switching out of Erase mode closes any open brush stroke.
             if (_state.Mode != EditorMode.Place)
             {
                 _state.Dragging = null;
                 _state.IsMovingSelection = false;
             }
-            _state.Status = _state.Mode == EditorMode.Paint
-                ? "Paint mode: left-click adds solid, right-click clears."
-                : "Place mode: drag from palette, click to select/move.";
+            if (_state.Mode != EditorMode.Erase) EndStroke();
+            _state.Status = _state.Mode switch
+            {
+                EditorMode.Paint => "Paint mode: left-click adds solid, right-click clears.",
+                EditorMode.Erase => _bgPixels == null
+                    ? "Erase mode: this room has no editable background PNG."
+                    : "Erase: left-drag erases, right-drag restores. [ ] brush, wheel zoom, mid-drag pan, Ctrl+Z undo.",
+                _ => "Place mode: drag from palette, click to select/move.",
+            };
         }
 
         // ====================================================================
@@ -412,11 +447,60 @@ namespace SorceryForge
             var meta = _state.CurrentRoom;
 
             // Background (null for non-bg rooms; we just show grey).
+            // Prefer the raw PNG in the repo Content folder: it's the file
+            // Erase-mode Save writes, so loading it means the editor always
+            // shows its own edits (the XNB only refreshes on the next
+            // content build), and FromStream gives straight (non-premultiplied)
+            // alpha which is what SaveAsPng expects to round-trip losslessly.
+            // FromStream textures are ours to free; XNB textures belong to
+            // the shared ContentManager cache and must never be disposed.
+            if (_ownsBackground) _currentBackground?.Dispose();
+            _ownsBackground = false;
             _currentBackground = null;
+            _bgPixels = null;
+            _bgOriginal = null;
+            _bgUndo.Clear();
+            _strokeActive = false;
+            _discardArmed = false;
+            _state.BackgroundDirty = false;
+            EditorLayout.ResetView();
+
             if (meta.BackgroundAsset != null)
             {
-                try { _currentBackground = Content.Load<Texture2D>(meta.BackgroundAsset); }
-                catch { _currentBackground = null; }
+                string pngPath = Path.Combine(EditorPaths.RepoContentDir, meta.BackgroundAsset + ".png");
+                if (File.Exists(pngPath))
+                {
+                    Texture2D? tex = null;
+                    try
+                    {
+                        using var fs = File.OpenRead(pngPath);
+                        tex = Texture2D.FromStream(GraphicsDevice, fs);
+                        var px = new Color[tex.Width * tex.Height];
+                        tex.GetData(px);
+                        // Normalise fully-transparent pixels to (0,0,0,0):
+                        // earlier tooling kept RGB under alpha-0 holes, which
+                        // would bleed additively under premultiplied blending.
+                        for (int i = 0; i < px.Length; i++)
+                            if (px[i].A == 0) px[i] = Color.Transparent;
+                        tex.SetData(px);
+                        _currentBackground = tex;
+                        _ownsBackground = true;
+                        _bgPixels = px;
+                        _bgOriginal = (Color[])px.Clone();
+                    }
+                    catch
+                    {
+                        tex?.Dispose();
+                        _currentBackground = null;
+                        _bgPixels = null;
+                        _bgOriginal = null;
+                    }
+                }
+                if (_currentBackground == null)
+                {
+                    try { _currentBackground = Content.Load<Texture2D>(meta.BackgroundAsset); }
+                    catch { _currentBackground = null; }
+                }
             }
 
             // Collision overlay (read-only). The same JSON the game uses.
@@ -471,10 +555,37 @@ namespace SorceryForge
                     saved += $" + {meta.CollisionJsonName}";
                 }
 
+                // 4. Background PNG (only when Erase mode touched pixels).
+                //    Written to the repo source Content folder — the GAME's
+                //    XNB refreshes on the next content build (dotnet build).
+                //    Write-to-temp + move keeps the source asset intact if
+                //    the encode fails mid-way.
+                if (_state.BackgroundDirty && _bgPixels != null && _currentBackground != null
+                    && meta.BackgroundAsset != null)
+                {
+                    string pngPath = Path.Combine(EditorPaths.RepoContentDir, meta.BackgroundAsset + ".png");
+                    string tmpPath = pngPath + ".tmp";
+                    try
+                    {
+                        using (var fs = File.Create(tmpPath))
+                            _currentBackground.SaveAsPng(fs, _currentBackground.Width, _currentBackground.Height);
+                        File.Move(tmpPath, pngPath, overwrite: true);
+                    }
+                    finally
+                    {
+                        if (File.Exists(tmpPath)) File.Delete(tmpPath);
+                    }
+                    // The restore brush now restores to this saved state.
+                    _bgOriginal = (Color[])_bgPixels.Clone();
+                    _state.BackgroundDirty = false;
+                    saved += $" + {meta.BackgroundAsset}.png (rebuild for game)";
+                }
+
                 // Refresh in-memory door cache from the file we just wrote
                 // so DoorMarkers / Validate Doors see the new state.
                 meta.ReloadDoorsFromDisk();
 
+                _discardArmed = false;   // a save always disarms the discard guard
                 _state.Status = "Saved " + saved;
             }
             catch (Exception ex)
@@ -483,14 +594,54 @@ namespace SorceryForge
             }
         }
 
+        // Armed by the first destructive attempt (room switch, exit) while
+        // background pixel or collision edits are unsaved; the second
+        // attempt goes through. Disarmed by saving or by further editing.
+        private bool _discardArmed;
+
+        private bool ConfirmDiscardUnsavedEdits()
+        {
+            if (!_state.BackgroundDirty && !_state.CollisionDirty) return true;
+            if (_discardArmed) { _discardArmed = false; return true; }
+            _discardArmed = true;
+            _state.Status = "Unsaved edits! Save (Ctrl+S), or repeat the action to discard.";
+            return false;
+        }
+
+        /// <summary>
+        /// Window-X / Alt+F4 cannot be cancelled in MonoGame DesktopGL, and
+        /// double-Escape deliberately skips saving — so as a last-resort
+        /// safety net, unsaved background pixels are flushed to a sidecar
+        /// .autosave.png beside the asset (never the asset itself). Delete
+        /// it if unwanted; rename over the original to recover.
+        /// </summary>
+        protected override void OnExiting(object sender, EventArgs args)
+        {
+            if (_state.BackgroundDirty && _bgPixels != null && _currentBackground != null
+                && _state.CurrentRoom.BackgroundAsset != null)
+            {
+                try
+                {
+                    string path = Path.Combine(EditorPaths.RepoContentDir,
+                        _state.CurrentRoom.BackgroundAsset + ".autosave.png");
+                    using var fs = File.Create(path);
+                    _currentBackground.SaveAsPng(fs, _currentBackground.Width, _currentBackground.Height);
+                }
+                catch { /* best effort — exit must not be blocked */ }
+            }
+            base.OnExiting(sender, args);
+        }
+
         private void CyclePrevRoom()
         {
+            if (!ConfirmDiscardUnsavedEdits()) return;
             int n = RoomMeta.All.Count;
             LoadRoom((_state.CurrentRoomIndex - 1 + n) % n);
         }
 
         private void CycleNextRoom()
         {
+            if (!ConfirmDiscardUnsavedEdits()) return;
             int n = RoomMeta.All.Count;
             LoadRoom((_state.CurrentRoomIndex + 1) % n);
         }
@@ -512,7 +663,10 @@ namespace SorceryForge
             _mousePrev = _mouseNow;
             _mouseNow = Mouse.GetState();
 
-            if (_keysNow.IsKeyDown(Keys.Escape)) Exit();
+            // Escape exits, but never silently throws away unsaved edits:
+            // the first press arms the discard guard (status bar warning),
+            // the second confirms.
+            if (Pressed(Keys.Escape) && ConfirmDiscardUnsavedEdits()) Exit();
 
             HandleButtons();
             HandleInspectorScroll();
@@ -521,6 +675,7 @@ namespace SorceryForge
             if (HandleInspectorClicks()) { /* swallowed */ }
             else
             {
+                HandleCanvasView();
                 HandleCanvasInput();
                 HandlePaletteInput();
             }
@@ -620,6 +775,53 @@ namespace SorceryForge
             }
         }
 
+        /// <summary>
+        /// Canvas view navigation, active in every mode: mouse-wheel zooms
+        /// in/out anchored at the cursor; middle-drag pans while zoomed.
+        /// </summary>
+        private void HandleCanvasView()
+        {
+            var pt = new Point(_mouseNow.X, _mouseNow.Y);
+
+            // Wheel zoom (only when the cursor is over the canvas — the
+            // inspector consumes its own wheel events by region).
+            if (EditorLayout.IsInsideCanvas(pt))
+            {
+                int delta = _mouseNow.ScrollWheelValue - _mousePrev.ScrollWheelValue;
+                if (delta != 0)
+                {
+                    EditorLayout.StepZoom(Math.Sign(delta), pt);
+                    // Zooming mid-pan: rebase the drag gesture on the
+                    // post-zoom view, or the pan branch below would
+                    // overwrite the anchored pan with stale start state
+                    // rescaled by the new EffScale.
+                    if (_panning)
+                    {
+                        _panStartMouse = pt;
+                        _panStartPan = new Point(EditorLayout.PanX, EditorLayout.PanY);
+                    }
+                    _state.Status = $"Zoom {EditorLayout.Zoom}x";
+                }
+            }
+
+            // Middle-drag pan.
+            bool midDown = _mouseNow.MiddleButton == ButtonState.Pressed;
+            bool midWas  = _mousePrev.MiddleButton == ButtonState.Pressed;
+            if (midDown && !midWas && EditorLayout.IsInsideCanvas(pt))
+            {
+                _panning = true;
+                _panStartMouse = pt;
+                _panStartPan = new Point(EditorLayout.PanX, EditorLayout.PanY);
+            }
+            if (!midDown) _panning = false;
+            if (_panning)
+            {
+                int dx = (int)Math.Round((_panStartMouse.X - pt.X) / (float)EditorLayout.EffScale);
+                int dy = (int)Math.Round((_panStartMouse.Y - pt.Y) / (float)EditorLayout.EffScale);
+                EditorLayout.SetPan(_panStartPan.X + dx, _panStartPan.Y + dy);
+            }
+        }
+
         private void HandleCanvasInput()
         {
             var screenPt = new Point(_mouseNow.X, _mouseNow.Y);
@@ -627,6 +829,12 @@ namespace SorceryForge
             if (_state.Mode == EditorMode.Paint)
             {
                 HandlePaintInput(screenPt);
+                return;
+            }
+
+            if (_state.Mode == EditorMode.Erase)
+            {
+                HandleEraseInput(screenPt);
                 return;
             }
 
@@ -647,12 +855,13 @@ namespace SorceryForge
             }
 
             Vector2 game = EditorLayout.ScreenToGame(screenPt);
-            Vector2 snapped = SnapIfNeeded(game);
 
-            // Drop a palette drag onto the canvas.
+            // Drop a palette drag onto the canvas. The ghost previews the
+            // 24x24 sprite centred on the cursor, so anchor the drop the
+            // same way: offset to the top-left before snapping.
             if (LeftClicked() && _state.Dragging != null)
             {
-                DropDraggingAt(snapped);
+                DropDraggingAt(SnapIfNeeded(game - new Vector2(12f, 12f)));
                 return;
             }
 
@@ -721,10 +930,123 @@ namespace SorceryForge
 
             _state.CollisionMap.SetTile(tx, ty, desired);
             _state.CollisionDirty = true;
+            _discardArmed = false;         // new edits re-arm the discard guard
             _state.HasValidated = false;   // collision changed, old result is stale
             _state.Status = drawSolid
                 ? $"Paint solid at tile ({tx}, {ty})"
                 : $"Erase tile ({tx}, {ty})";
+        }
+
+        // --- ERASE MODE (background pixel brush) ----------------------------
+
+        /// <summary>
+        /// GIMP-style background eraser. Left-drag clears pixels to
+        /// transparent; right-drag paints them back from the last-saved
+        /// state. The brush is a BrushSize-square stamp, stamped along the
+        /// cursor's path (Bresenham) so fast drags leave no gaps. One undo
+        /// snapshot is pushed per stroke (Ctrl+Z).
+        /// </summary>
+        private void HandleEraseInput(Point screenPt)
+        {
+            if (_bgPixels == null || _bgOriginal == null || _currentBackground == null)
+                return;
+
+            bool erase   = _mouseNow.LeftButton == ButtonState.Pressed;
+            bool restore = !erase && _mouseNow.RightButton == ButtonState.Pressed;
+
+            if (!erase && !restore) { EndStroke(); return; }
+
+            // A stroke must START inside the canvas, but may continue past
+            // its edge (stamps clamp to the image bounds).
+            if (!_strokeActive && !EditorLayout.IsInsideCanvas(screenPt)) return;
+
+            Vector2 game = EditorLayout.ScreenToGame(screenPt);
+            var here = new Point((int)Math.Floor(game.X), (int)Math.Floor(game.Y));
+            var view = (EditorLayout.Zoom, EditorLayout.PanX, EditorLayout.PanY);
+
+            if (!_strokeActive)
+            {
+                if (_bgUndo.Count >= MaxUndo) _bgUndo.RemoveAt(0);
+                _bgUndo.Add((Color[])_bgPixels.Clone());
+                _strokeActive = true;
+                _strokeChanged = false;
+                _discardArmed = false;   // new edits re-arm the discard guard
+                _lastStamp = here;
+                _strokeView = view;
+            }
+
+            // A view change (wheel zoom, middle-drag/arrow pan) moves the
+            // under-cursor room point without the user dragging — never
+            // Bresenham across that jump, and don't stamp while panning.
+            if (_panning || view != _strokeView)
+            {
+                _strokeView = view;
+                _lastStamp = here;
+                return;
+            }
+
+            bool changed = StampLine(_lastStamp, here, erase);
+            _lastStamp = here;
+
+            if (changed)
+            {
+                _strokeChanged = true;
+                _currentBackground.SetData(_bgPixels);
+                _state.BackgroundDirty = true;
+                _state.Status =
+                    $"{(erase ? "Erasing" : "Restoring")} at ({here.X}, {here.Y}) — brush {_state.BrushSize}px, Ctrl+Z undo, Save writes PNG.";
+            }
+        }
+
+        /// <summary>
+        /// Close the current stroke. A stroke that changed nothing drops its
+        /// undo snapshot so no-op clicks can't evict real history.
+        /// </summary>
+        private void EndStroke()
+        {
+            if (_strokeActive && !_strokeChanged && _bgUndo.Count > 0)
+                _bgUndo.RemoveAt(_bgUndo.Count - 1);
+            _strokeActive = false;
+        }
+
+        /// <summary>Stamp the brush along the line from..to (Bresenham).</summary>
+        private bool StampLine(Point from, Point to, bool erase)
+        {
+            bool changed = false;
+            int dx = Math.Abs(to.X - from.X), sx = from.X < to.X ? 1 : -1;
+            int dy = -Math.Abs(to.Y - from.Y), sy = from.Y < to.Y ? 1 : -1;
+            int err = dx + dy;
+            int x = from.X, y = from.Y;
+            while (true)
+            {
+                changed |= StampBrush(x, y, erase);
+                if (x == to.X && y == to.Y) break;
+                int e2 = 2 * err;
+                if (e2 >= dy) { err += dy; x += sx; }
+                if (e2 <= dx) { err += dx; y += sy; }
+            }
+            return changed;
+        }
+
+        /// <summary>
+        /// Apply the square brush centred on room pixel (cx, cy). Erase sets
+        /// (0,0,0,0); restore copies from _bgOriginal. Returns true if any
+        /// pixel changed.
+        /// </summary>
+        private bool StampBrush(int cx, int cy, bool erase)
+        {
+            int size = _state.BrushSize;
+            int x0 = cx - size / 2, y0 = cy - size / 2;
+            int w = _currentBackground!.Width, h = _currentBackground.Height;
+            bool changed = false;
+            for (int y = Math.Max(0, y0); y < Math.Min(h, y0 + size); y++)
+            for (int x = Math.Max(0, x0); x < Math.Min(w, x0 + size); x++)
+            {
+                int i = y * w + x;
+                Color want = erase ? Color.Transparent : _bgOriginal![i];
+                if (_bgPixels![i] != want) { _bgPixels[i] = want; changed = true; }
+            }
+            return changed;
         }
 
         // --- REACHABILITY VALIDATOR ----------------------------------------
@@ -968,10 +1290,16 @@ namespace SorceryForge
             return true;
         }
 
+        private bool Pressed(Keys key) =>
+            _keysNow.IsKeyDown(key) && !_keysPrev.IsKeyDown(key);
+
         private void HandleKeyboardShortcuts()
         {
+            bool ctrl  = _keysNow.IsKeyDown(Keys.LeftControl) || _keysNow.IsKeyDown(Keys.RightControl);
+            bool shift = _keysNow.IsKeyDown(Keys.LeftShift)   || _keysNow.IsKeyDown(Keys.RightShift);
+
             // Delete the selected placement.
-            if (_keysNow.IsKeyDown(Keys.Delete) && !_keysPrev.IsKeyDown(Keys.Delete))
+            if (Pressed(Keys.Delete))
             {
                 if (_state.SelectedPlacement != null)
                 {
@@ -982,18 +1310,52 @@ namespace SorceryForge
             }
 
             // Ctrl+S → save.
-            if (_keysNow.IsKeyDown(Keys.S) && !_keysPrev.IsKeyDown(Keys.S) &&
-                (_keysNow.IsKeyDown(Keys.LeftControl) || _keysNow.IsKeyDown(Keys.RightControl)))
+            if (ctrl && Pressed(Keys.S)) SaveCurrentRoom();
+
+            // Ctrl+Z → undo the last erase/restore stroke (background only).
+            if (ctrl && Pressed(Keys.Z) && _bgUndo.Count > 0 &&
+                _bgPixels != null && _currentBackground != null)
             {
-                SaveCurrentRoom();
+                // Close any in-progress stroke first: a still-held drag then
+                // starts a fresh stroke with a fresh snapshot next frame,
+                // instead of silently merging into the popped history entry.
+                EndStroke();
+                if (_bgUndo.Count > 0)
+                {
+                    var snap = _bgUndo[^1];
+                    _bgUndo.RemoveAt(_bgUndo.Count - 1);
+                    bool differs = !snap.AsSpan().SequenceEqual(_bgPixels);
+                    Array.Copy(snap, _bgPixels, snap.Length);
+                    _currentBackground.SetData(_bgPixels);
+                    if (differs) _state.BackgroundDirty = true;
+                    _discardArmed = false;
+                    _state.Status = $"Undid background stroke ({_bgUndo.Count} more in history).";
+                }
             }
 
+            // [ / ] → brush size down/up (Shift = steps of 4).
+            int step = shift ? 4 : 1;
+            if (Pressed(Keys.OemOpenBrackets))  SetBrushSize(_state.BrushSize - step);
+            if (Pressed(Keys.OemCloseBrackets)) SetBrushSize(_state.BrushSize + step);
+
+            // Arrow keys → pan the zoomed view in 8-px nudges.
+            if (Pressed(Keys.Left))  EditorLayout.SetPan(EditorLayout.PanX - 8, EditorLayout.PanY);
+            if (Pressed(Keys.Right)) EditorLayout.SetPan(EditorLayout.PanX + 8, EditorLayout.PanY);
+            if (Pressed(Keys.Up))    EditorLayout.SetPan(EditorLayout.PanX, EditorLayout.PanY - 8);
+            if (Pressed(Keys.Down))  EditorLayout.SetPan(EditorLayout.PanX, EditorLayout.PanY + 8);
+
             // Page-up/down → cycle rooms.
-            if (_keysNow.IsKeyDown(Keys.PageUp) && !_keysPrev.IsKeyDown(Keys.PageUp)) CyclePrevRoom();
-            if (_keysNow.IsKeyDown(Keys.PageDown) && !_keysPrev.IsKeyDown(Keys.PageDown)) CycleNextRoom();
+            if (Pressed(Keys.PageUp)) CyclePrevRoom();
+            if (Pressed(Keys.PageDown)) CycleNextRoom();
 
             // F11 → borderless fullscreen toggle.
-            if (_keysNow.IsKeyDown(Keys.F11) && !_keysPrev.IsKeyDown(Keys.F11)) ToggleFullscreen();
+            if (Pressed(Keys.F11)) ToggleFullscreen();
+        }
+
+        private void SetBrushSize(int size)
+        {
+            _state.BrushSize = Math.Clamp(size, 1, 32);
+            _state.Status = $"Brush {_state.BrushSize}px";
         }
 
         private void DropDraggingAt(Vector2 gamePos)
@@ -1064,16 +1426,40 @@ namespace SorceryForge
         protected override void Draw(GameTime gameTime)
         {
             GraphicsDevice.Clear(new Color(36, 38, 46));
-            _spriteBatch.Begin(samplerState: SamplerState.PointClamp);
 
+            // Pass 1: UI chrome and the canvas frame.
+            _spriteBatch.Begin(samplerState: SamplerState.PointClamp);
             DrawTopBar();
             DrawPalette();
-            DrawCanvas();
+            FillRect(EditorLayout.CanvasRect, Color.Black);
+            DrawRectOutline(InflateRect(EditorLayout.CanvasRect, 2), new Color(120, 130, 160));
+            _spriteBatch.End();
+
+            // Pass 2: canvas content, scissor-clipped to the canvas rect so
+            // zoomed-in drawing never spills over the surrounding panels.
+            GraphicsDevice.ScissorRectangle = EditorLayout.CanvasRect;
+            _spriteBatch.Begin(samplerState: SamplerState.PointClamp, rasterizerState: ScissorOn);
+            DrawCanvasContent();
+            _spriteBatch.End();
+
+            // Pass 2b: outline overlays. Their borders inflate up to 3 px
+            // beyond placements that sit flush at a room edge (doors by
+            // convention do), so they get a slightly looser scissor —
+            // still clipped, so off-view outlines can't reach the panels.
+            GraphicsDevice.ScissorRectangle = InflateRect(EditorLayout.CanvasRect, 3);
+            _spriteBatch.Begin(samplerState: SamplerState.PointClamp, rasterizerState: ScissorOn);
+            DrawCanvasOverlays();
+            _spriteBatch.End();
+
+            // Pass 3: overlays that intentionally draw outside the canvas
+            // (door labels live in the canvas margin) and the side panels.
+            _spriteBatch.Begin(samplerState: SamplerState.PointClamp);
+            DrawDoorLabels();
             DrawInspector();
             DrawStatusBar();
             DrawDragGhost();
-
             _spriteBatch.End();
+
             base.Draw(gameTime);
         }
 
@@ -1108,7 +1494,12 @@ namespace SorceryForge
             FillRect(EditorLayout.PaletteRect, new Color(28, 30, 38));
             DrawRectOutline(EditorLayout.PaletteRect, new Color(60, 64, 78));
 
-            string header = _state.Mode == EditorMode.Paint ? "PALETTE (paint mode)" : "PALETTE";
+            string header = _state.Mode switch
+            {
+                EditorMode.Paint => "PALETTE (paint mode)",
+                EditorMode.Erase => "PALETTE (erase mode)",
+                _ => "PALETTE",
+            };
             DrawText(header, new Vector2(EditorLayout.PaletteX + 8, EditorLayout.PaletteY + 8), new Color(180, 180, 200));
 
             // Section headers — drawn before entries so entries can paint
@@ -1120,10 +1511,10 @@ namespace SorceryForge
                 DrawText(name, new Vector2(bounds.X + 8, bounds.Y + 4), new Color(255, 220, 110));
             }
 
-            // In Paint mode, the entity palette is non-interactive — render
-            // its entries dimmed so it's visually obvious why clicks are
-            // ignored. Sprites are drawn through a tinted alpha overlay.
-            bool dim = _state.Mode == EditorMode.Paint;
+            // Outside Place mode, the entity palette is non-interactive —
+            // render its entries dimmed so it's visually obvious why clicks
+            // are ignored. Sprites are drawn through a tinted alpha overlay.
+            bool dim = _state.Mode != EditorMode.Place;
 
             foreach (var entry in _state.Palette)
             {
@@ -1150,22 +1541,49 @@ namespace SorceryForge
 
         // -- Canvas: background → collision overlay → placements → selection.
 
-        private void DrawCanvas()
+        private void DrawCanvasContent()
         {
-            // Frame around the canvas.
-            FillRect(EditorLayout.CanvasRect, Color.Black);
-            DrawRectOutline(InflateRect(EditorLayout.CanvasRect, 2), new Color(120, 130, 160));
-
             if (_currentBackground != null)
-                _spriteBatch.Draw(_currentBackground, EditorLayout.CanvasRect, Color.White);
+            {
+                // Source rect = the visible (zoomed/panned) region of the room.
+                var src = new Rectangle(EditorLayout.PanX, EditorLayout.PanY,
+                                        EditorLayout.VisibleWidth, EditorLayout.VisibleHeight);
+                _spriteBatch.Draw(_currentBackground, EditorLayout.CanvasRect, src, Color.White);
+            }
 
             DrawCollisionOverlay();
             DrawPaintCursor();
             DrawPlacements();
-            DrawDoorMarkers();
+        }
+
+        // Outline overlays — drawn in pass 2b under a 3px-looser scissor so
+        // borders around room-edge placements aren't shaved off.
+        private void DrawCanvasOverlays()
+        {
+            DrawDoorMarkerOutlines();
             DrawUnreachableWarnings();
             DrawPuzzleWarnings();
             DrawSelectionHighlight();
+            DrawEraseCursor();
+        }
+
+        /// <summary>
+        /// Brush preview in Erase mode: the exact pixels the next stamp
+        /// would cover, double-outlined so it reads on any background.
+        /// </summary>
+        private void DrawEraseCursor()
+        {
+            if (_state.Mode != EditorMode.Erase || _bgPixels == null) return;
+            var pt = new Point(_mouseNow.X, _mouseNow.Y);
+            if (!EditorLayout.IsInsideCanvas(pt)) return;
+
+            Vector2 game = EditorLayout.ScreenToGame(pt);
+            int size = _state.BrushSize;
+            int bx = (int)Math.Floor(game.X) - size / 2;
+            int by = (int)Math.Floor(game.Y) - size / 2;
+            var dest = EditorLayout.GameRectToScreen(new Rectangle(bx, by, size, size));
+            DrawRectOutline(InflateRect(dest, 1), Color.Black);
+            DrawRectOutline(dest, Color.White);
         }
 
         private void DrawPuzzleWarnings()
@@ -1185,46 +1603,58 @@ namespace SorceryForge
             }
         }
 
+        private Color DoorStatusColor(Placement door)
+        {
+            if (_state.HasValidatedDoors && _state.DoorStatus.TryGetValue(door.Id, out var status))
+            {
+                return status switch
+                {
+                    "ok"          => new Color( 80, 230, 110),
+                    "asymmetric"  => new Color(255, 200,  60),
+                    _             => new Color(255,  60,  60),  // orphan-*
+                };
+            }
+            return new Color(180, 180, 200);
+        }
+
         /// <summary>
         /// Outlines every door placement in the current room with its
-        /// validation status colour, and labels each with its target room
-        /// in the canvas margin. Iterates _state.Placements so authored-
-        /// but-not-yet-saved doors show their overlay too.
+        /// validation status colour. Iterates _state.Placements so authored-
+        /// but-not-yet-saved doors show their overlay too. (Drawn in the
+        /// scissored canvas pass; the labels are drawn separately in the
+        /// margin pass.)
         /// </summary>
-        private void DrawDoorMarkers()
+        private void DrawDoorMarkerOutlines()
+        {
+            foreach (var door in _state.Placements)
+            {
+                if (door.Kind != PlacementKind.Door) continue;
+                var rect = EditorLayout.GameRectToScreen(
+                    new Rectangle((int)door.Position.X, (int)door.Position.Y, 24, 24));
+                var color = DoorStatusColor(door);
+                DrawRectOutline(InflateRect(rect, 1), color);
+                DrawRectOutline(InflateRect(rect, 2), color);
+            }
+        }
+
+        /// <summary>
+        /// Render each door's target-room label OUTSIDE the canvas in the
+        /// surrounding margin, so it never overlaps placements.
+        ///   - Top doors  (y near 0)               → label above canvas
+        ///   - Bottom doors (y near RoomHeight-24) → label below canvas
+        ///   - Mid-height doors → tucked above the door inside the canvas
+        /// Doors scrolled out of the zoomed view get no label.
+        /// </summary>
+        private void DrawDoorLabels()
         {
             foreach (var door in _state.Placements)
             {
                 if (door.Kind != PlacementKind.Door) continue;
 
-                Color color;
-                if (!_state.HasValidatedDoors)
-                {
-                    color = new Color(180, 180, 200);
-                }
-                else if (_state.DoorStatus.TryGetValue(door.Id, out var status))
-                {
-                    color = status switch
-                    {
-                        "ok"          => new Color( 80, 230, 110),
-                        "asymmetric"  => new Color(255, 200,  60),
-                        _             => new Color(255,  60,  60),  // orphan-*
-                    };
-                }
-                else color = new Color(180, 180, 200);
-
-                // 24x24 box at the door's game-space position.
                 var rect = EditorLayout.GameRectToScreen(
                     new Rectangle((int)door.Position.X, (int)door.Position.Y, 24, 24));
-                DrawRectOutline(InflateRect(rect, 1), color);
-                DrawRectOutline(InflateRect(rect, 2), color);
+                if (!rect.Intersects(EditorLayout.CanvasRect)) continue;
 
-                // Render the target-room label OUTSIDE the canvas in the
-                // surrounding margin, so it never overlaps placements.
-                //   - Top doors  (y near 0)               → label above canvas
-                //   - Bottom doors (y near RoomHeight-24) → label below canvas
-                //   - Mid-height doors → tucked above the door inside the canvas
-                //     (rare in current rooms; future-proofing for new room types)
                 string targetLabel = string.IsNullOrEmpty(door.DoorTargetRoomId)
                     ? "(no target)"
                     : door.DoorTargetRoomId;
@@ -1238,7 +1668,10 @@ namespace SorceryForge
                 else if (isBottomDoor)
                     labelY = EditorLayout.CanvasY + EditorLayout.CanvasHeight + 4;
                 else
-                    labelY = rect.Top - (int)size.Y - 4;
+                    // Clamp into the canvas: a mid-height door partially
+                    // scrolled off the top of a zoomed view must not push
+                    // its label up into the top-bar buttons.
+                    labelY = Math.Max(rect.Top - (int)size.Y - 4, EditorLayout.CanvasY + 2);
 
                 int labelX = rect.X + (rect.Width - (int)size.X) / 2;
                 // Clamp horizontally so labels near the canvas edges don't
@@ -1260,15 +1693,12 @@ namespace SorceryForge
             if (!EditorLayout.IsInsideCanvas(pt)) return;
 
             Vector2 game = EditorLayout.ScreenToGame(pt);
-            int tx = (int)(game.X / TileConfig.TILE_SIZE);
-            int ty = (int)(game.Y / TileConfig.TILE_SIZE);
-            int s = TileConfig.TILE_SIZE * EditorLayout.CanvasScale;
+            int t = TileConfig.TILE_SIZE;
+            int tx = (int)(game.X / t);
+            int ty = (int)(game.Y / t);
 
             // Yellow outline at the hovered tile so the brush position is obvious.
-            var dest = new Rectangle(
-                EditorLayout.CanvasX + tx * s,
-                EditorLayout.CanvasY + ty * s,
-                s, s);
+            var dest = EditorLayout.GameRectToScreen(new Rectangle(tx * t, ty * t, t, t));
             DrawRectOutline(dest, new Color(255, 220, 60));
         }
 
@@ -1290,18 +1720,20 @@ namespace SorceryForge
         private void DrawCollisionOverlay()
         {
             if (_state.CollisionMap == null) return;
+            // Hidden in Erase mode: the red tint would obscure exactly the
+            // background pixels the user is trying to inspect and clean.
+            if (_state.Mode == EditorMode.Erase) return;
+
             var tint = new Color(255, 60, 60, 90);
-            int s = TileConfig.TILE_SIZE * EditorLayout.CanvasScale;
+            int t = TileConfig.TILE_SIZE;
 
             for (int ty = 0; ty < _state.CollisionMap.Height; ty++)
             {
                 for (int tx = 0; tx < _state.CollisionMap.Width; tx++)
                 {
                     if (!_state.CollisionMap.IsTileSolid(tx, ty)) continue;
-                    var dest = new Rectangle(
-                        EditorLayout.CanvasX + tx * s,
-                        EditorLayout.CanvasY + ty * s,
-                        s, s);
+                    var dest = EditorLayout.GameRectToScreen(new Rectangle(tx * t, ty * t, t, t));
+                    if (!dest.Intersects(EditorLayout.CanvasRect)) continue;
                     FillRect(dest, tint);
                 }
             }
@@ -1309,12 +1741,16 @@ namespace SorceryForge
 
         private void DrawPlacements()
         {
+            // In Erase mode entities are ghosted so they don't hide the
+            // background pixels under the brush (doors especially sit
+            // exactly where baked-in door remnants need cleaning).
+            Color tint = _state.Mode == EditorMode.Erase ? Color.White * 0.25f : Color.White;
             foreach (var p in _state.Placements)
             {
                 var entry = FindPaletteFor(p);
                 if (entry == null) continue;
                 var dest = EditorLayout.GameRectToScreen(p.Bounds);
-                _spriteBatch.Draw(entry.Texture, dest, entry.SourceRect, Color.White);
+                _spriteBatch.Draw(entry.Texture, dest, entry.SourceRect, tint);
             }
         }
 
@@ -1329,7 +1765,11 @@ namespace SorceryForge
         {
             if (_state.Dragging == null) return;
             var screen = new Point(_mouseNow.X, _mouseNow.Y);
-            int size = 24 * EditorLayout.CanvasScale;
+            // Over the canvas the ghost matches the drop size at the current
+            // zoom; elsewhere it stays at base scale so a 16x-zoomed ghost
+            // doesn't blanket the palette and inspector panels.
+            int scale = EditorLayout.IsInsideCanvas(screen) ? EditorLayout.EffScale : EditorLayout.CanvasScale;
+            int size = 24 * scale;
             var dest = new Rectangle(screen.X - size / 2, screen.Y - size / 2, size, size);
             _spriteBatch.Draw(_state.Dragging.Texture, dest, _state.Dragging.SourceRect, new Color(255, 255, 255, 180));
         }
@@ -1657,9 +2097,18 @@ namespace SorceryForge
             FillRect(EditorLayout.StatusBarRect, new Color(20, 22, 28));
             DrawRectOutline(EditorLayout.StatusBarRect, new Color(60, 64, 78));
 
-            // Truncate status text if it would run past the right edge.
+            // Right-aligned view info: zoom level always, brush size in
+            // Erase mode, unsaved-pixels marker while the PNG is dirty.
+            string view = $"Zoom {EditorLayout.Zoom}x";
+            if (_state.Mode == EditorMode.Erase) view += $" | Brush {_state.BrushSize}px";
+            if (_state.BackgroundDirty) view += " | PNG*";
+            var viewSize = MeasureText(view);
+            float viewX = EditorLayout.WindowWidth - viewSize.X - 8;
+            DrawText(view, new Vector2(viewX, EditorLayout.StatusBarY + 10), new Color(150, 170, 200));
+
+            // Truncate status text if it would run into the view info.
             string status = _state.Status ?? "";
-            float maxX = EditorLayout.WindowWidth - 16;
+            float maxX = viewX - 16;
             while (status.Length > 0 && 8 + MeasureText(status).X > maxX)
                 status = status[..^1];
             DrawText(status, new Vector2(8, EditorLayout.StatusBarY + 10), new Color(200, 200, 220));
