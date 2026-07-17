@@ -23,7 +23,8 @@
       "Bash(ls:*)",
       "Bash(ConvImgCPC.exe:*)",
       "Bash(./ConvImgCpc.exe:*)",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Workflow(deep-research)"
     ]
   }
 }
