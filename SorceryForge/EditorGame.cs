@@ -1197,10 +1197,21 @@ namespace SorceryForge
         /// borders on canvas — only placements in the CURRENT room are
         /// rendered, but issues across the whole world are summarised in
         /// the status bar.
+        ///
+        /// The current room is passed in from memory rather than read back
+        /// from disk, so unsaved edits are analysed too — matching what
+        /// ValidateDoors already does with its doorsByRoom overlay.
         /// </summary>
         private void AnalyzePuzzle()
         {
-            var report = PuzzleAnalyzer.Analyze();
+            var doors = new List<DoorDef>();
+            foreach (var p in _state.Placements)
+                if (p.Kind == PlacementKind.Door)
+                    doors.Add(new DoorDef(p.Id, p.Position, p.DoorOpeningSide,
+                                          p.DoorTargetRoomId, p.DoorTargetDoorId));
+
+            var report = PuzzleAnalyzer.Analyze(
+                _state.CurrentRoom.RoomId, _state.ToRoomContent(), doors);
             _state.LastPuzzleReport = report;
             _state.PuzzleProblemIds.Clear();
             foreach (var issue in report.Issues)

@@ -61,7 +61,21 @@ namespace SorceryForge
     {
         public const string StartRoom = "chateau_0";
 
-        public static PuzzleReport Analyze()
+        /// <summary>
+        /// Run the analysis. Every room is read from its JSON files EXCEPT
+        /// the one named by <paramref name="overrideRoomId"/>, which is taken
+        /// from the supplied in-memory content / doors instead.
+        ///
+        /// That override is what makes the Puzzle button honour unsaved edits
+        /// in the room currently open in the editor — otherwise it reports on
+        /// the last-saved world and silently contradicts what's on screen.
+        /// ValidateDoors already overlays the current room the same way.
+        /// Passing no arguments analyses purely what's on disk.
+        /// </summary>
+        public static PuzzleReport Analyze(
+            string? overrideRoomId = null,
+            RoomContent? overrideContent = null,
+            List<DoorDef>? overrideDoors = null)
         {
             var report = new PuzzleReport();
 
@@ -78,7 +92,14 @@ namespace SorceryForge
                 string rid = queue.Dequeue();
                 var meta = RoomMeta.Find(rid);
                 if (meta == null) continue;
-                foreach (var d in meta.Doors)
+
+                // Expand the overridden room through its unsaved doors, so a
+                // just-authored connection counts towards reachability.
+                var doors = (rid == overrideRoomId && overrideDoors != null)
+                    ? overrideDoors
+                    : meta.Doors;
+
+                foreach (var d in doors)
                 {
                     if (RoomMeta.Find(d.TargetRoomId) == null) continue;
                     if (visited.Add(d.TargetRoomId))
@@ -97,7 +118,9 @@ namespace SorceryForge
 
             foreach (var rid in visited)
             {
-                var content = RoomContentLoader.TryLoad(rid);
+                var content = (rid == overrideRoomId && overrideContent != null)
+                    ? overrideContent
+                    : RoomContentLoader.TryLoad(rid);
                 if (content == null) continue;
 
                 foreach (var i in content.Items)        { allItems.Add(i.Type);                      report.ItemCount++; }
@@ -132,7 +155,9 @@ namespace SorceryForge
             // ---------- 5. Wizards stranded in unreachable rooms ----------
             foreach (var rid in report.UnreachableRoomIds)
             {
-                var content = RoomContentLoader.TryLoad(rid);
+                var content = (rid == overrideRoomId && overrideContent != null)
+                    ? overrideContent
+                    : RoomContentLoader.TryLoad(rid);
                 if (content == null) continue;
                 foreach (var w in content.Wizards)
                     report.Issues.Add(new PuzzleIssue(rid, w.Id,
