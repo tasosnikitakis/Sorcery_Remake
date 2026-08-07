@@ -33,6 +33,10 @@ namespace SorceryForge
         // whether to rewrite Content/RoomBG_<x>.png. Cleared on save/load.
         public bool BackgroundDirty = false;
 
+        // Tracks unsaved placement edits (add/move/delete/inspector changes)
+        // so room switches and exit can't silently discard them.
+        public bool PlacementsDirty = false;
+
         // Erase-mode brush: side length of the square stamp, in room pixels.
         public int BrushSize = 4;
 

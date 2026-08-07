@@ -524,8 +524,11 @@ namespace SorceryForge
             _state.LoadFromRoomContent(content ?? new RoomContent(), meta.Doors);
             _state.NextIdCounter = _state.Placements.Count + 1;
 
-            // Clear collision-edit and validation state on every load.
+            // Clear collision-edit, placement-edit and validation state on
+            // every load — the working set was just rebuilt from disk, so
+            // nothing in it is unsaved any more.
             _state.CollisionDirty = false;
+            _state.PlacementsDirty = false;
             _state.UnreachableIds.Clear();
             _state.HasValidated = false;
 
@@ -545,6 +548,12 @@ namespace SorceryForge
                 var layout = _state.ToRoomLayoutJson(meta.RoomId);
                 RoomLayoutLoader.Save(layout, EditorPaths.RepoAssetsDataDir);
                 saved += $" + layout_{meta.RoomId}.json";
+
+                // Placements live entirely in those two files, so they're
+                // durable now — clear the flag here (same pattern as the
+                // collision / background flags below, each cleared right
+                // after the write that persists it).
+                _state.PlacementsDirty = false;
 
                 // 3. Collision grid (only when Paint mode produced changes).
                 if (_state.CollisionDirty && _state.CollisionMap != null && meta.CollisionJsonName != null)
@@ -595,13 +604,14 @@ namespace SorceryForge
         }
 
         // Armed by the first destructive attempt (room switch, exit) while
-        // background pixel or collision edits are unsaved; the second
-        // attempt goes through. Disarmed by saving or by further editing.
+        // background pixel, collision, or placement edits are unsaved; the
+        // second attempt goes through. Disarmed by saving or by further
+        // editing.
         private bool _discardArmed;
 
         private bool ConfirmDiscardUnsavedEdits()
         {
-            if (!_state.BackgroundDirty && !_state.CollisionDirty) return true;
+            if (!_state.BackgroundDirty && !_state.CollisionDirty && !_state.PlacementsDirty) return true;
             if (_discardArmed) { _discardArmed = false; return true; }
             _discardArmed = true;
             _state.Status = "Unsaved edits! Save (Ctrl+S), or repeat the action to discard.";
@@ -888,10 +898,20 @@ namespace SorceryForge
             // Continue a move while the mouse is held.
             if (LeftHeld() && _state.IsMovingSelection && _state.SelectedPlacement != null)
             {
+                Vector2 before = _state.SelectedPlacement.Position;
                 Vector2 newPos = game + _state.MoveOffset;
                 _state.SelectedPlacement.Position = SnapIfNeeded(newPos);
                 ClampToRoom(_state.SelectedPlacement);
                 _state.HasValidated = false;
+                // Only an actual displacement counts as an edit. This branch
+                // also runs while the button is merely held down after a
+                // select-click, and marking dirty there would arm the discard
+                // guard for a click that changed nothing.
+                if (_state.SelectedPlacement.Position != before)
+                {
+                    _state.PlacementsDirty = true;
+                    _discardArmed = false;  // new edits re-arm the discard guard
+                }
                 return;
             }
 
@@ -1306,6 +1326,8 @@ namespace SorceryForge
                     _state.Placements.Remove(_state.SelectedPlacement);
                     _state.Status = $"Deleted {_state.SelectedPlacement.DisplayName}";
                     _state.SelectedPlacement = null;
+                    _state.PlacementsDirty = true;
+                    _discardArmed = false;   // new edits re-arm the discard guard
                 }
             }
 
@@ -1388,6 +1410,8 @@ namespace SorceryForge
             _state.Dragging = null;
             _state.HasValidated = false;
             _state.HasValidatedDoors = false;
+            _state.PlacementsDirty = true;
+            _discardArmed = false;         // new edits re-arm the discard guard
             _state.Status = $"Placed {placement.DisplayName} at ({(int)placement.Position.X}, {(int)placement.Position.Y})";
         }
 
@@ -1476,7 +1500,12 @@ namespace SorceryForge
             // and right button banks (computed in RelayoutButtons). Skip
             // drawing when there's no room — falls off the side instead of
             // overlapping a button.
-            string title = $"Room: {_state.CurrentRoom.DisplayName}  ({_state.CurrentRoom.RoomId})";
+            // Trailing "*" whenever ANY edit is unsaved (placements, collision
+            // grid, or background pixels) — the same condition that makes
+            // ConfirmDiscardUnsavedEdits block a room switch or exit.
+            bool dirty = _state.PlacementsDirty || _state.CollisionDirty || _state.BackgroundDirty;
+            string title = $"Room: {_state.CurrentRoom.DisplayName}  ({_state.CurrentRoom.RoomId})"
+                         + (dirty ? " *" : "");
             var size = MeasureText(title);
             int gap = _rightBankLeft - _leftBankRight;
             if (gap >= size.X + 16)
@@ -1945,6 +1974,8 @@ namespace SorceryForge
                         {
                             capturedBd.RequiredItem = NextItemType(capturedBd.RequiredItem);
                             _state.HasValidatedDoors = false;
+                            _state.PlacementsDirty = true;
+                            _discardArmed = false;
                         },
                         viewportTop, viewportBottom) + rowGap;
                     break;
@@ -1958,6 +1989,8 @@ namespace SorceryForge
                             capturedD.DoorOpeningSide = capturedD.DoorOpeningSide == "LeftOpening"
                                 ? "RightOpening" : "LeftOpening";
                             _state.HasValidatedDoors = false;
+                            _state.PlacementsDirty = true;
+                            _discardArmed = false;
                         },
                         viewportTop, viewportBottom) + rowGap;
 
@@ -1968,6 +2001,8 @@ namespace SorceryForge
                             capturedD.DoorTargetRoomId = NextRoomId(capturedD.DoorTargetRoomId);
                             capturedD.DoorTargetDoorId = "";
                             _state.HasValidatedDoors = false;
+                            _state.PlacementsDirty = true;
+                            _discardArmed = false;
                         },
                         viewportTop, viewportBottom) + rowGap;
 
@@ -1977,6 +2012,8 @@ namespace SorceryForge
                         {
                             capturedD.DoorTargetDoorId = NextTargetDoorId(capturedD.DoorTargetRoomId, capturedD.DoorTargetDoorId);
                             _state.HasValidatedDoors = false;
+                            _state.PlacementsDirty = true;
+                            _discardArmed = false;
                         },
                         viewportTop, viewportBottom) + rowGap;
                     break;
