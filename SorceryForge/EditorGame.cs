@@ -348,7 +348,7 @@ namespace SorceryForge
         }
 
         // Indices into _buttons for the labels we update at runtime.
-        private int _btnSnapIdx, _btnModeIdx;
+        private int _btnSnapIdx, _btnModeIdx, _btnPunchIdx;
 
         // Where the "left bank" of buttons ends and the "right bank" begins,
         // in screen X. Recomputed each RelayoutButtons() — used to center
@@ -373,7 +373,12 @@ namespace SorceryForge
 
             _buttons.Add(new UiButton("Save", default, SaveCurrentRoom));
 
-            _buttons.Add(new UiButton("Fullscreen (F11)", default, ToggleFullscreen));
+            _buttons.Add(new UiButton("Full (F11)", default, ToggleFullscreen));
+
+            // Appended last so the hardcoded indices above keep their meaning;
+            // RelayoutButtons decides where it actually sits on screen.
+            _btnPunchIdx = _buttons.Count;
+            _buttons.Add(new UiButton("Punch: OFF", default, ToggleAutoPunch));
 
             RelayoutButtons();
         }
@@ -397,15 +402,21 @@ namespace SorceryForge
             _leftBankRight = 186 + 130;
 
             // Right bank (right-to-left):
-            // Save | Snap | Puzzle | Doors | Validate | Fullscreen
+            // Save | Snap | Punch | Puzzle | Doors | Validate | Fullscreen
+            //
+            // The Fullscreen button carries the short "Full (F11)" label: the
+            // bank grew by a button and the room title only draws when it fits
+            // in the gap left over between the two banks, so 50 px of slack
+            // matters more here than the longer word does.
             int rx = W - 8;
-            int saveW = 90, snapW = 110, puzzW = 80, doorsW = 80, valW = 110, fsW = 150;
-            _buttons[7].Bounds = new Rectangle(rx - saveW,  by, saveW,  bh);   rx -= saveW  + 6;
-            _buttons[6].Bounds = new Rectangle(rx - snapW,  by, snapW,  bh);   rx -= snapW  + 6;
-            _buttons[5].Bounds = new Rectangle(rx - puzzW,  by, puzzW,  bh);   rx -= puzzW  + 6;
-            _buttons[4].Bounds = new Rectangle(rx - doorsW, by, doorsW, bh);   rx -= doorsW + 6;
-            _buttons[3].Bounds = new Rectangle(rx - valW,   by, valW,   bh);   rx -= valW   + 6;
-            _buttons[8].Bounds = new Rectangle(rx - fsW,    by, fsW,    bh);   rx -= fsW    + 6;
+            int saveW = 90, snapW = 110, punchW = 100, puzzW = 80, doorsW = 80, valW = 110, fsW = 100;
+            _buttons[7].Bounds            = new Rectangle(rx - saveW,  by, saveW,  bh);   rx -= saveW  + 6;
+            _buttons[6].Bounds            = new Rectangle(rx - snapW,  by, snapW,  bh);   rx -= snapW  + 6;
+            _buttons[_btnPunchIdx].Bounds = new Rectangle(rx - punchW, by, punchW, bh);   rx -= punchW + 6;
+            _buttons[5].Bounds            = new Rectangle(rx - puzzW,  by, puzzW,  bh);   rx -= puzzW  + 6;
+            _buttons[4].Bounds            = new Rectangle(rx - doorsW, by, doorsW, bh);   rx -= doorsW + 6;
+            _buttons[3].Bounds            = new Rectangle(rx - valW,   by, valW,   bh);   rx -= valW   + 6;
+            _buttons[8].Bounds            = new Rectangle(rx - fsW,    by, fsW,    bh);   rx -= fsW    + 6;
             _rightBankLeft = rx;
         }
 
@@ -662,6 +673,21 @@ namespace SorceryForge
             _buttons[_btnSnapIdx].Label = _state.SnapEnabled ? "Snap: 8px" : "Snap: OFF";
         }
 
+        /// <summary>
+        /// Auto-punch toggle. OFF by default: the explicit punch (P key /
+        /// inspector row) is the primary workflow because it lets you align
+        /// first and cut second. Turn this ON when stamping doors in bulk onto
+        /// a screenshot room, where every drop wants its footprint cleared.
+        /// </summary>
+        private void ToggleAutoPunch()
+        {
+            _state.AutoPunch = !_state.AutoPunch;
+            _buttons[_btnPunchIdx].Label = _state.AutoPunch ? "Punch: ON" : "Punch: OFF";
+            _state.Status = _state.AutoPunch
+                ? "Auto-punch ON: drops and moves clear the background under the placement."
+                : "Auto-punch OFF: use P (or the inspector row) to punch explicitly.";
+        }
+
         // ====================================================================
         // UPDATE — INPUT
         // ====================================================================
@@ -858,9 +884,17 @@ namespace SorceryForge
 
             if (!EditorLayout.IsInsideCanvas(screenPt))
             {
-                // Outside the canvas: end any in-progress move.
+                // Outside the canvas: end any in-progress move. Dragging a
+                // placement to a room edge routinely takes the cursor past the
+                // canvas before the button comes up, so auto-punch has to fire
+                // here too — otherwise whether the move got punched would
+                // depend on where the pointer happened to be on release.
                 if (LeftReleased() && _state.IsMovingSelection)
+                {
                     _state.IsMovingSelection = false;
+                    if (_state.AutoPunch && _state.SelectedPlacement != null)
+                        PunchBackground(_state.SelectedPlacement);
+                }
                 return;
             }
 
@@ -919,7 +953,18 @@ namespace SorceryForge
             {
                 _state.IsMovingSelection = false;
                 if (_state.SelectedPlacement != null)
+                {
                     _state.Status = $"Placed at ({(int)_state.SelectedPlacement.Position.X}, {(int)_state.SelectedPlacement.Position.Y})";
+
+                    // Auto-punch re-cuts at the final position once the drag
+                    // ends (not per-frame while dragging, which would smear a
+                    // trench along the whole path). The hole left at the drop
+                    // position stays: the background there was due for clearing
+                    // anyway, and cutting more than needed is harmless. If it
+                    // isn't, Erase mode's right-drag restores from the last
+                    // saved state.
+                    if (_state.AutoPunch) PunchBackground(_state.SelectedPlacement);
+                }
             }
         }
 
@@ -1538,6 +1583,12 @@ namespace SorceryForge
             _state.PlacementsDirty = true;
             _discardArmed = false;         // new edits re-arm the discard guard
             _state.Status = $"Placed {placement.DisplayName} at ({(int)placement.Position.X}, {(int)placement.Position.Y})";
+
+            // Auto-punch runs AFTER the clamp, so the hole matches the position
+            // the placement actually ended up at. It overwrites the status line
+            // with its own report — that's deliberate; the punch is the part
+            // that touched the PNG and therefore the part worth reporting.
+            if (_state.AutoPunch) PunchBackground(placement);
         }
 
         private Placement? HitTestPlacements(Vector2 gamePos)

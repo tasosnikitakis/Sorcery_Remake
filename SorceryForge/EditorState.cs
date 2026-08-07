@@ -109,6 +109,12 @@ namespace SorceryForge
         // them to multiples of 8 on first move.
         public bool SnapEnabled = false;
 
+        // Auto-punch: when true, dropping a placement (and finishing a move)
+        // clears the background under its footprint. Default OFF — explicit
+        // punch (P key / inspector) is the primary workflow; auto is for bulk
+        // door placement over screenshot rooms.
+        public bool AutoPunch = false;
+
         // ID counter used when generating fresh placement IDs.
         public int NextIdCounter = 1;
 
