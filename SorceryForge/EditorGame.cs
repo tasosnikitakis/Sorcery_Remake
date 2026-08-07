@@ -1084,6 +1084,22 @@ namespace SorceryForge
         private void ValidateReachability()
         {
             _state.UnreachableIds.Clear();
+
+            // Duplicate placement IDs make every ID-keyed result ambiguous
+            // (UnreachableIds is a set, so two entities sharing an ID would be
+            // flagged or cleared together) and they corrupt the game's
+            // WorldState persistence. GenerateId can no longer mint one, but a
+            // hand-edited content JSON still can — refuse to validate until
+            // it's fixed rather than report against ambiguous keys.
+            var seenIds = new HashSet<string>();
+            foreach (var p in _state.Placements)
+            {
+                if (seenIds.Add(p.Id)) continue;
+                _state.HasValidated = false;
+                _state.Status = $"Validate: DUPLICATE ID '{p.Id}' — fix content JSON before validating.";
+                return;
+            }
+
             _state.HasValidated = true;
 
             if (_state.CollisionMap == null)

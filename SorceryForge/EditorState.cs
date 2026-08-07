@@ -190,6 +190,15 @@ namespace SorceryForge
         }
 
         // Generate an ID following the project convention (<roomId>_<kind>_<n>).
+        //
+        // The counter alone is NOT enough: LoadRoom seeds it from
+        // Placements.Count, so deleting an entity and adding another can
+        // re-issue a suffix that's still in use (two chateau_0_sword_3).
+        // Placement IDs are the game's WorldState persistence keys
+        // (PickedUpItems / DeadEnemies / SavedWizards / UnlockedDoors), so a
+        // collision would make one entity's state silently apply to another.
+        // Spin the counter until the candidate is genuinely free — the ID
+        // format stays exactly as documented, we just skip taken numbers.
         public string GenerateId(string roomId, PlacementKind kind, ItemType itemType = ItemType.None, EnemyType enemyType = default)
         {
             string suffix = kind switch
@@ -201,7 +210,20 @@ namespace SorceryForge
                 PlacementKind.Door => "door",
                 _ => "entity"
             };
-            return $"{roomId}_{suffix}_{NextIdCounter++}";
+
+            string candidate;
+            do
+            {
+                candidate = $"{roomId}_{suffix}_{NextIdCounter++}";
+            }
+            while (HasPlacementId(candidate));
+            return candidate;
+        }
+
+        private bool HasPlacementId(string id)
+        {
+            foreach (var p in Placements) if (p.Id == id) return true;
+            return false;
         }
     }
 }
