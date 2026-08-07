@@ -103,13 +103,10 @@ namespace SorceryRemake
         private Texture2D _blockedDoorSheet;
         private Texture2D _pixelTexture;
 
-        // Room backgrounds
-        private Texture2D _bgStonehenge;
-        private Texture2D _bgWastelands;
-        private Texture2D _bgTunnelMouth;
-        private Texture2D _bgChateau0;
-        private Texture2D _bgChateau1;
-        private Texture2D _bgChateau2;
+        // Room backgrounds, keyed by the manifest's BackgroundAsset name.
+        // Populated in LoadContent by walking RoomManifest.All, so a room
+        // added to assets/data/rooms.json needs no field and no code here.
+        private readonly Dictionary<string, Texture2D> _roomBackgrounds = new();
 
         // ====================================================================
         // DEBUG
@@ -234,12 +231,11 @@ namespace SorceryRemake
             _pixelTexture.SetData(new[] { Color.White });
 
             // --- Room backgrounds ---
-            _bgStonehenge = Content.Load<Texture2D>("RoomBG_Stonehenge");
-            _bgWastelands = Content.Load<Texture2D>("RoomBG_Wastelands");
-            _bgTunnelMouth = Content.Load<Texture2D>("RoomBG_TunnelMouth");
-            _bgChateau0 = Content.Load<Texture2D>("RoomBG_Chateau0");
-            _bgChateau1 = Content.Load<Texture2D>("RoomBG_Chateau1");
-            _bgChateau2 = Content.Load<Texture2D>("RoomBG_Chateau2");
+            // One entry per registry room. Loading eagerly (rather than on
+            // first room load) is what makes a typo'd backgroundAsset in
+            // rooms.json a startup crash naming the room, instead of a room
+            // that renders black minutes into a play session.
+            LoadRoomBackgrounds();
 
             // --- Room system ---
             _roomManager = new RoomManager();
@@ -745,11 +741,11 @@ namespace SorceryRemake
 
         // ====================================================================
         // DATA-DRIVEN ROOM REGISTRATION
-        // Registers every room in RoomManifest.All. Backgrounds are loaded
-        // lazily via Content.Load (which is idempotent in MonoGame so the
-        // pre-loaded fields like _bgChateau0 share the same texture object).
-        // Collision tilemaps come from collision_<roomId>.json. Doors come
-        // from layout_<roomId>.json — authored in SorceryForge.
+        // Registers every room in RoomManifest.All (i.e. every entry in
+        // assets/data/rooms.json). Backgrounds come from _roomBackgrounds,
+        // filled by LoadRoomBackgrounds before this runs. Collision tilemaps
+        // come from collision_<roomId>.json. Doors come from
+        // layout_<roomId>.json — authored in SorceryForge.
         // ====================================================================
 
         private void RegisterRoomsFromManifest()
@@ -761,9 +757,16 @@ namespace SorceryRemake
                 var captured = manifest;  // closure capture — the lambda runs on every room load
                 _roomManager.RegisterRoom(captured.RoomId, () =>
                 {
-                    // Background (lazy-load; missing assets are silently skipped).
-                    var bg = TryLoadBackground(captured.BackgroundAsset);
-                    if (bg != null) _roomManager.SetBackground(bg);
+                    // Background. LoadRoomBackgrounds already proved every
+                    // registry room's asset loads, so the lookup cannot miss;
+                    // the throw is there so a future code path that registers
+                    // a room outside the manifest fails visibly rather than
+                    // rendering a blank screen.
+                    if (!_roomBackgrounds.TryGetValue(captured.BackgroundAsset, out var bg))
+                        throw new InvalidOperationException(
+                            $"Room '{captured.RoomId}' wants background asset " +
+                            $"'{captured.BackgroundAsset}', which was never loaded.");
+                    _roomManager.SetBackground(bg);
 
                     // Collision (skipped if the file is absent — a fresh
                     // room with no painted geometry is a valid state).
@@ -780,11 +783,37 @@ namespace SorceryRemake
             }
         }
 
-        private Texture2D? TryLoadBackground(string assetName)
+        /// <summary>
+        /// Load one background texture per registry room into
+        /// _roomBackgrounds, keyed by asset name. Two rooms naming the same
+        /// asset share one entry (and one texture).
+        ///
+        /// A failure here is fatal on purpose: an asset named in rooms.json
+        /// that the content pipeline never built is an authoring mistake, and
+        /// the message has to name both the room and the asset so it is
+        /// findable in seconds. The usual cause is a missing #begin block in
+        /// Content/Content.mgcb, or a background PNG added without a rebuild.
+        /// </summary>
+        private void LoadRoomBackgrounds()
         {
-            if (string.IsNullOrEmpty(assetName)) return null;
-            try { return Content.Load<Texture2D>(assetName); }
-            catch { return null; }
+            foreach (var manifest in RoomManifest.All)
+            {
+                string asset = manifest.BackgroundAsset;
+                if (_roomBackgrounds.ContainsKey(asset)) continue;
+
+                try
+                {
+                    _roomBackgrounds[asset] = Content.Load<Texture2D>(asset);
+                }
+                catch (Exception ex)
+                {
+                    throw new InvalidOperationException(
+                        $"Room '{manifest.RoomId}' names background asset '{asset}', " +
+                        $"which failed to load. Check that Content/Content.mgcb has a " +
+                        $"'#begin {asset}.png' block and that the content pipeline has " +
+                        $"rebuilt. ({ex.Message})", ex);
+                }
+            }
         }
 
         private static List<DoorComponent> BuildDoorsForRoom(string roomId, string dataDir)

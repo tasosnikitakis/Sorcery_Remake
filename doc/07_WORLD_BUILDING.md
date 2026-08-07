@@ -22,10 +22,10 @@ The split between *layout* and *content* is intentional: rooms shipped with no e
 | `stonehenge` | Background image | door_right ↔ `wastelands` | `RoomBG_Stonehenge.png` |
 | `wastelands` | Background image | door_left ↔ `stonehenge`, door_right ↔ `tunnelmouth` | `RoomBG_Wastelands.png` |
 | `tunnelmouth` | Background image | door_left ↔ `wastelands` | `RoomBG_TunnelMouth.png` |
-| `chateau_0` | Background image (start) | door_topright ↔ `chateau_1` | `RoomBG_Chateau0.png` |
+| `chateau_0` | Background image (start) | door_topright ↔ `chateau_1`, door_2 ↔ `near_chateau` | `RoomBG_Chateau0.png` |
 | `chateau_1` | Background image | door_topleft ↔ `chateau_0`, door_topright ↔ `chateau_2` | `RoomBG_Chateau1.png` |
 | `chateau_2` | Background image | door_topleft ↔ `chateau_1` | `RoomBG_Chateau2.png` |
-| `near_chateau` | Background image | door_1 → `chateau_0` | `RoomBG_NearChateau.png` |
+| `near_chateau` | Background image | door_1 ↔ `chateau_0` | `RoomBG_NearChateau.png` |
 | `inside_chateau` | Background image | none yet | `RoomBG_InsideChateau.png` |
 | `outside_chateau` | Background image | none yet | `RoomBG_OutsideChateau.png` |
 
@@ -37,30 +37,28 @@ The chateau chain is the new player's entry sequence (game starts in `chateau_0`
 
 ### Phase 1: Layout — `RoomManager.RegisterRoom`
 
-Layout is registered once at startup via `Game1.RegisterChateauRooms` (and similar). Each room is a builder lambda:
+Layout is registered once at startup by `Game1.RegisterRoomsFromManifest`, which walks the registry and gives every room the same builder lambda — background, collision, doors, all read from that room's data:
 
 ```csharp
-_roomManager.RegisterRoom("chateau_1", () =>
+foreach (var manifest in RoomManifest.All)
 {
-    _roomManager.SetBackground(_bgChateau1);
-    string jsonPath = Path.Combine(dataDir, "collision_chateau1.json");
-    _roomManager.SetTileMap(RoomLoader.BuildCollisionTileMap(_tilesetTexture, jsonPath));
+    var captured = manifest;  // the lambda runs on every room load, not now
+    _roomManager.RegisterRoom(captured.RoomId, () =>
+    {
+        _roomManager.SetBackground(_roomBackgrounds[captured.BackgroundAsset]);
 
-    var doorLeft = new DoorComponent(DoorType.RightOpening, new Vector2(0, 0));
-    doorLeft.DoorId = "chateau1_door_topleft";
-    doorLeft.TargetRoomId = "chateau_0";
-    doorLeft.TargetDoorId = "chateau0_door_topright";
+        string colPath = Path.Combine(dataDir, captured.CollisionFile);
+        if (File.Exists(colPath))
+            _roomManager.SetTileMap(RoomLoader.BuildCollisionTileMap(_tilesetTexture, colPath));
 
-    var doorRight = new DoorComponent(DoorType.LeftOpening, new Vector2(296, 0));
-    doorRight.DoorId = "chateau1_door_topright";
-    doorRight.TargetRoomId = "chateau_2";
-    doorRight.TargetDoorId = "chateau2_door_topleft";
-
-    _roomManager.SetDoors(new List<DoorComponent> { doorLeft, doorRight });
-}, displayName: "Chateau 1");
+        _roomManager.SetDoors(BuildDoorsForRoom(captured.RoomId, dataDir));
+    }, displayName: captured.DisplayName);
+}
 ```
 
-The builder lambda is *not* run at registration. It's stored, then run on first `LoadRoom(id)` and again on every subsequent return-to-room.
+Backgrounds live in `Game1._roomBackgrounds`, a `Dictionary<string, Texture2D>` keyed by `BackgroundAsset` and filled by `LoadRoomBackgrounds()` during `LoadContent` — one `Content.Load` per registry room, eagerly, so an asset named in `rooms.json` that the pipeline never built crashes at startup naming the room and the asset rather than showing a blank screen mid-session. There is no per-room texture field.
+
+The builder lambda is *not* run at registration. It's stored, then run on first `LoadRoom(id)` and again on every subsequent return-to-room. (`Game1.RegisterTestRooms` still writes its two lambdas by hand — test rooms draw from tiles and have no background asset.)
 
 ### Phase 2: Content — `RoomRegistry.Initialize`
 
