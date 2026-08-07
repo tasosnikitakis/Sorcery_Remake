@@ -2,6 +2,7 @@ using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using Microsoft.Xna.Framework.Input;
 using SorceryRemake.Core;
+using SorceryRemake.Doors;
 using SorceryRemake.Graphics;
 using SorceryRemake.Rooms;
 using SorceryRemake.Tiles;
@@ -274,18 +275,21 @@ namespace SorceryForge
             // to _rightDoorTexture (RightDoorFrames.png) and vice versa.
             // We mirror that swap here so the editor preview matches what
             // the game actually renders for each DoorType.
+            // DoorOpeningSide carries the logical side; the Label is display
+            // text only. Note how the two disagree on purpose — the entry
+            // whose side is LeftOpening holds the RightDoorFrames texture.
             var leftDoor = new PaletteEntry(
                 "Door (LeftOpening)", PlacementKind.Door,
                 _textures["RightDoorFrames"],   // LeftOpening uses RightDoorFrames in-game
                 new Rectangle(0, 0, 48, 48))    // frame 0 = closed
-            { };
+            { DoorOpeningSide = DoorType.LeftOpening };
             _state.Palette.Add(Tag(leftDoor, "DOORS"));
 
             var rightDoor = new PaletteEntry(
                 "Door (RightOpening)", PlacementKind.Door,
                 _textures["LeftDoorFrames"],    // RightOpening uses LeftDoorFrames in-game
                 new Rectangle(0, 0, 48, 48))
-            { };
+            { DoorOpeningSide = DoorType.RightOpening };
             _state.Palette.Add(Tag(rightDoor, "DOORS"));
 
             // -- OTHER ------------------------------------------------------
@@ -1560,11 +1564,17 @@ namespace SorceryForge
             var entry = _state.Dragging!;
             string roomId = _state.CurrentRoom.RoomId;
 
-            // Door entries store the opening side in the entry's label —
-            // we read it back via the icon texture to pick the correct
-            // opening side. The two palette entries differ only in this.
-            string openingSide = entry.Kind == PlacementKind.Door
-                ? (entry.Label.Contains("LeftOpening") ? "LeftOpening" : "RightOpening")
+            // Door entries carry their logical opening side as a typed field.
+            // Placement stores it as the string that goes straight into
+            // layout JSON's "type", and DoorType's member names ARE that
+            // schema's vocabulary ("LeftOpening" / "RightOpening"), so
+            // ToString() is the conversion — no mapping table to drift.
+            //
+            // Non-door kinds keep the "LeftOpening" default the field has
+            // always had; it is inert for them (ToRoomLayoutJson only writes
+            // Door placements).
+            string openingSide = entry.Kind == PlacementKind.Door && entry.DoorOpeningSide.HasValue
+                ? entry.DoorOpeningSide.Value.ToString()
                 : "LeftOpening";
 
             var placement = new Placement(
@@ -2360,9 +2370,12 @@ namespace SorceryForge
                 if (p.Kind == PlacementKind.BlockedDoor && entry.ItemType != p.RequiredItem) continue;
                 if (p.Kind == PlacementKind.Door)
                 {
-                    // Two door entries differ by label; match the one whose
-                    // label encodes the placement's opening side.
-                    if (!entry.Label.Contains(p.DoorOpeningSide)) continue;
+                    // Match on the typed side, not the label. A placement
+                    // whose JSON "type" is unparseable (hand-edited file)
+                    // matches no entry and so isn't drawn — same outcome the
+                    // old label sniffing produced, just not by accident.
+                    if (entry.DoorOpeningSide == null) continue;
+                    if (entry.DoorOpeningSide.Value.ToString() != p.DoorOpeningSide) continue;
                 }
                 return entry;
             }
