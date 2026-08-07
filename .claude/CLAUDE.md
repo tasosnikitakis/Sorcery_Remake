@@ -42,9 +42,14 @@ Each room = up to three JSON files in `assets/data/` + a background PNG in
 | `layout_<roomId>.json` | doors: position, opening side, target room + door | SorceryForge (`RoomLayoutLoader`) |
 | `collision_<roomId>.json` | solid-tile grid | SorceryForge paint mode / `tools/generate_collision_grid.py` |
 
-Which rooms exist is defined in `Rooms/RoomManifest.All` (compiled C#; both
-apps iterate it). Test rooms `room_1` / `room_2` are NOT in the manifest —
-they're registered programmatically in `Game1.RegisterTestRooms`.
+Which rooms exist is defined in `assets/data/rooms.json` — the room
+*registry* (`id`, `displayName`, `backgroundAsset`, `collisionFile`), loaded
+and validated by `Rooms/RoomManifest.All` (shared source; both apps iterate
+it). Array order is room order, including the editor's Prev/Next cycle.
+A missing or malformed `rooms.json` is a fatal startup error in both apps by
+design. Test rooms `room_1` / `room_2` are NOT in the registry — they're
+registered programmatically in `Game1.RegisterTestRooms` and listed in
+`RoomManifest.TestRoomIds`.
 
 The editor flattens content + doors into one `List<Placement>`
 (`SorceryForge/EditorState.cs`); `ToRoomContent()` / `ToRoomLayoutJson()`

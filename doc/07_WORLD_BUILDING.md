@@ -4,8 +4,9 @@ This document describes how the world is constructed: rooms, doors, transitions,
 
 ## Vocabulary
 
-- **Room** — a single 320×144 screen. The original game has ~75 rooms; the remake currently ships with 8.
-- **Layout** — the static structure of a room: background image, collision grid, doors, dimensions. Defined in `Game1.RegisterChateauRooms`/`RegisterBackgroundRooms`/`RegisterTestRooms`.
+- **Room** — a single 320×144 screen. The original game has ~75 rooms; the remake currently ships with 9 registry rooms plus 2 programmatic test rooms.
+- **Registry** — which rooms exist at all: `assets/data/rooms.json`, loaded by `Rooms/RoomManifest.All`. Four facts per room (`id`, `displayName`, `backgroundAsset`, `collisionFile`) and nothing else.
+- **Layout** — the static structure of a room: background image, collision grid, doors, dimensions. Assembled by `Game1.RegisterRoomsFromManifest` from the registry entry plus that room's `collision_<id>.json` and `layout_<id>.json`. (Test rooms are the exception: `Game1.RegisterTestRooms` builds theirs in code.)
 - **Content** — what spawns *in* a room: enemies, items, captive wizards, blocked doors. Defined in `Rooms/RoomRegistry.cs`.
 - **Door** — a 24×24 entity that, when aligned with the player, triggers a transition to a target room and target door.
 - **Transition** — the frozen-game animation between rooms. Door opens (4 frames × 0.15 s), player teleports, target room loads.
@@ -24,8 +25,13 @@ The split between *layout* and *content* is intentional: rooms shipped with no e
 | `chateau_0` | Background image (start) | door_topright ↔ `chateau_1` | `RoomBG_Chateau0.png` |
 | `chateau_1` | Background image | door_topleft ↔ `chateau_0`, door_topright ↔ `chateau_2` | `RoomBG_Chateau1.png` |
 | `chateau_2` | Background image | door_topleft ↔ `chateau_1` | `RoomBG_Chateau2.png` |
+| `near_chateau` | Background image | door_1 → `chateau_0` | `RoomBG_NearChateau.png` |
+| `inside_chateau` | Background image | none yet | `RoomBG_InsideChateau.png` |
+| `outside_chateau` | Background image | none yet | `RoomBG_OutsideChateau.png` |
 
-The chateau chain is the new player's entry sequence (game starts in `chateau_0`). The stonehenge / wastelands / tunnelmouth chain is the older background-room set.
+The chateau chain is the new player's entry sequence (game starts in `chateau_0`). The stonehenge / wastelands / tunnelmouth chain is the older background-room set. The three screenshot-derived rooms came later and have their connections authored entirely in the editor.
+
+`assets/data/rooms.json` is the authority here, in that array order; this table is a convenience copy and will drift.
 
 ## The Two-Phase Room System
 
@@ -91,50 +97,52 @@ A 320×144 PNG. Drop into `Content/` and add to `Content/Content.mgcb`:
 
 (The simplest pattern is to copy an existing block from the .mgcb file.)
 
-### 2. Author the collision JSON
+### 2. Register the room in `assets/data/rooms.json`
 
-Create `assets/data/collision_forest_1.json` matching the [JSON schema](./06_COLLISION.md#authoring-a-collision-grid).
+The room *registry* is data, not code. Append one entry to the `rooms` array:
 
-### 3. Add a load + cached field in `Game1`
-
-Add `private Texture2D _bgForest1;` to the room-backgrounds field block, and load it in `LoadContent`:
-
-```csharp
-_bgForest1 = Content.Load<Texture2D>("RoomBG_Forest1");
+```json
+{ "id": "forest_1", "displayName": "Forest 1", "backgroundAsset": "RoomBG_Forest1", "collisionFile": "collision_forest_1.json" }
 ```
 
-(Phase 5A roadmap removes this step by caching backgrounds dynamically. Today it's still per-asset.)
+| Field | Meaning |
+|-------|---------|
+| `id` | Room ID. A persistence key — `WorldState` remembers entity IDs built from it, so never rename casually. |
+| `displayName` | Shown in the editor's room picker and the game's HUD. Falls back to `id` if omitted. |
+| `backgroundAsset` | Content pipeline asset name from step 1. Required. |
+| `collisionFile` | File name inside `assets/data`. May be `""` until the geometry is painted. |
 
-### 4. Register layout
+**Array order is room order** — the editor's Prev/Next buttons cycle rooms in exactly this sequence, and every "for each room" loop walks it. Appending is always safe; reordering re-orders the editor.
 
-In a `Register*Rooms()` method (or a new one for a new room set):
+`Rooms/RoomManifest.cs` loads and validates this file once per process (it is shared source, so the game, SorceryForge and `tools/RoundTrip` all read the same file). Validation is deliberately fatal: a missing file, malformed JSON, a duplicate `id`, or an entry with no `backgroundAsset` throws at startup with the path and problem named, rather than booting into a silently empty world. The file may carry `//` comments — the loader reads with `JsonCommentHandling.Skip`.
 
-```csharp
-_roomManager.RegisterRoom("forest_1", () =>
+Test rooms `room_1` / `room_2` are deliberately absent from the registry; they are built programmatically in `Game1.RegisterTestRooms` and listed in `RoomManifest.TestRoomIds` so validators can distinguish them from a typo'd room ID.
+
+That is the whole code-side registration. `Game1.RegisterRoomsFromManifest` iterates the registry at startup and builds each room's loader lambda — background, collision tilemap, and doors — from the entry plus the room's own JSON files. There is no per-room C# to write.
+
+### 3. Author the collision grid
+
+Paint it in SorceryForge, or hand-author `assets/data/collision_forest_1.json` against the [JSON schema](./06_COLLISION.md#authoring-a-collision-grid). A room with no collision file is a valid (if floorless) state — the game skips the tilemap step.
+
+### 4. Author doors
+
+Place them in SorceryForge and save; that writes `assets/data/layout_forest_1.json`:
+
+```json
 {
-    _roomManager.SetBackground(_bgForest1);
-    string jsonPath = Path.Combine(dataDir, "collision_forest_1.json");
-    _roomManager.SetTileMap(RoomLoader.BuildCollisionTileMap(_tilesetTexture, jsonPath));
-
-    var doorRight = new DoorComponent(DoorType.LeftOpening, new Vector2(296, 112));
-    doorRight.DoorId = "forest1_door_right";
-    doorRight.TargetRoomId = "forest_2";
-    doorRight.TargetDoorId = "forest2_door_left";
-    _roomManager.SetDoors(new List<DoorComponent> { doorRight });
-}, displayName: "Forest 1");
+  "roomId": "forest_1",
+  "doors": [
+    { "id": "forest1_door_right", "x": 296, "y": 112, "type": "LeftOpening",
+      "targetRoom": "forest_2", "targetDoor": "forest2_door_left" }
+  ]
+}
 ```
 
-### 5. Register content
+`BuildDoorsForRoom` turns each entry into a `DoorComponent` at room-load time.
 
-In `RoomRegistry.Initialize`:
+### 5. Author content
 
-```csharp
-var forest1 = new RoomContent();
-forest1.Enemies.Add(new EnemySpawn("forest1_guard_1", EnemyType.Guard, new Vector2(120, 104)));
-forest1.Items.Add(new ItemSpawn("forest1_sword", ItemType.Sword, new Vector2(200, 104)));
-forest1.Wizards.Add(new WizardSpawn("forest1_wizard", new Vector2(260, 80)));
-_rooms["forest_1"] = forest1;
-```
+Place items / enemies / wizards / blocked doors in SorceryForge and save; that writes `assets/data/content_forest_1.json`, which `RoomRegistry.GetContent` prefers over any hardcoded entry. (`RoomRegistry.Initialize`'s C# entries remain only as the fallback for the test rooms, which have no JSON.)
 
 ### 6. Connect the matching door on the partner room
 

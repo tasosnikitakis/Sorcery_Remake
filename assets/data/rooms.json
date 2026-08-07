@@ -1,0 +1,45 @@
+// ============================================================================
+// ROOM REGISTRY — which rooms exist
+// ============================================================================
+// Read by Rooms/RoomManifest.cs (shared source: the game, SorceryForge and
+// tools/RoundTrip all load this one file). Registry facts ONLY — a room's
+// doors live in layout_<id>.json, its entities in content_<id>.json, and its
+// solid tiles in the collision file named below.
+//
+// ARRAY ORDER IS ROOM ORDER. It is the editor's Prev/Next cycle order and the
+// order every "for each room" loop walks. This array was seeded verbatim from
+// the compiled list that used to live in RoomManifest.All, so the order here
+// IS that historical order — chateau set, then the stonehenge/wastelands
+// chain, then the screenshot-derived rooms. Reordering entries reorders the
+// editor's room cycle; appending is always safe.
+//
+// Fields:
+//   id              persistence key. Entity IDs are built from it and
+//                   WorldState remembers them, so never rename casually.
+//   displayName     shown in the editor's room picker and the game's HUD.
+//   backgroundAsset Content pipeline asset name (no extension). Must have a
+//                   matching #begin block in Content/Content.mgcb.
+//   collisionFile   file name inside assets/data. May be "" for a room with
+//                   no painted geometry yet.
+//
+// Test rooms room_1 / room_2 are deliberately absent — they are built
+// programmatically in Game1.RegisterTestRooms and listed in
+// RoomManifest.TestRoomIds.
+//
+// Comments are legal here: the loader reads with JsonCommentHandling.Skip.
+// ============================================================================
+{
+  "rooms": [
+    { "id": "chateau_0",       "displayName": "Chateau 0",       "backgroundAsset": "RoomBG_Chateau0",       "collisionFile": "collision_chateau0.json" },
+    { "id": "chateau_1",       "displayName": "Chateau 1",       "backgroundAsset": "RoomBG_Chateau1",       "collisionFile": "collision_chateau1.json" },
+    { "id": "chateau_2",       "displayName": "Chateau 2",       "backgroundAsset": "RoomBG_Chateau2",       "collisionFile": "collision_chateau2.json" },
+
+    { "id": "stonehenge",      "displayName": "Stonehenge",      "backgroundAsset": "RoomBG_Stonehenge",     "collisionFile": "collision_stonehenge.json" },
+    { "id": "wastelands",      "displayName": "Wastelands",      "backgroundAsset": "RoomBG_Wastelands",     "collisionFile": "collision_wastelands.json" },
+    { "id": "tunnelmouth",     "displayName": "Tunnel Mouth",    "backgroundAsset": "RoomBG_TunnelMouth",    "collisionFile": "collision_tunnelmouth.json" },
+
+    { "id": "near_chateau",    "displayName": "Near Chateau",    "backgroundAsset": "RoomBG_NearChateau",    "collisionFile": "collision_near_chateau.json" },
+    { "id": "inside_chateau",  "displayName": "Inside Chateau",  "backgroundAsset": "RoomBG_InsideChateau",  "collisionFile": "collision_inside_chateau.json" },
+    { "id": "outside_chateau", "displayName": "Outside Chateau", "backgroundAsset": "RoomBG_OutsideChateau", "collisionFile": "collision_outside_chateau.json" }
+  ]
+}
