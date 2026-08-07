@@ -58,6 +58,13 @@ namespace SorceryRemake.Rooms
             new("outside_chateau", "Outside Chateau", "RoomBG_OutsideChateau", "collision_outside_chateau.json"),
         };
 
+        /// <summary>
+        /// Rooms that exist in the game but are registered programmatically
+        /// (Game1.RegisterTestRooms) rather than via this manifest. Validators
+        /// treat door targets in this set as existing-but-unverifiable.
+        /// </summary>
+        public static readonly HashSet<string> TestRoomIds = new() { "room_1", "room_2" };
+
         public static RoomManifest? Find(string roomId)
         {
             foreach (var m in All) if (m.RoomId == roomId) return m;

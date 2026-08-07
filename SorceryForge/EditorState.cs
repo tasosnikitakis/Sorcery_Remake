@@ -49,10 +49,12 @@ namespace SorceryForge
         public bool HasValidated = false;
 
         // Door validation. Cleared and refilled by ValidateDoors. Each entry
-        // maps a door ID (in any room) to its diagnosis: "ok", "orphan-room"
-        // (target room doesn't exist), "orphan-door" (target room exists
-        // but lacks the named door), or "asymmetric" (target door points
-        // somewhere other than back here). Empty until ValidateDoors runs.
+        // maps a door ID (in any room) to its diagnosis: "ok", "ok-test"
+        // (target is a programmatic test room — accepted, far side not
+        // verifiable), "orphan-room" (target room doesn't exist),
+        // "orphan-door" (target room exists but lacks the named door), or
+        // "asymmetric" (target door points somewhere other than back here).
+        // Empty until ValidateDoors runs.
         public readonly Dictionary<string, string> DoorStatus = new();
         public bool HasValidatedDoors = false;
 

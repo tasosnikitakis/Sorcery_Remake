@@ -1273,6 +1273,17 @@ namespace SorceryForge
             {
                 foreach (var door in doorsByRoom[room.RoomId])
                 {
+                    // The test rooms are registered in Game1.RegisterTestRooms,
+                    // not in RoomManifest, so RoomMeta.Find can't see them and
+                    // a door targeting one would read as orphan-room. The link
+                    // is real — we just can't verify the far side from here.
+                    if (RoomManifest.TestRoomIds.Contains(door.TargetRoomId))
+                    {
+                        _state.DoorStatus[door.DoorId] = "ok-test";
+                        ok++;
+                        continue;
+                    }
+
                     var target = RoomMeta.Find(door.TargetRoomId);
                     if (target == null)
                     {
@@ -1666,6 +1677,9 @@ namespace SorceryForge
                 return status switch
                 {
                     "ok"          => new Color( 80, 230, 110),
+                    // Dimmer green: the target is a programmatic test room, so
+                    // the link is accepted but its far side is unverified.
+                    "ok-test"     => new Color( 80, 180, 110),
                     "asymmetric"  => new Color(255, 200,  60),
                     _             => new Color(255,  60,  60),  // orphan-*
                 };

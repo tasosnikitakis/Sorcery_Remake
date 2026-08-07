@@ -101,6 +101,13 @@ namespace SorceryForge
 
                 foreach (var d in doors)
                 {
+                    // Rooms outside RoomManifest are skipped, which includes
+                    // the programmatic test rooms in RoomManifest.TestRoomIds.
+                    // Intentional: unlike ValidateDoors, which only checks
+                    // whether a link resolves, this walk exists to aggregate
+                    // room CONTENT, and test rooms carry no manifest content
+                    // to aggregate. Traversing into one would add nothing and
+                    // give the room no entry in RoomMeta.All to report against.
                     if (RoomMeta.Find(d.TargetRoomId) == null) continue;
                     if (visited.Add(d.TargetRoomId))
                         queue.Enqueue(d.TargetRoomId);
