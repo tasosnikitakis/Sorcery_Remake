@@ -1,0 +1,67 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- ========================================
+       ROUNDTRIP — SAVE-PATH REGRESSION HARNESS
+       Headless console app. Compiles the SAME shared sources the game and
+       SorceryForge do (Core/, Graphics/, Tiles/, Rooms/, Doors/, Physics/)
+       plus the editor's non-UI model files, so the load→save code path it
+       exercises is byte-for-byte the editor's own — not a reimplementation.
+
+       MonoGame is referenced for the value types the shared sources use
+       (Vector2, Rectangle, Color). No GraphicsDevice is ever created, so
+       this runs fine headless / over SSH / in CI, unlike the editor itself.
+       ======================================== -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RollForward>Major</RollForward>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <RootNamespace>SorceryRemake.Tools.RoundTrip</RootNamespace>
+    <AssemblyName>RoundTrip</AssemblyName>
+    <!-- The default glob would sweep up bin/obj leftovers from a previous
+         run; we list every source explicitly below instead. -->
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="MonoGame.Framework.DesktopGL" Version="3.8.1.303" />
+  </ItemGroup>
+
+  <!-- ========================================
+       SHARED GAME SOURCE
+       Mirrors SorceryForge.csproj's globs exactly. If that file's include
+       list changes, change this one to match, or the harness stops testing
+       what the editor actually runs.
+       ======================================== -->
+
+  <ItemGroup>
+    <Compile Include="..\..\Core\**\*.cs" Exclude="..\..\Core\PlayerController.cs" />
+    <Compile Include="..\..\Graphics\**\*.cs" />
+    <Compile Include="..\..\Tiles\**\*.cs" />
+    <Compile Include="..\..\Rooms\**\*.cs" />
+    <Compile Include="..\..\Doors\**\*.cs" />
+    <Compile Include="..\..\Physics\**\*.cs" />
+  </ItemGroup>
+
+  <!-- ========================================
+       EDITOR MODEL (no UI)
+       EditorState owns ToRoomContent() / ToRoomLayoutJson() — the two
+       conversions the save path runs — and LoadFromRoomContent(), its
+       inverse. RoomMeta owns door loading. Everything MonoGame-windowed
+       (EditorGame, EditorLayout, SorceryForge/Program.cs) is deliberately
+       left out.
+       ======================================== -->
+
+  <ItemGroup>
+    <Compile Include="..\..\SorceryForge\EditorPaths.cs" />
+    <Compile Include="..\..\SorceryForge\EditorState.cs" />
+    <Compile Include="..\..\SorceryForge\PaletteEntry.cs" />
+    <Compile Include="..\..\SorceryForge\Placement.cs" />
+    <Compile Include="..\..\SorceryForge\PuzzleAnalyzer.cs" />
+    <Compile Include="..\..\SorceryForge\RoomMeta.cs" />
+    <Compile Include="Program.cs" />
+  </ItemGroup>
+
+</Project>
