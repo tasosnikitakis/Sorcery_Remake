@@ -1069,6 +1069,82 @@ namespace SorceryForge
             return changed;
         }
 
+        // --- PUNCH-OUT (clear the background under a placement) -------------
+
+        /// <summary>
+        /// Clear the background pixels under the given placement's 24x24
+        /// footprint to transparent. One undo snapshot per punch (Ctrl+Z works
+        /// like an erase stroke). No-op (with status explanation) when the room
+        /// has no editable background PNG, and snapshot-free when every pixel
+        /// in the rect is already transparent.
+        ///
+        /// Why this exists: rooms are built from screenshots of the original
+        /// game, which still contain its baked-in artwork (doors especially).
+        /// Once a real entity is placed over such a spot, those pixels would
+        /// bleed through the entity's animation frames — so they get cut out.
+        /// Transparent renders as black in-game, which is what we want here.
+        /// </summary>
+        private void PunchBackground(Placement p)
+        {
+            // Same guard HandleEraseInput uses: no raw PNG behind this room
+            // means there are no pixels we're allowed to edit (the XNB
+            // fallback is display-only and Save would have nothing to write).
+            if (_bgPixels == null || _bgOriginal == null || _currentBackground == null)
+            {
+                _state.Status = "Punch: this room has no editable background PNG.";
+                return;
+            }
+
+            // A punch is its own one-shot "stroke". Closing any open erase
+            // stroke first means the punch can never be folded into that
+            // stroke's undo entry — one Ctrl+Z per user action, always.
+            EndStroke();
+
+            // Clamp the footprint to the texture. ClampToRoom should already
+            // keep every placement inside a 320x144 room, but the punch writes
+            // straight into the pixel array — it must never index out of range
+            // (e.g. a hand-edited JSON position, or an undersized PNG).
+            int texW = _currentBackground.Width;
+            int texH = _currentBackground.Height;
+            Rectangle b = p.Bounds;
+            int x0 = Math.Max(0, b.Left);
+            int y0 = Math.Max(0, b.Top);
+            int x1 = Math.Min(texW, b.Right);
+            int y1 = Math.Min(texH, b.Bottom);
+            if (x0 >= x1 || y0 >= y1)
+            {
+                _state.Status = $"Punch: {p.DisplayName} lies outside the background image.";
+                return;
+            }
+
+            // Pre-scan. Punching an already-clear rect changes nothing, and a
+            // no-op action must not push a snapshot — that would evict real
+            // history off the end of the MaxUndo ring (same rule EndStroke
+            // applies to no-op brush strokes).
+            bool anyOpaque = false;
+            for (int y = y0; y < y1 && !anyOpaque; y++)
+            for (int x = x0; x < x1 && !anyOpaque; x++)
+                if (_bgPixels[y * texW + x] != Color.Transparent) anyOpaque = true;
+
+            if (!anyOpaque)
+            {
+                _state.Status = $"Punch: nothing to punch — background under {p.DisplayName} is already clear.";
+                return;
+            }
+
+            if (_bgUndo.Count >= MaxUndo) _bgUndo.RemoveAt(0);
+            _bgUndo.Add((Color[])_bgPixels.Clone());
+
+            for (int y = y0; y < y1; y++)
+            for (int x = x0; x < x1; x++)
+                _bgPixels[y * texW + x] = Color.Transparent;
+
+            _currentBackground.SetData(_bgPixels);
+            _state.BackgroundDirty = true;
+            _discardArmed = false;         // new edits re-arm the discard guard
+            _state.Status = $"Punched background under {p.DisplayName} at ({(int)p.Position.X}, {(int)p.Position.Y}) — Ctrl+Z undoes, Save writes PNG.";
+        }
+
         // --- REACHABILITY VALIDATOR ----------------------------------------
 
         /// <summary>
@@ -1391,6 +1467,17 @@ namespace SorceryForge
                     _discardArmed = false;
                     _state.Status = $"Undid background stroke ({_bgUndo.Count} more in history).";
                 }
+            }
+
+            // P → punch the background out from under the selected placement.
+            // Place mode only: that's the mode where a placement can be
+            // selected at all, and the align-then-cut workflow lives there.
+            if (Pressed(Keys.P))
+            {
+                if (_state.Mode == EditorMode.Place && _state.SelectedPlacement != null)
+                    PunchBackground(_state.SelectedPlacement);
+                else
+                    _state.Status = "Punch: select a placement in Place mode first.";
             }
 
             // [ / ] → brush size down/up (Shift = steps of 4).
@@ -2059,6 +2146,17 @@ namespace SorceryForge
                         viewportTop, viewportBottom) + rowGap;
                     break;
             }
+
+            // Punch-out is generic — every kind gets the row. A wizard standing
+            // on the original game's baked-in artwork needs its footprint cut
+            // out just as much as a door does. Same closure-capture rule as the
+            // rows above: the lambda outlives this frame's local `p`.
+            var capturedP = p;
+            row += DrawInspectorRow(x, y + row, w, "Background",
+                "Punch (clear 24x24)",
+                () => PunchBackground(capturedP),
+                viewportTop, viewportBottom) + rowGap;
+
             return row;
         }
 
