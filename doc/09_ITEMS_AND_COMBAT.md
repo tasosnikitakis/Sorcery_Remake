@@ -181,14 +181,20 @@ public static readonly Rectangle WAND_FRAME =
     new Rectangle(0, 0, ITEM_SOURCE_SIZE, ITEM_SOURCE_SIZE);
 ```
 
-### 4. Register in `LoadContent`
+### 4. Add a catalog row
 
-`Game1.LoadContent`:
+`Core/EntityCatalog.cs`:
 
 ```csharp
-var wandSheet = LoadAndTransparent("WandSheet");
-_itemSystem.Register(ItemType.Wand, wandSheet, SpriteConfig.WAND_FRAME);
+new(ItemType.Wand, "WandSheet", SpriteConfig.WAND_FRAME, "Wand", SectionWeapons),
 ```
+
+That single row is what `Game1.LoadContent` iterates to call
+`_itemSystem.Register`, **and** what SorceryForge iterates to build its
+palette — so the new item is playable and placeable from this one edit. (It
+used to be a hand-written `Register` call here plus a separate hardcoded
+palette entry in the editor, which is why items added before this table
+existed could not be placed in rooms.)
 
 ### 5. (If a weapon) Extend the kill matrix
 

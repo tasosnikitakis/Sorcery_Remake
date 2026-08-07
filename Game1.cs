@@ -204,6 +204,12 @@ namespace SorceryRemake
             MakeColorTransparent(_rightDoorTexture, Color.Black);
 
             // --- Enemy sheets ---
+            // Kept as one field per enemy rather than driven from
+            // Core/EntityCatalog: SpawnEnemy needs each sheet by name while it
+            // wires that enemy's speed, gravity, door collision, and
+            // controller, none of which is table-shaped. The catalog carries
+            // the same asset names for the editor's palette — if you rename a
+            // sheet, change it in both places.
             _guardSheet = LoadAndTransparent("GuardSheet");
             _maskSheet = LoadAndTransparent("MaskSheet");
             _boarSheet = LoadAndTransparent("BoarSheet");
@@ -212,20 +218,11 @@ namespace SorceryRemake
             _deathSheet = LoadAndTransparent("EnemyDeathSheet");
 
             // --- Item sheets (register with ItemSystem) ---
-            var swordSheet = LoadAndTransparent("SwordSheet");
-            _itemSystem.Register(ItemType.Sword, swordSheet, SpriteConfig.SWORD_FRAME);
-
-            var ballAndChainSheet = LoadAndTransparent("BallandChainSheet");
-            _itemSystem.Register(ItemType.BallAndChain, ballAndChainSheet, SpriteConfig.BALL_AND_CHAIN_FRAME);
-
-            var axeSheet = LoadAndTransparent("AxeSheet");
-            _itemSystem.Register(ItemType.Axe, axeSheet, SpriteConfig.AXE_FRAME);
-
-            var shootingStarSheet = LoadAndTransparent("ShootingStarSheet");
-            _itemSystem.Register(ItemType.ShootingStar, shootingStarSheet, SpriteConfig.SHOOTING_STAR_FRAME);
-
-            var lyreSheet = LoadAndTransparent("LyreSheet");
-            _itemSystem.Register(ItemType.Lyre, lyreSheet, SpriteConfig.LYRE_FRAME);
+            // One row per item in Core/EntityCatalog, which SorceryForge's
+            // palette reads from too — so a new item is one table row, not a
+            // registration here plus a palette entry over there.
+            foreach (var item in EntityCatalog.Items)
+                _itemSystem.Register(item.Type, LoadAndTransparent(item.Asset), item.SourceRect);
 
             // --- Wizard & blocked door sheets ---
             _captiveWizardSheet = LoadAndTransparent("CaptiveWizardSheet");
@@ -867,6 +864,15 @@ namespace SorceryRemake
         // ENEMY MANAGEMENT
         // ====================================================================
 
+        /// <summary>
+        /// Build one enemy entity. The sprite sheet and idle frame each case
+        /// uses are mirrored in Core/EntityCatalog.Enemies (which is what
+        /// SorceryForge draws in its palette) — but the rest of each case is
+        /// behaviour, not data: per-type speed, gravity, door collision, and a
+        /// distinct controller class. That is why this stayed a switch instead
+        /// of becoming a table walk. Keep the sheet/frame choices here in step
+        /// with the catalog rows.
+        /// </summary>
         private void SpawnEnemy(string id, EnemyType type, Vector2 position)
         {
             if (_worldState.DeadEnemies.Contains(id)) return;

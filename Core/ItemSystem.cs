@@ -8,9 +8,12 @@
 // - Weapon-enemy effectiveness matrix (CanKillEnemy)
 //
 // Adding a new item type:
-// 1. Add to ItemType enum
-// 2. Register its texture in Game1.LoadContent via Register()
-// 3. Done — no other files need changing
+// 1. Add to ItemType enum (below)
+// 2. Add one row to Core/EntityCatalog.Items — that table is what Game1
+//    iterates to call Register(), and what SorceryForge iterates to build its
+//    palette, so the item becomes both playable and placeable from one edit
+// 3. Provide the PNG in Content/ plus its Content.mgcb block
+// 4. If it's a weapon, extend CanKillEnemy below
 // ============================================================================
 
 using Microsoft.Xna.Framework;

@@ -189,17 +189,19 @@ namespace SorceryForge
             // Pre-load every spritesheet the editor draws. Each LoadAndCache
             // call also makes black transparent so item icons render cleanly
             // on the canvas (matches Game1.LoadAndTransparent).
+            //
+            // Item and enemy sheets come from the shared catalog, so a new
+            // entity type is loadable here the moment its row exists — no edit
+            // to this method. LoadAndCache is idempotent (it returns the
+            // cached texture), so rows sharing one sheet cost a dictionary
+            // hit, not a second load.
             LoadAndCache("Tiles");
-            LoadAndCache("SwordSheet");
-            LoadAndCache("BallandChainSheet");
-            LoadAndCache("AxeSheet");
-            LoadAndCache("ShootingStarSheet");
-            LoadAndCache("LyreSheet");
-            LoadAndCache("GuardSheet");
-            LoadAndCache("MaskSheet");
-            LoadAndCache("BoarSheet");
-            LoadAndCache("EyeSheet");
-            LoadAndCache("WraithSheet");
+            foreach (var item in EntityCatalog.Items) LoadAndCache(item.Asset);
+            foreach (var enemy in EntityCatalog.Enemies) LoadAndCache(enemy.Asset);
+
+            // Sheets with no catalog row: these belong to placement kinds that
+            // aren't type-parameterised (one wizard, one blocked door, two
+            // doors), so there's nothing to tabulate.
             LoadAndCache("CaptiveWizardSheet");
             LoadAndCache("BlockedDoorSheet");
             LoadAndCache("LeftDoorFrames");   // 4-frame strip, frame 0 = closed
@@ -243,21 +245,21 @@ namespace SorceryForge
 
         private void BuildPalette()
         {
-            // -- WEAPONS ----------------------------------------------------
-            _state.Palette.Add(Tag(MakeItem("Sword",         ItemType.Sword,        "SwordSheet"),         "WEAPONS"));
-            _state.Palette.Add(Tag(MakeItem("Ball & Chain",  ItemType.BallAndChain, "BallandChainSheet"),  "WEAPONS"));
-            _state.Palette.Add(Tag(MakeItem("Axe",           ItemType.Axe,          "AxeSheet"),           "WEAPONS"));
-            _state.Palette.Add(Tag(MakeItem("Shooting Star", ItemType.ShootingStar, "ShootingStarSheet"),  "WEAPONS"));
+            // -- ITEMS & ENEMIES --------------------------------------------
+            // Straight from the shared catalog (Core/EntityCatalog): label,
+            // sheet, source rect and section all come from the row, so adding
+            // an item type puts it in the palette with no edit here. Row order
+            // within a section is palette order; SectionOrder below decides
+            // the order of the sections themselves.
+            foreach (var item in EntityCatalog.Items)
+                _state.Palette.Add(Tag(
+                    MakeItem(item.DisplayName, item.Type, item.Asset, item.SourceRect),
+                    item.PaletteSection));
 
-            // -- KEY ITEMS --------------------------------------------------
-            _state.Palette.Add(Tag(MakeItem("Lyre",          ItemType.Lyre,         "LyreSheet"),          "KEY ITEMS"));
-
-            // -- ENEMIES ----------------------------------------------------
-            _state.Palette.Add(Tag(MakeEnemy("Guard",  EnemyType.Guard,  "GuardSheet",  SpriteConfig.GUARD_IDLE[0]),  "ENEMIES"));
-            _state.Palette.Add(Tag(MakeEnemy("Mask",   EnemyType.Mask,   "MaskSheet",   SpriteConfig.MASK_ANIM[0]),   "ENEMIES"));
-            _state.Palette.Add(Tag(MakeEnemy("Boar",   EnemyType.Boar,   "BoarSheet",   SpriteConfig.BOAR_ANIM[0]),   "ENEMIES"));
-            _state.Palette.Add(Tag(MakeEnemy("Eye",    EnemyType.Eye,    "EyeSheet",    SpriteConfig.EYE_ANIM[0]),    "ENEMIES"));
-            _state.Palette.Add(Tag(MakeEnemy("Wraith", EnemyType.Wraith, "WraithSheet", SpriteConfig.WRAITH_IDLE[0]), "ENEMIES"));
+            foreach (var enemy in EntityCatalog.Enemies)
+                _state.Palette.Add(Tag(
+                    MakeEnemy(enemy.DisplayName, enemy.Type, enemy.Asset, enemy.SourceRect),
+                    enemy.PaletteSection));
 
             // -- DOORS ------------------------------------------------------
             // Two entries — pick the opening side that matches where you're
@@ -306,9 +308,12 @@ namespace SorceryForge
 
         private static PaletteEntry Tag(PaletteEntry e, string section) { e.Section = section; return e; }
 
-        private PaletteEntry MakeItem(string label, ItemType type, string asset) =>
-            new(label, PlacementKind.Item, _textures[asset],
-                new Rectangle(0, 0, SpriteConfig.ITEM_SOURCE_SIZE, SpriteConfig.ITEM_SOURCE_SIZE))
+        // Source rects now arrive from the catalog rather than being assumed
+        // to be the full 48x48 sheet — the values are the same for today's
+        // items, but an item whose sheet holds several frames will need its
+        // own rect and this stops that being a second edit site.
+        private PaletteEntry MakeItem(string label, ItemType type, string asset, Rectangle src) =>
+            new(label, PlacementKind.Item, _textures[asset], src)
             { ItemType = type };
 
         private PaletteEntry MakeEnemy(string label, EnemyType type, string asset, Rectangle src) =>
