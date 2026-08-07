@@ -314,3 +314,15 @@ has no dependencies and can land any time after PR 1.
 Each PR should run both `dotnet build` targets (game + editor) and a manual
 smoke pass: load every room, place/move/delete each kind, save, reload,
 confirm JSON diffs are minimal (stable ordering already holds — keep it).
+
+
+### Drop persistence (game-side, found during PR 3 smoke, pre-existing)
+WorldState has no record of dropped items. Picking up item B while
+carrying A despawns B (correct, ID enters PickedUpItems) but A's drop
+exists only in the live room's entity list and is lost on room exit.
+Original Sorcery+ keeps drops where you leave them. Fix shape: a
+DroppedItems map (item ID → room ID + position) in WorldState, written
+on swap/drop, consulted at room spawn alongside the content JSON, and
+the ID removed from the map on re-pickup. The puzzle analyzer will
+eventually need to model this too (a key dropped in an unreachable
+room affects solvability).
