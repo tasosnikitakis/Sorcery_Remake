@@ -1,21 +1,21 @@
 {
-  "roomId": "wastelands", 
+  "roomId": "wastelands",
   "doors": [
     {
-      "targetDoor": "stonehenge_door_right", 
-      "targetRoom": "stonehenge", 
-      "y": 112, 
-      "x": 0, 
-      "type": "RightOpening", 
-      "id": "wastelands_door_left"
-    }, 
+      "id": "wastelands_door_left",
+      "x": 0,
+      "y": 112,
+      "type": "RightOpening",
+      "targetRoom": "stonehenge",
+      "targetDoor": "stonehenge_door_right"
+    },
     {
-      "targetDoor": "tunnelmouth_door_left", 
-      "targetRoom": "tunnelmouth", 
-      "y": 112, 
-      "x": 296, 
-      "type": "LeftOpening", 
-      "id": "wastelands_door_right"
+      "id": "wastelands_door_right",
+      "x": 296,
+      "y": 112,
+      "type": "LeftOpening",
+      "targetRoom": "tunnelmouth",
+      "targetDoor": "tunnelmouth_door_left"
     }
   ]
 }
