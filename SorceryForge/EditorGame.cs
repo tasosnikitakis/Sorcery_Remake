@@ -324,14 +324,58 @@ namespace SorceryForge
             new(label, PlacementKind.Enemy, _textures[asset], src)
             { EnemyType = type };
 
+        // ---- Palette scroll geometry --------------------------------------
+        //
+        // The panel's first PaletteTitleHeight pixels hold the "PALETTE"
+        // title and never move; everything below scrolls. Layout, the scissor
+        // rect, wheel clamping and click hit-testing all measure against
+        // PaletteViewportRect, so they cannot disagree about where a row is —
+        // which is exactly the off-by-the-scroll-offset bug that makes a
+        // scrolled palette hand you the wrong entry.
+        private const int PaletteTitleHeight = 30;
+        private const int PaletteBottomInset = 8;
+
+        // Total laid-out height of headers + entries (set by LayoutPalette).
+        private int _paletteContentHeight;
+
+        private static Rectangle PaletteViewportRect
+        {
+            get
+            {
+                int top = EditorLayout.PaletteY + PaletteTitleHeight;
+                int bottom = EditorLayout.PaletteRect.Bottom - PaletteBottomInset;
+                return new Rectangle(EditorLayout.PaletteX, top,
+                                     EditorLayout.PaletteWidth, Math.Max(0, bottom - top));
+            }
+        }
+
+        /// <summary>Where a laid-out palette row actually sits once scrolled.</summary>
+        private Rectangle PaletteRowRect(Rectangle layoutBounds) =>
+            new(layoutBounds.X, layoutBounds.Y - (int)_state.PaletteScrollY,
+                layoutBounds.Width, layoutBounds.Height);
+
+        /// <summary>True when any part of a scrolled row falls in the viewport.</summary>
+        private static bool PaletteRowVisible(Rectangle scrolled)
+        {
+            var vp = PaletteViewportRect;
+            return scrolled.Bottom > vp.Top && scrolled.Top < vp.Bottom;
+        }
+
+        /// <summary>
+        /// Assign every section header and entry its UNSCROLLED position, and
+        /// record the total content height. The scroll offset is applied at
+        /// draw and hit-test time via PaletteRowRect — baking it in here would
+        /// mean re-running layout on every wheel notch.
+        /// </summary>
         private void LayoutPalette()
         {
             const int entryHeight = 44;
             const int headerHeight = 22;
             const int padding = 8;
             int x = EditorLayout.PaletteX + padding;
-            int y = EditorLayout.PaletteY + padding + 22;   // 22 = "PALETTE" title line
+            int y = EditorLayout.PaletteY + PaletteTitleHeight;
             int w = EditorLayout.PaletteWidth - padding * 2;
+            int contentTop = y;
 
             _sectionHeaders.Clear();
 
@@ -354,6 +398,21 @@ namespace SorceryForge
 
                 y += 6;  // spacer between sections
             }
+
+            _paletteContentHeight = y - contentTop;
+
+            // Re-clamp here as well as on wheel input: shrinking the window
+            // grows the viewport-vs-content gap, and the scroll must come back
+            // into range immediately, not on the next time the cursor happens
+            // to pass over the palette.
+            ClampPaletteScroll();
+        }
+
+        private void ClampPaletteScroll()
+        {
+            float maxScroll = Math.Max(0, _paletteContentHeight - PaletteViewportRect.Height);
+            if (_state.PaletteScrollY < 0)         _state.PaletteScrollY = 0;
+            if (_state.PaletteScrollY > maxScroll) _state.PaletteScrollY = maxScroll;
         }
 
         // Indices into _buttons for the labels we update at runtime.
@@ -715,6 +774,9 @@ namespace SorceryForge
 
             HandleButtons();
             HandleInspectorScroll();
+            // Before HandlePaletteInput below, so a wheel notch and the click
+            // that follows it in the same frame agree on the scroll offset.
+            HandlePaletteScroll();
             // Inspector buttons take priority over the canvas: clicking a
             // cycle button shouldn't deselect the entity it's editing.
             if (HandleInspectorClicks()) { /* swallowed */ }
@@ -800,6 +862,26 @@ namespace SorceryForge
             return false;
         }
 
+        /// <summary>
+        /// Mouse wheel over the palette pane scrolls its entry list. Same
+        /// shape as HandleInspectorScroll — and the two can't fight, because
+        /// each claims its own screen region, as does the canvas's wheel zoom
+        /// (HandleCanvasView only acts inside CanvasRect).
+        /// </summary>
+        private void HandlePaletteScroll()
+        {
+            if (!EditorLayout.PaletteRect.Contains(_mouseNow.X, _mouseNow.Y)) return;
+
+            int delta = _mouseNow.ScrollWheelValue - _mousePrev.ScrollWheelValue;
+            if (delta != 0)
+            {
+                // SDL/MonoGame reports ~120 per notch; convert to ~30 px.
+                _state.PaletteScrollY -= delta * 0.25f;
+            }
+
+            ClampPaletteScroll();
+        }
+
         private void HandlePaletteInput()
         {
             // Palette is interactive only in Place mode.
@@ -807,9 +889,17 @@ namespace SorceryForge
             if (!LeftClicked()) return;
 
             var p = new Point(_mouseNow.X, _mouseNow.Y);
+
+            // Only visible pixels are clickable. The scissor in Draw clips
+            // rows to the viewport, so a row scrolled up under the title or
+            // down past the panel's bottom edge isn't on screen and must not
+            // answer clicks either — hence the viewport test, and hit-testing
+            // the SCROLLED rect rather than the laid-out one.
+            if (!PaletteViewportRect.Contains(p)) return;
+
             foreach (var entry in _state.Palette)
             {
-                if (entry.ScreenBounds.Contains(p))
+                if (PaletteRowRect(entry.ScreenBounds).Contains(p))
                 {
                     _state.Dragging = entry;
                     _state.SelectedPlacement = null;
@@ -1645,9 +1735,18 @@ namespace SorceryForge
             // Pass 1: UI chrome and the canvas frame.
             _spriteBatch.Begin(samplerState: SamplerState.PointClamp);
             DrawTopBar();
-            DrawPalette();
+            DrawPaletteChrome();
             FillRect(EditorLayout.CanvasRect, Color.Black);
             DrawRectOutline(InflateRect(EditorLayout.CanvasRect, 2), new Color(120, 130, 160));
+            _spriteBatch.End();
+
+            // Pass 1b: the palette's scrollable body, scissored to its
+            // viewport. Culling alone isn't enough — a 44 px row straddling
+            // the viewport's top edge would otherwise paint up over the
+            // "PALETTE" title and into the top bar.
+            GraphicsDevice.ScissorRectangle = PaletteViewportRect;
+            _spriteBatch.Begin(samplerState: SamplerState.PointClamp, rasterizerState: ScissorOn);
+            DrawPaletteEntries();
             _spriteBatch.End();
 
             // Pass 2: canvas content, scissor-clipped to the canvas rect so
@@ -1709,7 +1808,11 @@ namespace SorceryForge
 
         // -- Palette panel: icon + label per entry --------------------------
 
-        private void DrawPalette()
+        /// <summary>
+        /// The parts of the palette panel that don't scroll: the panel itself,
+        /// its title, and the scrollbar hint. Drawn unscissored in pass 1.
+        /// </summary>
+        private void DrawPaletteChrome()
         {
             FillRect(EditorLayout.PaletteRect, new Color(28, 30, 38));
             DrawRectOutline(EditorLayout.PaletteRect, new Color(60, 64, 78));
@@ -1722,39 +1825,71 @@ namespace SorceryForge
             };
             DrawText(header, new Vector2(EditorLayout.PaletteX + 8, EditorLayout.PaletteY + 8), new Color(180, 180, 200));
 
+            // Right-edge scrollbar hint when the entries overflow, matching
+            // the inspector's. It sits in the 6 px gutter outside the entry
+            // column, so drawing it here (before the entries) can't hide it.
+            var vp = PaletteViewportRect;
+            if (_paletteContentHeight > vp.Height && vp.Height > 0)
+            {
+                int trackX = EditorLayout.PaletteRect.Right - 6;
+                FillRect(new Rectangle(trackX, vp.Top, 4, vp.Height), new Color(40, 44, 56));
+                float ratio = (float)vp.Height / _paletteContentHeight;
+                int thumbH = Math.Max(20, (int)(vp.Height * ratio));
+                int thumbY = vp.Top + (int)((vp.Height - thumbH) *
+                    (_state.PaletteScrollY / Math.Max(1, _paletteContentHeight - vp.Height)));
+                FillRect(new Rectangle(trackX, thumbY, 4, thumbH), new Color(120, 130, 160));
+            }
+        }
+
+        /// <summary>
+        /// The scrolling body: section headers and entries. Drawn inside the
+        /// scissored pass, so partially-visible rows are cut at the viewport
+        /// edge rather than popping in and out whole.
+        /// </summary>
+        private void DrawPaletteEntries()
+        {
             // Section headers — drawn before entries so entries can paint
             // their hover/selected backgrounds on top.
             foreach (var (name, bounds) in _sectionHeaders)
             {
-                FillRect(bounds, new Color(45, 50, 65));
-                DrawRectOutline(bounds, new Color(80, 90, 120));
-                DrawText(name, new Vector2(bounds.X + 8, bounds.Y + 4), new Color(255, 220, 110));
+                var rect = PaletteRowRect(bounds);
+                if (!PaletteRowVisible(rect)) continue;
+                FillRect(rect, new Color(45, 50, 65));
+                DrawRectOutline(rect, new Color(80, 90, 120));
+                DrawText(name, new Vector2(rect.X + 8, rect.Y + 4), new Color(255, 220, 110));
             }
 
             // Outside Place mode, the entity palette is non-interactive —
             // render its entries dimmed so it's visually obvious why clicks
             // are ignored. Sprites are drawn through a tinted alpha overlay.
             bool dim = _state.Mode != EditorMode.Place;
+            var viewport = PaletteViewportRect;
 
             foreach (var entry in _state.Palette)
             {
-                bool isHover = !dim && entry.ScreenBounds.Contains(_mouseNow.X, _mouseNow.Y);
+                var rect = PaletteRowRect(entry.ScreenBounds);
+                if (!PaletteRowVisible(rect)) continue;
+
+                // Hover uses the same two tests HandlePaletteInput uses, so
+                // the highlight always marks the entry a click would pick up.
+                bool isHover = !dim
+                    && rect.Contains(_mouseNow.X, _mouseNow.Y)
+                    && viewport.Contains(_mouseNow.X, _mouseNow.Y);
                 bool isActive = ReferenceEquals(_state.Dragging, entry);
 
                 Color bg = isActive ? new Color(80, 90, 130)
                        : isHover    ? new Color(50, 55, 70)
                                     : new Color(38, 42, 52);
-                FillRect(entry.ScreenBounds, bg);
-                DrawRectOutline(entry.ScreenBounds, new Color(70, 74, 88));
+                FillRect(rect, bg);
+                DrawRectOutline(rect, new Color(70, 74, 88));
 
                 Color iconTint = dim ? new Color(255, 255, 255, 90) : Color.White;
-                var iconRect = new Rectangle(
-                    entry.ScreenBounds.X + 6, entry.ScreenBounds.Y + 6, 32, 32);
+                var iconRect = new Rectangle(rect.X + 6, rect.Y + 6, 32, 32);
                 _spriteBatch.Draw(entry.Texture, iconRect, entry.SourceRect, iconTint);
 
                 Color labelColor = dim ? new Color(140, 140, 150) : Color.White;
                 DrawText(entry.Label,
-                    new Vector2(entry.ScreenBounds.X + 46, entry.ScreenBounds.Y + 14),
+                    new Vector2(rect.X + 46, rect.Y + 14),
                     labelColor);
             }
         }

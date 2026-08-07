@@ -81,6 +81,12 @@ namespace SorceryForge
 
         public void Expand(string placementId) =>
             CollapsedPlacementIds.Remove(placementId);
+
+        // Left-side palette panel. Same scroll model as the inspector above:
+        // a pixel offset subtracted from each row's laid-out Y. Zero until the
+        // entry list outgrows the panel, which it will once Phase 5C's full
+        // item set lands.
+        public float PaletteScrollY = 0f;
         // Available rooms (from RoomMeta.All) and which one is currently loaded.
         public int CurrentRoomIndex = 0;
         public RoomMeta CurrentRoom => RoomMeta.All[CurrentRoomIndex];

@@ -37,7 +37,10 @@ namespace SorceryForge
         // EditorGame.SectionOrder.
         public string Section = "OTHER";
 
-        // Where this entry sits in the palette panel (filled by PaletteLayout).
+        // Where this entry sits in the palette panel, filled by
+        // EditorGame.LayoutPalette. This is the UNSCROLLED position — add the
+        // palette scroll offset before drawing or hit-testing, which
+        // EditorGame.PaletteRowRect does for both.
         public Rectangle ScreenBounds;
 
         public PaletteEntry(string label, PlacementKind kind, Texture2D tex, Rectangle src)
