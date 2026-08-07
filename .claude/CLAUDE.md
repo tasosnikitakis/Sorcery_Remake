@@ -112,3 +112,6 @@ screenshot (JPEG) import → world map view. Game-side, the next phase is 4B
 - When a task touches JSON schemas, update the schema comment blocks in the
   matching loader (`RoomLayoutLoader.cs` / `RoomContentLoader.cs`) and
   `doc/07` in the same PR.
+- Work on a branch named pr<N>-<slug>; the owner merges to main after
+  the manual smoke pass. Restore tracked test artifacts AND check git
+  status for new untracked files under assets/ and Content/ before merge.
