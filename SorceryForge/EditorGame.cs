@@ -619,14 +619,21 @@ namespace SorceryForge
             var meta = _state.CurrentRoom;
             try
             {
+                // The status line names exactly the files that hit the disk.
+                // Both loaders decline to CREATE a file for a room that is
+                // empty and has none yet (they still rewrite an existing one,
+                // so deletions persist), so "saved" cannot be assumed — it is
+                // built from what each Save actually reports back.
+                var saved = new List<string>();
+
                 // 1. Content (items, enemies, wizards, blocked doors).
-                RoomContentLoader.Save(meta.RoomId, _state.ToRoomContent(), EditorPaths.RepoAssetsDataDir);
-                string saved = $"content_{meta.RoomId}.json";
+                if (RoomContentLoader.Save(meta.RoomId, _state.ToRoomContent(), EditorPaths.RepoAssetsDataDir))
+                    saved.Add($"content_{meta.RoomId}.json");
 
                 // 2. Layout (doors).
                 var layout = _state.ToRoomLayoutJson(meta.RoomId);
-                RoomLayoutLoader.Save(layout, EditorPaths.RepoAssetsDataDir);
-                saved += $" + layout_{meta.RoomId}.json";
+                if (RoomLayoutLoader.Save(layout, EditorPaths.RepoAssetsDataDir))
+                    saved.Add($"layout_{meta.RoomId}.json");
 
                 // Placements live entirely in those two files, so they're
                 // durable now — clear the flag here (same pattern as the
@@ -640,7 +647,7 @@ namespace SorceryForge
                     string path = Path.Combine(EditorPaths.RepoAssetsDataDir, meta.CollisionJsonName);
                     RoomLoader.SaveCollisionGrid(path, _state.CollisionMap);
                     _state.CollisionDirty = false;
-                    saved += $" + {meta.CollisionJsonName}";
+                    saved.Add(meta.CollisionJsonName);
                 }
 
                 // 4. Background PNG (only when Erase mode touched pixels).
@@ -666,7 +673,7 @@ namespace SorceryForge
                     // The restore brush now restores to this saved state.
                     _bgOriginal = (Color[])_bgPixels.Clone();
                     _state.BackgroundDirty = false;
-                    saved += $" + {meta.BackgroundAsset}.png (rebuild for game)";
+                    saved.Add($"{meta.BackgroundAsset}.png (rebuild for game)");
                 }
 
                 // Refresh in-memory door cache from the file we just wrote
@@ -674,7 +681,9 @@ namespace SorceryForge
                 meta.ReloadDoorsFromDisk();
 
                 _discardArmed = false;   // a save always disarms the discard guard
-                _state.Status = "Saved " + saved;
+                _state.Status = saved.Count > 0
+                    ? "Saved " + string.Join(" + ", saved)
+                    : $"Nothing to save — {meta.DisplayName} is empty, so no files were created";
             }
             catch (Exception ex)
             {

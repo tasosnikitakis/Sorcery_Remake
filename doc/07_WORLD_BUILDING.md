@@ -217,6 +217,17 @@ The persistence model is what makes rooms feel like a coherent world rather than
 
 `Rooms/RoomData.cs` defines a fuller DTO (`Width`, `Height`, `Tiles`, `PlayerSpawn`, `Exits`, `BackgroundColor`, `BackgroundTextureName`, `CollisionGrid`) that is *not currently used* by the live system. It exists as the target shape for a future serializable-rooms / map-editor pipeline (Phase 5A). Today the live shape is the builder lambda + `RoomContent`; `RoomData` is a sketch.
 
+## Per-Room JSON Files — When They Exist
+
+A room's `content_<roomId>.json` and `layout_<roomId>.json` are **optional**. An absent file and a file with all-empty arrays mean exactly the same thing to the loaders (`RoomContentLoader.TryLoad` / `RoomLayoutLoader.TryLoad` both return "nothing here"), so the save path prefers absence:
+
+- **Empty room, no file yet → nothing is written.** Opening a content-free or doorless room in SorceryForge and pressing Ctrl+S must not add a no-op file to the repo. The status line says so rather than claiming a save.
+- **Empty room, file already exists → the file IS rewritten.** This is the case where the author just deleted everything in the room. Skipping the write would silently discard the deletion and leave the old entities/doors live in the game. Emptiness alone never suppresses a write; only emptiness *plus* absence does.
+
+"Empty" is defined per file at the check site in each loader's `Save`: content = no items, enemies, wizards or blocked doors; layout = no doors. `roomId` doesn't count — the writer always fills it in. Any future DTO field that carries authored room data has to be folded into those predicates.
+
+Together with a stable serializer this gives the repo a checkable invariant: **load every manifest room in the editor, save each untouched, and both `git diff` and `git status` stay clean.** `tools/RoundTrip` runs exactly that headlessly and is the regression test for any change to the save path, the loaders, or room registration.
+
 ## Layout Conventions
 
 These are project conventions, not framework requirements:

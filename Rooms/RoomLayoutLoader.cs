@@ -22,6 +22,9 @@
 //
 // SorceryForge writes this file when the user authors doors in the editor.
 // Game1 reads this file at room-load time to construct DoorComponents.
+//
+// A room with no doors has NO file — see the skip rule on Save below.
+// Absent file and empty "doors" array mean the same thing to TryLoad.
 // ============================================================================
 
 using System;
@@ -81,12 +84,43 @@ namespace SorceryRemake.Rooms
             return JsonSerializer.Deserialize<RoomLayoutJson>(text, Options);
         }
 
-        public static void Save(RoomLayoutJson layout, string? dir = null)
+        /// <summary>
+        /// Write layout_&lt;roomId&gt;.json. Returns true if the file was
+        /// written, false if the write was deliberately skipped (see below) —
+        /// callers use the result to keep their "saved X" feedback honest.
+        /// </summary>
+        public static bool Save(RoomLayoutJson layout, string? dir = null)
         {
             string path = GetPath(layout.roomId, dir);
+
+            // EMPTY, precisely: no doors. RoomLayoutJson carries exactly two
+            // members today — roomId and doors (see the schema block at the
+            // top of this file) — and roomId deliberately does NOT count:
+            // the writer always fills it in, so its presence is never
+            // evidence that a human authored anything. Be conservative if
+            // this DTO ever grows a field holding real room data (spawn
+            // points, camera hints, ...): fold it in here, or a room whose
+            // only content is that new field would never get a file.
+            bool isEmpty = layout.doors.Count == 0;
+
+            // The rule is "don't CREATE an empty file", never "don't WRITE
+            // an empty file", and the asymmetry matters in both directions:
+            //
+            //   file absent + empty  -> skip. Otherwise merely opening a
+            //     doorless room in SorceryForge and hitting Ctrl+S adds a
+            //     no-op file to the repo, and an untouched save stops being a
+            //     no-op (see tools/RoundTrip).
+            //   file present + empty -> WRITE. The user just deleted every
+            //     door in the room; refusing the write would silently discard
+            //     that deletion and leave the old doors live in the game,
+            //     which is far worse than a redundant file. Emptiness alone
+            //     must never suppress a write.
+            if (isEmpty && !File.Exists(path)) return false;
+
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             string text = JsonSerializer.Serialize(layout, Options);
             File.WriteAllText(path, text);
+            return true;
         }
     }
 }

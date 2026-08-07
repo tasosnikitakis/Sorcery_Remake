@@ -14,6 +14,9 @@
 //   "wizards":      [ { "id":"...",                        "x": 200, "y": 80 }, ... ],
 //   "blockedDoors": [ { "id":"...", "requiredItem":"Lyre", "x": 216, "y": 72 }, ... ]
 // }
+//
+// A room with no entities has NO file — see the skip rule on Save below.
+// Absent file and all-empty-arrays file mean the same thing to TryLoad.
 // ============================================================================
 
 using Microsoft.Xna.Framework;
@@ -124,14 +127,45 @@ namespace SorceryRemake.Rooms
             return data == null ? null : ToRoomContent(data);
         }
 
-        public static void Save(string roomId, RoomContent content, string? dir = null)
+        /// <summary>
+        /// Write content_&lt;roomId&gt;.json. Returns true if the file was
+        /// written, false if the write was deliberately skipped (see below) —
+        /// callers use the result to keep their "saved X" feedback honest.
+        /// </summary>
+        public static bool Save(string roomId, RoomContent content, string? dir = null)
         {
             string path = GetPath(roomId, dir);
-            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-
             var dto = FromRoomContent(roomId, content);
+
+            // EMPTY, precisely: the serialised DTO carries no entity of any
+            // kind — no items, no enemies, no wizards, no blocked doors.
+            // roomId deliberately does NOT count: the writer always fills it
+            // in, so its presence is never evidence that a human authored
+            // anything. Be conservative if RoomContentJson ever grows a
+            // field that holds real room data — fold it in here, or a room
+            // whose only content is that new field would never get a file.
+            bool isEmpty = dto.items.Count == 0
+                        && dto.enemies.Count == 0
+                        && dto.wizards.Count == 0
+                        && dto.blockedDoors.Count == 0;
+
+            // The rule is "don't CREATE an empty file", never "don't WRITE
+            // an empty file", and the asymmetry matters in both directions:
+            //
+            //   file absent + empty  -> skip. Otherwise merely opening a
+            //     content-free room in SorceryForge and hitting Ctrl+S adds a
+            //     no-op file to the repo, and an untouched save stops being a
+            //     no-op (see tools/RoundTrip).
+            //   file present + empty -> WRITE. The user just deleted every
+            //     entity in the room; refusing the write would silently
+            //     discard that deletion, which is far worse than a redundant
+            //     file. Emptiness alone must never suppress a write.
+            if (isEmpty && !File.Exists(path)) return false;
+
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             string text = JsonSerializer.Serialize(dto, Options);
             File.WriteAllText(path, text);
+            return true;
         }
 
         // --------------------------------------------------------------------
