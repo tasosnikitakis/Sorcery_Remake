@@ -70,7 +70,8 @@
 //   dotnet run   --project tools/RoundTrip/RoundTrip.csproj -- --out <dir>
 //
 //   Exit 0 = invariant holds. Exit 1 = violations (listed above the summary).
-//   Exit 2 = could not run (bad arguments, unsafe --out, repo root not found).
+//   Exit 2 = could not run (bad arguments, unsafe --out, repo root not found,
+//            unreadable or invalid assets/data/rooms.json).
 //   The scratch directory is left in place afterwards for manual diffing.
 //
 // HOW TO COMPARE AGAINST main
@@ -180,13 +181,21 @@ namespace SorceryRemake.Tools.RoundTrip
             Console.WriteLine($"  repo    : {repoRoot}");
             Console.WriteLine($"  source  : {sourceDir}");
             Console.WriteLine($"  scratch : {scratch}");
-            Console.WriteLine($"  rooms   : {RoomManifest.All.Count} (RoomManifest.All)");
-            Console.WriteLine();
 
             int selfTestFailures;
             var seeded = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             try
             {
+                // FIRST touch of the registry, and it belongs inside the guard.
+                // RoomManifest.All is a Lazy<T> that throws our own
+                // InvalidOperationException for a missing / malformed / invalid
+                // rooms.json. Read outside the try and a broken registry ends
+                // the run with an unhandled stack trace; read here and it exits
+                // 2 with the documented "refusing to run: <reason>" message,
+                // like every other could-not-run case.
+                Console.WriteLine($"  rooms   : {RoomManifest.All.Count} (RoomManifest.All)");
+                Console.WriteLine();
+
                 AssertScratchSafe(scratch, repoRoot, sourceDir);
 
                 CleanScratch(scratch);
@@ -224,7 +233,8 @@ namespace SorceryRemake.Tools.RoundTrip
             Console.WriteLine("  --out <dir>  scratch directory to work in (cleared and re-seeded each run).");
             Console.WriteLine($"               default: %TEMP%\\{DefaultScratchName}");
             Console.WriteLine();
-            Console.WriteLine("exit 0 = round-trip invariant holds; 1 = violations found; 2 = could not run.");
+            Console.WriteLine("exit 0 = round-trip invariant holds; 1 = violations found; 2 = could not run");
+            Console.WriteLine("        (bad arguments, unsafe --out, repo root not found, bad rooms.json).");
         }
 
         // ====================================================================

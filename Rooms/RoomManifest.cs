@@ -86,6 +86,19 @@ namespace SorceryRemake.Rooms
         public static string RoomsJsonPath => Path.Combine(RoomContentLoader.DefaultDir, "rooms.json");
 
         /// <summary>
+        /// Rooms that exist in the game but are registered programmatically
+        /// (Game1.RegisterTestRooms) rather than via this manifest. Validators
+        /// treat door targets in this set as existing-but-unverifiable.
+        /// </summary>
+        // Declared ABOVE _all deliberately: LoadAll rejects registry entries
+        // that reuse one of these ids, so the set has to be initialised before
+        // any code path that can run LoadAll. Static field initialisers run in
+        // textual order, and while today's Lazy<T> only ever calls LoadAll long
+        // after class init, keeping the declaration first means that stays true
+        // regardless of how the registry is triggered later.
+        public static readonly HashSet<string> TestRoomIds = new() { "room_1", "room_2" };
+
+        /// <summary>
         /// All shipped background-image rooms, in rooms.json array order.
         /// That order is the editor's cycle order (Prev/Next walk this list).
         /// </summary>
@@ -152,6 +165,20 @@ namespace SorceryRemake.Rooms
                         $"Room registry '{path}': duplicate room id '{e.id}' (entry {i}). " +
                         "Room ids are persistence keys and must be unique.");
 
+                // The test rooms are built in code (Game1.RegisterTestRooms)
+                // and registered under these ids before the manifest rooms
+                // are. A registry entry reusing one would be shadowed — the
+                // programmatic room wins the RoomManager slot — so the entry's
+                // background, collision and doors would silently do nothing.
+                // Refuse rather than ship a room that looks registered and
+                // isn't.
+                if (TestRoomIds.Contains(e.id))
+                    throw new InvalidOperationException(
+                        $"Room registry '{path}': room id '{e.id}' (entry {i}) is reserved for the " +
+                        "programmatic test rooms registered by Game1.RegisterTestRooms. A registry " +
+                        "entry with this id would be shadowed by the test room and never load. " +
+                        "Rename the room.");
+
                 if (string.IsNullOrWhiteSpace(e.backgroundAsset))
                     throw new InvalidOperationException(
                         $"Room registry '{path}': room '{e.id}' has no \"backgroundAsset\". " +
@@ -168,13 +195,6 @@ namespace SorceryRemake.Rooms
 
             return list;
         }
-
-        /// <summary>
-        /// Rooms that exist in the game but are registered programmatically
-        /// (Game1.RegisterTestRooms) rather than via this manifest. Validators
-        /// treat door targets in this set as existing-but-unverifiable.
-        /// </summary>
-        public static readonly HashSet<string> TestRoomIds = new() { "room_1", "room_2" };
 
         public static RoomManifest? Find(string roomId)
         {
