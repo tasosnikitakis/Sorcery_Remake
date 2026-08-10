@@ -238,13 +238,18 @@ namespace SorceryRemake.Tools.RoundTrip
         }
 
         // ====================================================================
-        // SELF-TEST — the empty-file rule, stated as three assertions
+        // SELF-TEST — the empty-file rule, stated as assertions
         // ====================================================================
         // The main sweep can only observe the rule's effects on real data.
         // These cases pin the rule itself, including the asymmetry that is
         // easy to get backwards: "don't CREATE an empty file" is NOT the same
         // as "don't WRITE an empty file". Getting it backwards means a user
         // who deletes every entity in a room and saves loses the deletion.
+        //
+        // The last case pins the OTHER half of the rule — what "empty" means.
+        // Every field of a layout/content DTO that holds authored room data
+        // has to count, or a room whose only content is that field never gets
+        // a file. Add a field to either DTO, add a case here.
         //
         // Runs against synthetic room IDs inside the scratch directory, so it
         // touches no real data and needs none.
@@ -305,6 +310,25 @@ namespace SorceryRemake.Tools.RoundTrip
                 wroteEmptyLayout && File.Exists(oldLayout)
                 && rereadLayout != null && rereadLayout.doors.Count == 0);
 
+            // 4. "Empty" means no doors AND no spawn. A doorless room whose
+            //    only authored content is a player spawn is NOT empty, and
+            //    must get a file — miss this and the spawn is silently
+            //    dropped the moment it is saved into a room with no doors.
+            //    File.Delete first so this tests the CREATE branch, which is
+            //    the one that would refuse.
+            File.Delete(newLayout);
+            var spawnOnly = new RoomLayoutJson
+            {
+                roomId = SelfTestNewRoom,
+                playerSpawn = new PlayerSpawnJson { x = 32, y = 64 },
+            };
+            bool wroteSpawnOnly = RoomLayoutLoader.Save(spawnOnly, scratch);
+            var rereadSpawn = RoomLayoutLoader.TryLoad(SelfTestNewRoom, scratch);
+            failures += Assert("layout: doorless room with only a spawn DOES write",
+                wroteSpawnOnly && File.Exists(newLayout)
+                && rereadSpawn?.playerSpawn != null
+                && rereadSpawn.playerSpawn.x == 32 && rereadSpawn.playerSpawn.y == 64);
+
             Console.WriteLine();
             return failures;
         }
@@ -327,12 +351,12 @@ namespace SorceryRemake.Tools.RoundTrip
         {
             var results = new List<FileResult>();
 
-            // --- LoadRoom: content + doors from disk into the working set ---
+            // --- LoadRoom: content + doors + spawn from disk into the working set ---
             var content = RoomContentLoader.TryLoad(roomId, sourceDir);
-            var doors = RoomMeta.LoadDoorsFor(roomId);
+            var (doors, spawn) = RoomMeta.LoadLayoutFor(roomId);
 
             var state = new EditorState();
-            state.LoadFromRoomContent(content ?? new RoomContent(), doors);
+            state.LoadFromRoomContent(content ?? new RoomContent(), doors, spawn);
 
             // --- SaveCurrentRoom step 1: content ---
             string contentName = Path.GetFileName(RoomContentLoader.GetPath(roomId, scratch));

@@ -42,6 +42,15 @@ namespace SorceryForge
         public RoomManifest Manifest { get; }
         public List<DoorDef> Doors { get; private set; } = new();
 
+        /// <summary>
+        /// The room's authored player spawn, or null when the layout file
+        /// carries none (the game then falls back to
+        /// RoomLayoutLoader.DefaultPlayerSpawn). Null and "the default"
+        /// are deliberately distinguishable: only the former serialises
+        /// back to a file with no "playerSpawn" key.
+        /// </summary>
+        public Vector2? PlayerSpawn { get; private set; }
+
         public string RoomId => Manifest.RoomId;
         public string DisplayName => Manifest.DisplayName;
         public string BackgroundAsset => Manifest.BackgroundAsset;
@@ -49,22 +58,25 @@ namespace SorceryForge
 
         public RoomMeta(RoomManifest manifest) { Manifest = manifest; }
 
-        /// <summary>(Re)load doors from layout_&lt;roomId&gt;.json.</summary>
-        public void ReloadDoorsFromDisk()
+        /// <summary>(Re)load doors and spawn from layout_&lt;roomId&gt;.json.</summary>
+        public void ReloadLayoutFromDisk()
         {
-            Doors = LoadDoorsFor(RoomId);
+            (Doors, PlayerSpawn) = LoadLayoutFor(RoomId);
         }
 
         /// <summary>
-        /// Read the doors for one room from disk. Used both at startup (to
-        /// populate every RoomMeta in All) and after a save in the editor
-        /// to refresh in-memory state.
+        /// Read one room's layout from disk. Used both at startup (to populate
+        /// every RoomMeta in All) and after a save in the editor to refresh
+        /// in-memory state.
         /// </summary>
-        public static List<DoorDef> LoadDoorsFor(string roomId)
+        // Doors and spawn come back together from ONE file read on purpose:
+        // two separate loaders would parse layout_&lt;id&gt;.json twice and, worse,
+        // could drift out of step if only one of them were called.
+        public static (List<DoorDef> Doors, Vector2? PlayerSpawn) LoadLayoutFor(string roomId)
         {
             var result = new List<DoorDef>();
             var layout = RoomLayoutLoader.TryLoad(roomId, EditorPaths.RepoAssetsDataDir);
-            if (layout == null) return result;
+            if (layout == null) return (result, null);
             foreach (var d in layout.doors)
             {
                 result.Add(new DoorDef(
@@ -74,16 +86,19 @@ namespace SorceryForge
                     d.targetRoom,
                     d.targetDoor));
             }
-            return result;
+            Vector2? spawn = layout.playerSpawn == null
+                ? null
+                : new Vector2(layout.playerSpawn.x, layout.playerSpawn.y);
+            return (result, spawn);
         }
 
         // --------------------------------------------------------------------
         // STATIC CATALOGUE
         // --------------------------------------------------------------------
         // Built once at startup from the main project's RoomManifest.All.
-        // Doors are loaded from layout_*.json at the same time. Adding a new
-        // shipping room is therefore a single edit to RoomManifest.All — both
-        // projects pick it up.
+        // Doors and spawns are loaded from layout_*.json at the same time.
+        // Adding a new shipping room is therefore a single edit to
+        // RoomManifest.All — both projects pick it up.
         // --------------------------------------------------------------------
 
         public static readonly List<RoomMeta> All = BuildAll();
@@ -94,7 +109,7 @@ namespace SorceryForge
             foreach (var manifest in RoomManifest.All)
             {
                 var meta = new RoomMeta(manifest);
-                meta.ReloadDoorsFromDisk();
+                meta.ReloadLayoutFromDisk();
                 list.Add(meta);
             }
             return list;

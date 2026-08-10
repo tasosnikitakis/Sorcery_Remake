@@ -32,9 +32,21 @@ namespace SorceryForge
         // bearing, so renaming a palette label silently broke door placement.
         public DoorType? DoorOpeningSide;
 
+        // True for the one "Player Spawn" entry in the META section. That
+        // entry does not place a Placement at all — dropping it sets the
+        // room's single EditorState.PlayerSpawn point, which is saved through
+        // layout JSON and never reaches content JSON. Kind is meaningless for
+        // it; check this flag before reading Kind.
+        //
+        // A flag rather than a sixth PlacementKind: every switch over
+        // PlacementKind (ToRoomContent, GenerateId, KindShortLabel,
+        // FindPaletteFor, the inspector body) would otherwise need a case for
+        // something that is not an entity and has no ID.
+        public bool IsPlayerSpawn;
+
         // Section header to group under in the palette ("WEAPONS",
-        // "KEY ITEMS", "ENEMIES", "OTHER"). The order is taken from
-        // EditorGame.SectionOrder.
+        // "KEY ITEMS", "ENEMIES", "DOORS", "OTHER", "META"). The order is
+        // taken from EditorGame.SectionOrder.
         public string Section = "OTHER";
 
         // Where this entry sits in the palette panel, filled by

@@ -254,7 +254,12 @@ namespace SorceryRemake
                 phys.TileMap = _roomManager.CurrentTileMap;
                 UpdateDoorCollision(phys);
             }
-            _player.Position = new Vector2(160f, 80f);
+            // The start room's own playerSpawn if layout_chateau_0.json carries
+            // one, else RoomLayoutLoader.DefaultPlayerSpawn — the single
+            // definition of (160, 80), which SorceryForge's reachability
+            // validator reads from too. Door transitions are unaffected: they
+            // position the player at the target door, not at a spawn.
+            _player.Position = RoomLayoutLoader.GetPlayerSpawn("chateau_0");
             SpawnRoomContent("chateau_0");
 
             // --- Debug font ---
@@ -1211,7 +1216,9 @@ namespace SorceryRemake
             _projectiles.Clear();
 
             _roomManager.LoadRoom("chateau_0");
-            _player.Position = new Vector2(160f, 80f);
+            // Re-read rather than caching the startup value: a spawn edited in
+            // SorceryForge while the game is running takes effect on restart.
+            _player.Position = RoomLayoutLoader.GetPlayerSpawn("chateau_0");
 
             var physics = _player.GetComponent<PhysicsComponent>();
             if (physics != null)

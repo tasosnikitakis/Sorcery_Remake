@@ -35,6 +35,14 @@ namespace SorceryForge
 
         // Tracks unsaved placement edits (add/move/delete/inspector changes)
         // so room switches and exit can't silently discard them.
+        //
+        // Also covers PlayerSpawn, which is NOT a Placement but is persisted by
+        // the very same write (RoomLayoutLoader.Save inside SaveCurrentRoom's
+        // step 2). One flag for one write is deliberate: a second SpawnDirty
+        // would have to be added to ConfirmDiscardUnsavedEdits, the top-bar "*"
+        // and both clear sites to mean anything, and forgetting one of those is
+        // exactly the P0 bug PR 1 fixed. Read it as "unsaved edits that saving
+        // content + layout persists".
         public bool PlacementsDirty = false;
 
         // Erase-mode brush: side length of the square stamp, in room pixels.
@@ -93,6 +101,23 @@ namespace SorceryForge
 
         // Working set for the current room: every entity is a Placement.
         public readonly List<Placement> Placements = new();
+
+        // --- PLAYER SPAWN ---------------------------------------------------
+        // The room's single player-start position, or null when the room has
+        // none authored (the game then uses RoomLayoutLoader.DefaultPlayerSpawn).
+        //
+        // Deliberately NOT a Placement: there is at most one per room, it has
+        // no entity ID, it never reaches content JSON, and it is not part of
+        // the puzzle/reachability entity set. Dropping the palette's spawn
+        // entry again MOVES this point — it can never produce a second one.
+        public Vector2? PlayerSpawn;
+
+        // Canvas selection state for the spawn marker, mirroring
+        // SelectedPlacement / IsMovingSelection / MoveOffset for placements.
+        // At most one of SelectedPlacement and SpawnSelected is ever set.
+        public bool SpawnSelected;
+        public bool IsMovingSpawn;
+        public Vector2 SpawnMoveOffset;   // cursor → top-left offset at drag start
 
         // Read-only view of the room's collision data (rendered as overlay).
         public TileMapComponent? CollisionMap;
@@ -153,10 +178,22 @@ namespace SorceryForge
             return content;
         }
 
-        // Convert Door placements to a RoomLayoutJson for saving.
+        // Convert Door placements (and the room's spawn) to a RoomLayoutJson
+        // for saving.
         public RoomLayoutJson ToRoomLayoutJson(string roomId)
         {
             var layout = new RoomLayoutJson { roomId = roomId };
+
+            // Left null when the room has no spawn, so the writer omits the
+            // key entirely and a room that never had one is serialised exactly
+            // as it was before playerSpawn existed.
+            if (PlayerSpawn.HasValue)
+                layout.playerSpawn = new PlayerSpawnJson
+                {
+                    x = PlayerSpawn.Value.X,
+                    y = PlayerSpawn.Value.Y,
+                };
+
             foreach (var p in Placements)
             {
                 if (p.Kind != PlacementKind.Door) continue;
@@ -173,14 +210,24 @@ namespace SorceryForge
             return layout;
         }
 
-        // Build the working-set list from RoomContent + the room's DoorDefs
-        // (loading a room). Both content and layout JSON contribute.
-        public void LoadFromRoomContent(RoomContent content, List<DoorDef> doors)
+        // Build the working-set list from RoomContent + the room's DoorDefs and
+        // spawn (loading a room). Both content and layout JSON contribute.
+        //
+        // playerSpawn is a required parameter rather than an optional one: the
+        // only two callers are the editor's LoadRoom and tools/RoundTrip, and a
+        // defaulted parameter would let either quietly load a room without its
+        // spawn — which in RoundTrip's case would report the spawn key
+        // vanishing on save as a data change rather than a harness bug.
+        public void LoadFromRoomContent(RoomContent content, List<DoorDef> doors, Vector2? playerSpawn)
         {
             Placements.Clear();
             SelectedPlacement = null;
             IsMovingSelection = false;
             Dragging = null;
+
+            PlayerSpawn = playerSpawn;
+            SpawnSelected = false;
+            IsMovingSpawn = false;
 
             foreach (var s in content.Items)
                 Placements.Add(new Placement(s.Id, PlacementKind.Item, s.Position) { ItemType = s.Type });

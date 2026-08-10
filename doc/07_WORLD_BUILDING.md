@@ -6,7 +6,7 @@ This document describes how the world is constructed: rooms, doors, transitions,
 
 - **Room** — a single 320×144 screen. The original game has ~75 rooms; the remake currently ships with 9 registry rooms plus 2 programmatic test rooms.
 - **Registry** — which rooms exist at all: `assets/data/rooms.json`, loaded by `Rooms/RoomManifest.All`. Four facts per room (`id`, `displayName`, `backgroundAsset`, `collisionFile`) and nothing else.
-- **Layout** — the static structure of a room: background image, collision grid, doors, dimensions. Assembled by `Game1.RegisterRoomsFromManifest` from the registry entry plus that room's `collision_<id>.json` and `layout_<id>.json`. (Test rooms are the exception: `Game1.RegisterTestRooms` builds theirs in code.)
+- **Layout** — the static structure of a room: background image, collision grid, doors, player spawn, dimensions. Assembled by `Game1.RegisterRoomsFromManifest` from the registry entry plus that room's `collision_<id>.json` and `layout_<id>.json`. (Test rooms are the exception: `Game1.RegisterTestRooms` builds theirs in code.)
 - **Content** — what spawns *in* a room: enemies, items, captive wizards, blocked doors. Defined in `Rooms/RoomRegistry.cs`.
 - **Door** — a 24×24 entity that, when aligned with the player, triggers a transition to a target room and target door.
 - **Transition** — the frozen-game animation between rooms. Door opens (4 frames × 0.15 s), player teleports, target room loads.
@@ -132,11 +132,12 @@ Place them in SorceryForge and save; that writes `assets/data/layout_forest_1.js
   "doors": [
     { "id": "forest1_door_right", "x": 296, "y": 112, "type": "LeftOpening",
       "targetRoom": "forest_2", "targetDoor": "forest2_door_left" }
-  ]
+  ],
+  "playerSpawn": { "x": 160, "y": 80 }
 }
 ```
 
-`BuildDoorsForRoom` turns each entry into a `DoorComponent` at room-load time.
+`BuildDoorsForRoom` turns each door entry into a `DoorComponent` at room-load time. `playerSpawn` is optional — see [Player Entry Position](#player-entry-position).
 
 ### 5. Author content
 
@@ -204,7 +205,23 @@ If the target door isn't found, the player lands at fallback `(160, 60)`.
 
 ## Player Entry Position
 
-The game starts the player in `chateau_0` at `Vector2(160, 80)` (set in `Game1.LoadContent` and `RestartGame`). This is hard-coded; rooms don't carry a "default spawn position" today. (`RoomData.PlayerSpawn` exists in `Rooms/RoomData.cs` for a future room-DTO design but isn't currently wired in.)
+A room may carry its own player spawn, as an optional `playerSpawn` object in `layout_<id>.json`:
+
+```json
+"playerSpawn": { "x": 160, "y": 80 }
+```
+
+It is the **top-left of the 24×24 player**, in room space — same convention as door and entity positions. There is at most one per room.
+
+**Where it applies.** Only to *starting* in a room: `Game1.LoadContent`'s initial spawn and `Game1.RestartGame`, both of which start in `chateau_0`. Walking through a door does **not** consult it — a door transition positions the player at the target door via `DoorComponent.GetArrivalPosition` (see [Transition Sequence](#transition-sequence)).
+
+**When it's absent** — which is the case for every room shipped today — the game uses `RoomLayoutLoader.DefaultPlayerSpawn`, i.e. `(160, 80)`. That constant is the single definition of the fallback; SorceryForge's reachability validator reads the same field, so the editor can no longer validate from a position the game doesn't use. Resolve a room's spawn with `RoomLayoutLoader.GetPlayerSpawn(roomId)` rather than retyping the numbers.
+
+**Authoring it.** In SorceryForge, drag **Player Spawn** from the palette's **META** section onto the canvas. It renders as a magenta 24×24 outline with a cross — a colour no other overlay uses. Dropping it again *moves* the existing spawn (there is never a second one); drag it like a placement to fine-position; select it and press `Delete` to clear it. Clearing sets the field back to *absent*, not to `(160, 80)`: the next save drops the `playerSpawn` key entirely and the room falls back to the default.
+
+The marker is deliberately **not** a `Placement`. It has no entity ID, never appears in `content_<id>.json`, and takes no part in the puzzle or reachability entity sets. It is held on `EditorState.PlayerSpawn` and persisted through the layout write, covered by the same `PlacementsDirty` flag as placements — so a room switch or exit with an unsaved spawn hits the discard guard.
+
+Because a placement wins a canvas click over the spawn marker, a spawn sitting underneath an entity is not draggable; drop the palette entry again to relocate it.
 
 ## Per-Room State Persistence
 
@@ -221,7 +238,7 @@ The persistence model is what makes rooms feel like a coherent world rather than
 
 ## RoomData (DTO, future use)
 
-`Rooms/RoomData.cs` defines a fuller DTO (`Width`, `Height`, `Tiles`, `PlayerSpawn`, `Exits`, `BackgroundColor`, `BackgroundTextureName`, `CollisionGrid`) that is *not currently used* by the live system. It exists as the target shape for a future serializable-rooms / map-editor pipeline (Phase 5A). Today the live shape is the builder lambda + `RoomContent`; `RoomData` is a sketch.
+`Rooms/RoomData.cs` defines a fuller DTO (`Width`, `Height`, `Tiles`, `PlayerSpawn`, `Exits`, `BackgroundColor`, `BackgroundTextureName`, `CollisionGrid`) that is *not currently used* by the live system. (Its `PlayerSpawn` is unrelated to the live one: that ships as `playerSpawn` in `layout_<id>.json` — see [Player Entry Position](#player-entry-position).) It exists as the target shape for a future serializable-rooms / map-editor pipeline (Phase 5A). Today the live shape is the builder lambda + `RoomContent`; `RoomData` is a sketch.
 
 ## Per-Room JSON Files — When They Exist
 
@@ -230,7 +247,7 @@ A room's `content_<roomId>.json` and `layout_<roomId>.json` are **optional**. An
 - **Empty room, no file yet → nothing is written.** Opening a content-free or doorless room in SorceryForge and pressing Ctrl+S must not add a no-op file to the repo. The status line says so rather than claiming a save.
 - **Empty room, file already exists → the file IS rewritten.** This is the case where the author just deleted everything in the room. Skipping the write would silently discard the deletion and leave the old entities/doors live in the game. Emptiness alone never suppresses a write; only emptiness *plus* absence does.
 
-"Empty" is defined per file at the check site in each loader's `Save`: content = no items, enemies, wizards or blocked doors; layout = no doors. `roomId` doesn't count — the writer always fills it in. Any future DTO field that carries authored room data has to be folded into those predicates.
+"Empty" is defined per file at the check site in each loader's `Save`: content = no items, enemies, wizards or blocked doors; layout = no doors **and no `playerSpawn`**. `roomId` doesn't count — the writer always fills it in. Any future DTO field that carries authored room data has to be folded into those predicates, or a room whose only content is that field never gets a file. `playerSpawn` is the worked example: a doorless room with just a spawn *is* non-empty and does get a file, and `tools/RoundTrip`'s self-test pins that case.
 
 Together with a stable serializer this gives the repo a checkable invariant: **load every manifest room in the editor, save each untouched, and both `git diff` and `git status` stay clean.** `tools/RoundTrip` runs exactly that headlessly and is the regression test for any change to the save path, the loaders, or room registration.
 

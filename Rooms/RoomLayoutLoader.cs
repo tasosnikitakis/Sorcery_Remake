@@ -17,16 +17,30 @@
 //     { "id": "chateau1_door_topright", "x": 296, "y": 0,
 //       "type": "LeftOpening",
 //       "targetRoom": "chateau_2", "targetDoor": "chateau2_door_topleft" }
-//   ]
+//   ],
+//   "playerSpawn": { "x": 160, "y": 80 }        // OPTIONAL — see below
 // }
 //
-// SorceryForge writes this file when the user authors doors in the editor.
-// Game1 reads this file at room-load time to construct DoorComponents.
+// "playerSpawn" is where the player starts when the game begins (or restarts)
+// in this room; it is the top-left of the 24x24 player, in room space. It is
+// OPTIONAL and WRITTEN ONLY WHEN SET: a room that has never had a spawn
+// authored serialises byte-for-byte as it always did, which is what keeps
+// tools/RoundTrip green across this schema change. Absent means "use
+// DefaultPlayerSpawn" — resolve it through GetPlayerSpawn rather than
+// re-hardcoding (160, 80) at a call site.
 //
-// A room with no doors has NO file — see the skip rule on Save below.
-// Absent file and empty "doors" array mean the same thing to TryLoad.
+// Door transitions do NOT consult playerSpawn: arriving through a door
+// positions the player at that door (DoorComponent.GetArrivalPosition).
+//
+// SorceryForge writes this file when the user authors doors or a spawn in
+// the editor. Game1 reads it at room-load time to construct DoorComponents,
+// and at start / restart for the spawn.
+//
+// A room with no doors and no spawn has NO file — see the skip rule on Save
+// below. Absent file and empty "doors" array mean the same thing to TryLoad.
 // ============================================================================
 
+using Microsoft.Xna.Framework;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -43,6 +57,20 @@ namespace SorceryRemake.Rooms
     {
         public string roomId { get; set; } = "";
         public List<DoorEntryJson> doors { get; set; } = new();
+
+        // Optional; null means "this room never had a spawn authored".
+        // Declared LAST so the key, when present, appends after "doors" and
+        // the existing key order of every already-written file is untouched.
+        // Serialisation drops it while null (JsonIgnoreCondition.WhenWritingNull
+        // in Options below), which is what makes the field free for the 8
+        // layout files already in the repo.
+        public PlayerSpawnJson? playerSpawn { get; set; }
+    }
+
+    public class PlayerSpawnJson
+    {
+        public float x { get; set; }
+        public float y { get; set; }
     }
 
     public class DoorEntryJson
@@ -71,6 +99,26 @@ namespace SorceryRemake.Rooms
             Path.Combine(dir ?? RoomContentLoader.DefaultDir, $"layout_{roomId}.json");
 
         /// <summary>
+        /// Where the player starts in a room that has no authored playerSpawn.
+        /// </summary>
+        // THE one definition of the fallback. It used to be written out at
+        // three call sites (Game1's start, Game1.RestartGame, and the editor's
+        // reachability flood-fill origin), which is how the editor could end up
+        // validating from a position the game no longer used. Read it from
+        // here; never retype the numbers.
+        public static readonly Vector2 DefaultPlayerSpawn = new(160f, 80f);
+
+        /// <summary>
+        /// The spawn position for a room: its authored playerSpawn if the
+        /// layout file has one, otherwise <see cref="DefaultPlayerSpawn"/>.
+        /// </summary>
+        public static Vector2 GetPlayerSpawn(string roomId, string? dir = null)
+        {
+            var spawn = TryLoad(roomId, dir)?.playerSpawn;
+            return spawn == null ? DefaultPlayerSpawn : new Vector2(spawn.x, spawn.y);
+        }
+
+        /// <summary>
         /// Load the layout (doors) for a room. Returns null if the file
         /// doesn't exist — the caller treats that as "no doors yet".
         /// Malformed JSON throws so authoring errors surface immediately.
@@ -93,15 +141,18 @@ namespace SorceryRemake.Rooms
         {
             string path = GetPath(layout.roomId, dir);
 
-            // EMPTY, precisely: no doors. RoomLayoutJson carries exactly two
-            // members today — roomId and doors (see the schema block at the
-            // top of this file) — and roomId deliberately does NOT count:
-            // the writer always fills it in, so its presence is never
-            // evidence that a human authored anything. Be conservative if
-            // this DTO ever grows a field holding real room data (spawn
-            // points, camera hints, ...): fold it in here, or a room whose
-            // only content is that new field would never get a file.
-            bool isEmpty = layout.doors.Count == 0;
+            // EMPTY, precisely: no doors AND no player spawn. RoomLayoutJson
+            // carries three members today — roomId, doors and playerSpawn (see
+            // the schema block at the top of this file) — and roomId
+            // deliberately does NOT count: the writer always fills it in, so
+            // its presence is never evidence that a human authored anything.
+            //
+            // playerSpawn is folded in exactly as the previous version of this
+            // comment demanded of any future field holding real room data. Miss
+            // it and a doorless room whose ONLY authored content is a spawn
+            // gets no file — the spawn is silently dropped on save. The same
+            // rule applies to whatever field comes next.
+            bool isEmpty = layout.doors.Count == 0 && layout.playerSpawn == null;
 
             // The rule is "don't CREATE an empty file", never "don't WRITE
             // an empty file", and the asymmetry matters in both directions:

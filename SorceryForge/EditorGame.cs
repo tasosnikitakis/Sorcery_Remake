@@ -28,6 +28,17 @@ namespace SorceryForge
         // 1x1 white texture, used to draw filled rectangles for UI chrome.
         private Texture2D _pixel = null!;
 
+        // 24x24 generated marker for the player spawn — an outline plus a
+        // cross, drawn in SpawnColor. Generated rather than authored because
+        // the spawn has no game sprite: it is an editor concept only.
+        private Texture2D _spawnMarker = null!;
+
+        // The spawn's colour, deliberately unused by every other overlay:
+        // red is "unreachable"/"orphan door", yellow is selection/puzzle/paint,
+        // green is "door ok", white-on-black is the erase cursor. Magenta is
+        // free, and unmistakable over the CPC-palette backgrounds.
+        private static readonly Color SpawnColor = new(255, 80, 255);
+
         // Texture cache keyed by Content asset name (avoids reloading).
         private readonly Dictionary<string, Texture2D> _textures = new();
 
@@ -177,6 +188,8 @@ namespace SorceryForge
             _pixel = new Texture2D(GraphicsDevice, 1, 1);
             _pixel.SetData(new[] { Color.White });
 
+            _spawnMarker = BuildSpawnMarkerTexture();
+
             try
             {
                 _font = Content.Load<SpriteFont>("DebugFont");
@@ -222,6 +235,31 @@ namespace SorceryForge
             return tex;
         }
 
+        /// <summary>
+        /// The 24x24 player-spawn marker: a 1-px outline plus a centred cross,
+        /// everything else transparent. Used for the palette icon, the drag
+        /// ghost, and (drawn again as scaled outlines) the canvas overlay, so
+        /// all three read as the same object.
+        /// </summary>
+        private Texture2D BuildSpawnMarkerTexture()
+        {
+            const int n = 24;
+            var px = new Color[n * n];
+            for (int y = 0; y < n; y++)
+            for (int x = 0; x < n; x++)
+            {
+                bool edge  = x == 0 || y == 0 || x == n - 1 || y == n - 1;
+                // Two-pixel-wide cross through the centre, stopping short of
+                // the outline so the shape doesn't read as a filled square.
+                bool cross = (x >= n / 2 - 1 && x <= n / 2 && y >= 3 && y <= n - 4)
+                          || (y >= n / 2 - 1 && y <= n / 2 && x >= 3 && x <= n - 4);
+                px[y * n + x] = edge || cross ? SpawnColor : Color.Transparent;
+            }
+            var tex = new Texture2D(GraphicsDevice, n, n);
+            tex.SetData(px);
+            return tex;
+        }
+
         private static void MakeColorTransparent(Texture2D tex, Color color)
         {
             var data = new Color[tex.Width * tex.Height];
@@ -238,8 +276,11 @@ namespace SorceryForge
 
         // Section names in display order. Add a section here and every entry
         // tagged with that name will appear under its header.
+        // META sits last: it holds room-level markers rather than entities, and
+        // appending it leaves every existing section exactly where the muscle
+        // memory of anyone who has authored a room expects to find it.
         private static readonly string[] SectionOrder =
-            { "WEAPONS", "KEY ITEMS", "ENEMIES", "DOORS", "OTHER" };
+            { "WEAPONS", "KEY ITEMS", "ENEMIES", "DOORS", "OTHER", "META" };
 
         // Computed by LayoutPalette: the rectangle for each section header.
         private readonly List<(string name, Rectangle bounds)> _sectionHeaders = new();
@@ -306,6 +347,18 @@ namespace SorceryForge
                 SpriteConfig.BLOCKED_DOOR_FRAME)
             { ItemType = ItemType.Lyre };
             _state.Palette.Add(Tag(blockedDoorEntry, "OTHER"));
+
+            // -- META -------------------------------------------------------
+            // Room-level markers, not entities. The spawn entry carries
+            // PlacementKind.Item purely because PaletteEntry demands some
+            // Kind; IsPlayerSpawn is what every code path actually branches
+            // on, and it is checked before Kind everywhere it matters.
+            var spawnEntry = new PaletteEntry(
+                "Player Spawn", PlacementKind.Item,
+                _spawnMarker,
+                new Rectangle(0, 0, 24, 24))
+            { IsPlayerSpawn = true };
+            _state.Palette.Add(Tag(spawnEntry, "META"));
 
             LayoutPalette();
         }
@@ -599,8 +652,8 @@ namespace SorceryForge
             // room change so external edits (or hot-reload while the editor
             // is open) appear immediately.
             var content = RoomContentLoader.TryLoad(meta.RoomId, EditorPaths.RepoAssetsDataDir);
-            meta.ReloadDoorsFromDisk();
-            _state.LoadFromRoomContent(content ?? new RoomContent(), meta.Doors);
+            meta.ReloadLayoutFromDisk();
+            _state.LoadFromRoomContent(content ?? new RoomContent(), meta.Doors, meta.PlayerSpawn);
             _state.NextIdCounter = _state.Placements.Count + 1;
 
             // Clear collision-edit, placement-edit and validation state on
@@ -630,15 +683,15 @@ namespace SorceryForge
                 if (RoomContentLoader.Save(meta.RoomId, _state.ToRoomContent(), EditorPaths.RepoAssetsDataDir))
                     saved.Add($"content_{meta.RoomId}.json");
 
-                // 2. Layout (doors).
+                // 2. Layout (doors + player spawn).
                 var layout = _state.ToRoomLayoutJson(meta.RoomId);
                 if (RoomLayoutLoader.Save(layout, EditorPaths.RepoAssetsDataDir))
                     saved.Add($"layout_{meta.RoomId}.json");
 
-                // Placements live entirely in those two files, so they're
-                // durable now — clear the flag here (same pattern as the
-                // collision / background flags below, each cleared right
-                // after the write that persists it).
+                // Placements and the spawn live entirely in those two files,
+                // so they're durable now — clear the flag here (same pattern
+                // as the collision / background flags below, each cleared
+                // right after the write that persists it).
                 _state.PlacementsDirty = false;
 
                 // 3. Collision grid (only when Paint mode produced changes).
@@ -676,9 +729,9 @@ namespace SorceryForge
                     saved.Add($"{meta.BackgroundAsset}.png (rebuild for game)");
                 }
 
-                // Refresh in-memory door cache from the file we just wrote
-                // so DoorMarkers / Validate Doors see the new state.
-                meta.ReloadDoorsFromDisk();
+                // Refresh the in-memory door / spawn cache from the file we
+                // just wrote so DoorMarkers / Validate Doors see the new state.
+                meta.ReloadLayoutFromDisk();
 
                 _discardArmed = false;   // a save always disarms the discard guard
                 _state.Status = saved.Count > 0
@@ -1003,6 +1056,9 @@ namespace SorceryForge
                     if (_state.AutoPunch && _state.SelectedPlacement != null)
                         PunchBackground(_state.SelectedPlacement);
                 }
+                // Same for the spawn marker — it has no footprint to punch,
+                // so ending the drag is all there is to do.
+                if (LeftReleased()) _state.IsMovingSpawn = false;
                 return;
             }
 
@@ -1023,6 +1079,8 @@ namespace SorceryForge
                 _state.SelectedPlacement = HitTestPlacements(game);
                 if (_state.SelectedPlacement != null)
                 {
+                    _state.SpawnSelected = false;
+                    _state.IsMovingSpawn = false;
                     _state.IsMovingSelection = true;
                     _state.MoveOffset = _state.SelectedPlacement.Position - game;
                     // Expand the inspector section for the freshly-selected
@@ -1030,9 +1088,41 @@ namespace SorceryForge
                     _state.Expand(_state.SelectedPlacement.Id);
                     _state.Status = $"Moving {_state.SelectedPlacement.DisplayName} ({_state.SelectedPlacement.Id})";
                 }
+                // Placements win the click; the spawn marker is only tested
+                // when none was hit. A spawn buried under an entity is
+                // therefore not grabbable — but it is never stranded either,
+                // because dropping the palette's Player Spawn entry again
+                // MOVES the existing point. An entity buried under the spawn
+                // would have no such escape hatch, which is why the priority
+                // runs this way round and not the other.
+                else if (HitTestSpawn(game))
+                {
+                    _state.SpawnSelected = true;
+                    _state.IsMovingSpawn = true;
+                    _state.SpawnMoveOffset = _state.PlayerSpawn!.Value - game;
+                    _state.Status = $"Moving player spawn ({(int)_state.PlayerSpawn.Value.X}, {(int)_state.PlayerSpawn.Value.Y}) — Delete clears it.";
+                }
                 else
                 {
+                    _state.SpawnSelected = false;
                     _state.Status = "No placement under cursor.";
+                }
+                return;
+            }
+
+            // Continue a spawn-marker move while the mouse is held. Checked
+            // before the placement branch below because the two are mutually
+            // exclusive and this one is the cheaper test.
+            if (LeftHeld() && _state.IsMovingSpawn && _state.PlayerSpawn.HasValue)
+            {
+                Vector2 before = _state.PlayerSpawn.Value;
+                Vector2 moved = ClampPointToRoom(SnapIfNeeded(game + _state.SpawnMoveOffset));
+                _state.PlayerSpawn = moved;
+                if (moved != before)
+                {
+                    _state.HasValidated = false;   // the flood-fill origin moved
+                    _state.PlacementsDirty = true;
+                    _discardArmed = false;         // new edits re-arm the discard guard
                 }
                 return;
             }
@@ -1054,6 +1144,14 @@ namespace SorceryForge
                     _state.PlacementsDirty = true;
                     _discardArmed = false;  // new edits re-arm the discard guard
                 }
+                return;
+            }
+
+            if (LeftReleased() && _state.IsMovingSpawn)
+            {
+                _state.IsMovingSpawn = false;
+                if (_state.PlayerSpawn.HasValue)
+                    _state.Status = $"Player spawn at ({(int)_state.PlayerSpawn.Value.X}, {(int)_state.PlayerSpawn.Value.Y})";
                 return;
             }
 
@@ -1301,10 +1399,16 @@ namespace SorceryForge
         // --- REACHABILITY VALIDATOR ----------------------------------------
 
         /// <summary>
-        /// Flood-fills from the player's hardcoded spawn (160, 80) over an
-        /// 8-pixel grid where each cell is "ok" iff a 24x24 player hitbox at
-        /// that position doesn't overlap any solid tile. Any placement
-        /// whose center sits in an unreachable cell is flagged.
+        /// Flood-fills from the room's player spawn over an 8-pixel grid where
+        /// each cell is "ok" iff a 24x24 player hitbox at that position doesn't
+        /// overlap any solid tile. Any placement whose center sits in an
+        /// unreachable cell is flagged.
+        ///
+        /// The origin is the room's own spawn when it has one — read from
+        /// EditorState, so an unsaved spawn edit is validated from where it
+        /// now is — otherwise RoomLayoutLoader.DefaultPlayerSpawn, the same
+        /// constant Game1 falls back to. This used to be a hardcoded
+        /// (160, 80) that could silently disagree with the game.
         ///
         /// Approximations: ignores the 2 px horizontal collision inset
         /// (uses the full 24x24 hitbox) and treats SolidRects (doors)
@@ -1347,9 +1451,9 @@ namespace SorceryForge
                 ok[cx, cy] = PlayerFitsAt(cx * step, cy * step);
 
             // Flood-fill from the cell closest to the spawn position.
-            const int spawnX = 160, spawnY = 80;          // matches Game1 default
-            int sx = Math.Clamp(spawnX / step, 0, cellsX - 1);
-            int sy = Math.Clamp(spawnY / step, 0, cellsY - 1);
+            Vector2 spawn = _state.PlayerSpawn ?? RoomLayoutLoader.DefaultPlayerSpawn;
+            int sx = Math.Clamp((int)spawn.X / step, 0, cellsX - 1);
+            int sy = Math.Clamp((int)spawn.Y / step, 0, cellsY - 1);
 
             // If spawn is in solid geometry, walk outward to find a fit.
             if (!ok[sx, sy])
@@ -1367,7 +1471,8 @@ namespace SorceryForge
                 }
                 if (!found)
                 {
-                    _state.Status = "Validate: spawn location is fully blocked — fix collision.";
+                    _state.Status =
+                        $"Validate: spawn ({(int)spawn.X}, {(int)spawn.Y}) is fully blocked — fix collision.";
                     foreach (var p in _state.Placements) _state.UnreachableIds.Add(p.Id);
                     return;
                 }
@@ -1411,9 +1516,11 @@ namespace SorceryForge
             }
 
             int bad = _state.UnreachableIds.Count;
+            string origin = $"({(int)spawn.X}, {(int)spawn.Y})"
+                          + (_state.PlayerSpawn.HasValue ? "" : " default");
             _state.Status = bad == 0
-                ? $"Validate: all {_state.Placements.Count} placements reachable from spawn (160, 80)."
-                : $"Validate: {bad} of {_state.Placements.Count} placements UNREACHABLE — see red borders.";
+                ? $"Validate: all {_state.Placements.Count} placements reachable from spawn {origin}."
+                : $"Validate: {bad} of {_state.Placements.Count} placements UNREACHABLE from spawn {origin} — see red borders.";
         }
 
         // --- PUZZLE ANALYZER ----------------------------------------------
@@ -1585,7 +1692,7 @@ namespace SorceryForge
             bool ctrl  = _keysNow.IsKeyDown(Keys.LeftControl) || _keysNow.IsKeyDown(Keys.RightControl);
             bool shift = _keysNow.IsKeyDown(Keys.LeftShift)   || _keysNow.IsKeyDown(Keys.RightShift);
 
-            // Delete the selected placement.
+            // Delete the selected placement, or clear the selected spawn.
             if (Pressed(Keys.Delete))
             {
                 if (_state.SelectedPlacement != null)
@@ -1595,6 +1702,19 @@ namespace SorceryForge
                     _state.SelectedPlacement = null;
                     _state.PlacementsDirty = true;
                     _discardArmed = false;   // new edits re-arm the discard guard
+                }
+                else if (_state.SpawnSelected && _state.PlayerSpawn.HasValue)
+                {
+                    // Back to null, not to (160, 80): the next save then omits
+                    // the "playerSpawn" key entirely and the room falls back to
+                    // RoomLayoutLoader.DefaultPlayerSpawn in game.
+                    _state.PlayerSpawn = null;
+                    _state.SpawnSelected = false;
+                    _state.IsMovingSpawn = false;
+                    _state.HasValidated = false;
+                    _state.PlacementsDirty = true;
+                    _discardArmed = false;
+                    _state.Status = "Cleared the player spawn — this room falls back to (160, 80). Save to persist.";
                 }
             }
 
@@ -1663,6 +1783,26 @@ namespace SorceryForge
             var entry = _state.Dragging!;
             string roomId = _state.CurrentRoom.RoomId;
 
+            // The spawn marker is not an entity: no ID is minted, nothing is
+            // added to Placements, and nothing reaches content JSON. Dropping
+            // it when the room already has a spawn MOVES that spawn — there is
+            // exactly one per room, by construction rather than by validation.
+            if (entry.IsPlayerSpawn)
+            {
+                _state.PlayerSpawn = ClampPointToRoom(gamePos);
+                _state.SelectedPlacement = null;
+                _state.IsMovingSelection = false;
+                _state.SpawnSelected = true;
+                _state.Dragging = null;
+                _state.HasValidated = false;    // the flood-fill origin moved
+                _state.PlacementsDirty = true;
+                _discardArmed = false;          // new edits re-arm the discard guard
+                _state.Status =
+                    $"Player spawn set to ({(int)_state.PlayerSpawn.Value.X}, {(int)_state.PlayerSpawn.Value.Y}) — " +
+                    "drag to move, Delete to clear, Ctrl+S writes layout JSON.";
+                return;
+            }
+
             // Door entries carry their logical opening side as a typed field.
             // Placement stores it as the string that goes straight into
             // layout JSON's "type", and DoorType's member names ARE that
@@ -1724,13 +1864,22 @@ namespace SorceryForge
                                (float)Math.Round(gamePos.Y / s) * s);
         }
 
-        private static void ClampToRoom(Placement p)
+        private static void ClampToRoom(Placement p) => p.Position = ClampPointToRoom(p.Position);
+
+        /// <summary>
+        /// Keep a 24x24 top-left corner inside the room. Shared by placements
+        /// and the spawn marker, which is the same size.
+        /// </summary>
+        private static Vector2 ClampPointToRoom(Vector2 pos) =>
+            new(Math.Clamp(pos.X, 0f, EditorLayout.RoomWidth - 24),
+                Math.Clamp(pos.Y, 0f, EditorLayout.RoomHeight - 24));
+
+        /// <summary>True when the room has a spawn and gamePos is inside its 24x24 marker.</summary>
+        private bool HitTestSpawn(Vector2 gamePos)
         {
-            float maxX = EditorLayout.RoomWidth - 24;
-            float maxY = EditorLayout.RoomHeight - 24;
-            p.Position = new Vector2(
-                Math.Clamp(p.Position.X, 0f, maxX),
-                Math.Clamp(p.Position.Y, 0f, maxY));
+            if (!_state.PlayerSpawn.HasValue) return false;
+            var b = new Rectangle((int)_state.PlayerSpawn.Value.X, (int)_state.PlayerSpawn.Value.Y, 24, 24);
+            return b.Contains((int)gamePos.X, (int)gamePos.Y);
         }
 
         // ====================================================================
@@ -1925,10 +2074,31 @@ namespace SorceryForge
         private void DrawCanvasOverlays()
         {
             DrawDoorMarkerOutlines();
+            DrawPlayerSpawnMarker();
             DrawUnreachableWarnings();
             DrawPuzzleWarnings();
             DrawSelectionHighlight();
             DrawEraseCursor();
+        }
+
+        /// <summary>
+        /// The room's player spawn: the generated 24x24 marker texture drawn
+        /// at the spawn position, plus a doubled outline so it stays legible
+        /// over busy backgrounds at 1x zoom. Nothing draws when the room has
+        /// no spawn — absence is the common case and must look like absence,
+        /// not like a marker parked at the fallback position.
+        /// </summary>
+        private void DrawPlayerSpawnMarker()
+        {
+            if (!_state.PlayerSpawn.HasValue) return;
+
+            var v = _state.PlayerSpawn.Value;
+            var dest = EditorLayout.GameRectToScreen(new Rectangle((int)v.X, (int)v.Y, 24, 24));
+            // White tint: the texture already carries SpawnColor in its pixels,
+            // and tinting magenta by magenta would darken the green channel.
+            _spriteBatch.Draw(_spawnMarker, dest, null, Color.White);
+            DrawRectOutline(InflateRect(dest, 1), SpawnColor);
+            DrawRectOutline(InflateRect(dest, 2), SpawnColor);
         }
 
         /// <summary>
@@ -2123,8 +2293,18 @@ namespace SorceryForge
 
         private void DrawSelectionHighlight()
         {
-            if (_state.SelectedPlacement == null) return;
-            var dest = EditorLayout.GameRectToScreen(_state.SelectedPlacement.Bounds);
+            // Selection is the same yellow whether a placement or the spawn
+            // marker holds it — one visual language for "this is what Delete
+            // and drag act on". The two are mutually exclusive by construction.
+            Rectangle? bounds = null;
+            if (_state.SelectedPlacement != null)
+                bounds = _state.SelectedPlacement.Bounds;
+            else if (_state.SpawnSelected && _state.PlayerSpawn.HasValue)
+                bounds = new Rectangle((int)_state.PlayerSpawn.Value.X,
+                                       (int)_state.PlayerSpawn.Value.Y, 24, 24);
+
+            if (bounds == null) return;
+            var dest = EditorLayout.GameRectToScreen(bounds.Value);
             DrawRectOutline(InflateRect(dest, 2), new Color(255, 220, 60));
         }
 
