@@ -1,0 +1,65 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- ========================================
+       IMPORTCHECK — SCREENSHOT-IMPORT REGRESSION HARNESS
+       Headless console app, built on the same idea as tools/RoundTrip: it
+       compiles the editor's OWN import sources rather than a copy, so what it
+       proves is what the editor runs.
+
+       SorceryForge/ImageImport.cs and NewRoomFlow.cs are deliberately free of
+       Texture2D and GraphicsDevice — the editor decodes into a Color[], hands
+       it over, and encodes what comes back. That split is what lets the whole
+       of the interesting logic (resample, quantize, crop maths, the filename
+       rule, the three creation writes) run with no desktop session at all.
+
+       MonoGame is referenced only for value types (Color, Rectangle, Vector2).
+       No GraphicsDevice is ever created.
+       ======================================== -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RollForward>Major</RollForward>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <RootNamespace>SorceryRemake.Tools.ImportCheck</RootNamespace>
+    <AssemblyName>ImportCheck</AssemblyName>
+    <!-- The default glob would sweep up bin/obj leftovers from a previous
+         run; we list every source explicitly below instead. -->
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="MonoGame.Framework.DesktopGL" Version="3.8.1.303" />
+  </ItemGroup>
+
+  <!-- ========================================
+       SHARED GAME SOURCE
+       Mirrors SorceryForge.csproj's globs. NewRoomFlow needs Rooms/ (the
+       registry and the collision writer) and Tiles/ (the empty grid it
+       writes); the rest come along because those reference them.
+       ======================================== -->
+
+  <ItemGroup>
+    <Compile Include="..\..\Core\**\*.cs" Exclude="..\..\Core\PlayerController.cs" />
+    <Compile Include="..\..\Graphics\**\*.cs" />
+    <Compile Include="..\..\Tiles\**\*.cs" />
+    <Compile Include="..\..\Rooms\**\*.cs" />
+    <Compile Include="..\..\Doors\**\*.cs" />
+    <Compile Include="..\..\Physics\**\*.cs" />
+  </ItemGroup>
+
+  <!-- ========================================
+       EDITOR IMPORT PATH (no UI)
+       The three files under test, plus EditorPaths for the repo-root walk.
+       Everything MonoGame-windowed (EditorGame, EditorLayout) is left out.
+       ======================================== -->
+
+  <ItemGroup>
+    <Compile Include="..\..\SorceryForge\EditorPaths.cs" />
+    <Compile Include="..\..\SorceryForge\ImageImport.cs" />
+    <Compile Include="..\..\SorceryForge\NewRoomFlow.cs" />
+    <Compile Include="Program.cs" />
+  </ItemGroup>
+
+</Project>

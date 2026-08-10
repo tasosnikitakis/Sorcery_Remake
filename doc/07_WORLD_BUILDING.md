@@ -78,6 +78,85 @@ _rooms["room_1"] = room1;
 
 ## Adding a New Room
 
+Three routes, in the order you will actually reach for them:
+
+| Route | Start from | Section |
+|-------|-----------|---------|
+| **Import** | a screenshot of the original game | [Importing a screenshot room](#importing-a-screenshot-room) |
+| **New Room** | a 320×144 PNG already in `Content/` | [The short way](#the-short-way-sorceryforges-new-room-button) |
+| By hand | nothing | [The long way](#the-long-way-by-hand) |
+
+Import is New Room with one step in front of it: it produces the
+`Content/RoomBG_<Name>.png` that New Room would otherwise need you to have, then
+runs New Room's own creation code on it.
+
+### Importing a screenshot room
+
+The rooms of Sorcery+ are being rebuilt from screenshots of the original, so
+this is the normal way a room is born.
+
+1. Drop the capture into **`assets/import/`** as `<Name>.jpg`, `.jpeg` or
+   `.png`. (Its images are gitignored — they are inputs, not repository
+   content. See [`assets/import/README.md`](../assets/import/README.md).)
+2. In SorceryForge, click **Import**. The picker lists every image in the
+   folder with its size and the room it would become.
+3. Leave **CPC quantize** on unless the source isn't a capture of the original
+   game.
+4. Click the file. If the source isn't 320×144 or an exact multiple, a crop
+   step opens first — drag the 20:9 selection, wheel to resize, `Enter` to
+   confirm, `Esc` to back out.
+
+The editor is then sitting in the new room with the screenshot behind it.
+
+**The name of the file is the name of the room** — the same derivation New
+Room uses, so `Chateau3.jpg` → `Content/RoomBG_Chateau3.png` → id `chateau_3` →
+display name "Chateau 3". PascalCase reads best. The name may hold only
+letters, digits, `_` and `-`; anything else is listed greyed out asking you to
+rename the file, because the editor has no text field to offer instead.
+
+**Sizes.** 320×144 is used as-is. An exact multiple (640×288, 960×432, …) is
+downscaled by taking every Nth pixel, which for a scaled-up capture of a
+320×144 screen returns the original screen bit for bit. Any other size goes
+through the crop step, whose output is point-sampled to 320×144 the same way.
+Nothing is ever filtered or blended — a filter would invent colours that aren't
+in the palette and blur exactly the hard edges the punch-out tool needs.
+
+**CPC quantize** (default on) snaps every pixel to the nearest of the 27
+Amstrad CPC hardware colours — three levels per RGB channel, taken from
+`extraction/convert_cpc_graphics.py`, the project's own Mode 0 decoder. JPEG's
+compression turns a flat block of one colour into a cloud of near-misses:
+invisible on screen, ruinous to edit, because Erase and Punch cut hard
+rectangles and a hard cut through noise leaves a ragged seam. Snapping restores
+real flats. Turn it off for art that isn't a capture of the original.
+
+> The shipped backgrounds are **not** in that palette: `RoomBG_Chateau*` and the
+> three `*Chateau` rooms use levels 0/123/255 (green 0/125/251), and
+> `RoomBG_{Stonehenge,TunnelMouth,Wastelands}` use 0/99/206 (green 0/101/207) —
+> two different emulator palettes. Quantizing moves the first set by ≤5 per
+> channel (invisible) and the second by up to 49 (not invisible). Which levels
+> your own captures carry depends on the emulator, so compare a quantized and
+> an unquantized import of one real screenshot before doing the other 74.
+
+**What it writes.** `Content/RoomBG_<Name>.png` (atomically: encode to `.tmp`,
+then move), and then everything [New Room](#the-short-way-sorceryforges-new-room-button)
+writes — the `#begin` block, `collision_<id>.json`, the `rooms.json` row. The
+game needs a content rebuild (`dotnet build SorceryRemake.csproj`) before it
+can see the background; the editor reads the raw PNG immediately.
+
+**What it does not do.** It never moves, deletes or modifies the source file —
+re-import as often as you like. What it *refuses* is overwriting a background
+that already exists in `Content/`, since you may have erased or punched pixels
+out of it since; to genuinely redo an import, delete that PNG (and its
+`rooms.json` row, if the room got registered) first. And if the PNG is written
+but registration then fails, the leftover is an unused background — which is
+exactly what the New Room picker lists, so you can finish the job from there.
+
+Everything except the decode and the encode — the resampling, the quantizer,
+the crop maths, the filename rule, the three creation writes — is exercised
+headlessly by [`tools/ImportCheck`](../tools/ImportCheck/README.md). That is
+only possible because `SorceryForge/ImageImport.cs` and `NewRoomFlow.cs` hold
+no `Texture2D` and no `GraphicsDevice`; keep it that way.
+
 ### The short way: SorceryForge's **New Room** button
 
 1. Put a 320×144 PNG in `Content/`, named `RoomBG_<Name>.png`.
@@ -100,7 +179,7 @@ One shipped room diverges from this rule: `tunnelmouth` would derive as `tunnel_
 
 The game needs a **content rebuild** (`dotnet build SorceryRemake.csproj`) before it can load the new background; the editor reads the raw PNG and shows it immediately.
 
-If the picker is empty, every background is already claimed — the intended path for a room that has no PNG yet is the screenshot import flow.
+If the picker is empty, every background is already claimed — the path for a room that has no PNG yet is [Import](#importing-a-screenshot-room), which writes one.
 
 ### The long way: by hand
 

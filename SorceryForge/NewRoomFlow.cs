@@ -7,6 +7,13 @@
 // block, and a collision file — with no feedback until the game crashed on the
 // one you forgot. This does all three from one click.
 //
+// SHARED WITH THE SCREENSHOT IMPORT. ImageImport (EDITOR_REVIEW item A / PR 5)
+// produces the PNG this flow expects to already exist, then hands the very
+// same RoomCandidate to the very same Create. Name derivation, the id checks
+// and the three writes all live here and only here, so an imported room and a
+// hand-dropped one cannot end up registered differently. The pieces the import
+// reuses are marked "shared with ImageImport" below.
+//
 // ZERO TYPING BY DESIGN. The editor has no text-input widget (building one is
 // the PR 7 / ImGui decision), so nothing here asks for a name: the room id and
 // display name are DERIVED from the background PNG's filename, and the PNG is
@@ -41,6 +48,10 @@ namespace SorceryForge
     /// One background PNG in Content/ that no registry room uses yet, with the
     /// room id and display name derived from its filename.
     /// </summary>
+    // Also the base of ImageImport.ImportCandidate, which adds the source file
+    // and its dimensions. Inheritance rather than a wrapper so Create() takes
+    // an imported candidate unchanged — the import literally runs New Room's
+    // creation code, it does not mirror it.
     public class RoomCandidate
     {
         public string BackgroundAsset = "";   // "RoomBG_Chateau3" (no extension)
@@ -142,6 +153,51 @@ namespace SorceryForge
         // ====================================================================
 
         /// <summary>
+        /// The Content asset name for a room whose background image is called
+        /// <paramref name="baseName"/>: "Chateau3" → "RoomBG_Chateau3".
+        /// </summary>
+        // Shared with ImageImport, which builds the target PNG's path from it.
+        public static string AssetNameFor(string baseName) => AssetPrefix + baseName;
+
+        /// <summary>Room ids already claimed by the registry.</summary>
+        // Shared with ImageImport: one definition of "taken", so a screenshot
+        // named after an existing room is rejected by exactly the rule that
+        // rejects a background PNG named after one.
+        public static HashSet<string> TakenRoomIds(IReadOnlyList<RoomManifest> registry)
+        {
+            var taken = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var r in registry) taken.Add(r.RoomId);
+            return taken;
+        }
+
+        /// <summary>A candidate with its id and display name derived from the asset name.</summary>
+        // Shared with ImageImport. Problem is left null — the caller decides
+        // which checks apply (CheckRoomId always; the import adds its own).
+        public static RoomCandidate MakeCandidate(string backgroundAsset) => new()
+        {
+            BackgroundAsset = backgroundAsset,
+            RoomId = DeriveRoomId(backgroundAsset),
+            DisplayName = DeriveDisplayName(backgroundAsset),
+        };
+
+        /// <summary>
+        /// Why this derived room id cannot become a room, or null if it can.
+        /// </summary>
+        // Shared with ImageImport. The three ways a derived id is unusable —
+        // empty, reserved, already registered — are stated once, here, so the
+        // two creation entry points can never disagree about what is legal.
+        public static string? CheckRoomId(string roomId, ICollection<string> takenRoomIds)
+        {
+            if (string.IsNullOrWhiteSpace(roomId))
+                return "filename yields an empty room id";
+            if (RoomManifest.TestRoomIds.Contains(roomId))
+                return $"'{roomId}' is reserved for the programmatic test rooms";
+            if (takenRoomIds.Contains(roomId))
+                return $"room id '{roomId}' already exists";
+            return null;
+        }
+
+        /// <summary>
         /// Every RoomBG_*.png in the content directory that no registry room
         /// already uses, in filename order, each with its derived id / name and
         /// any reason it can't be created.
@@ -149,12 +205,8 @@ namespace SorceryForge
         public static List<RoomCandidate> FindCandidates(string contentDir, IReadOnlyList<RoomManifest> registry)
         {
             var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var takenIds = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var r in registry)
-            {
-                used.Add(r.BackgroundAsset);
-                takenIds.Add(r.RoomId);
-            }
+            foreach (var r in registry) used.Add(r.BackgroundAsset);
+            var takenIds = TakenRoomIds(registry);
 
             var result = new List<RoomCandidate>();
             if (!Directory.Exists(contentDir)) return result;
@@ -169,22 +221,15 @@ namespace SorceryForge
                 if (asset.IndexOf(AutosaveMarker, StringComparison.OrdinalIgnoreCase) >= 0) continue;
                 if (used.Contains(asset)) continue;
 
-                string id = DeriveRoomId(asset);
-                var candidate = new RoomCandidate
-                {
-                    BackgroundAsset = asset,
-                    RoomId = id,
-                    DisplayName = DeriveDisplayName(asset),
-                };
+                var candidate = MakeCandidate(asset);
 
-                if (string.IsNullOrWhiteSpace(id))
-                    candidate.Problem = "filename yields an empty room id";
-                else if (RoomManifest.TestRoomIds.Contains(id))
-                    candidate.Problem = $"'{id}' is reserved for the programmatic test rooms";
-                else if (takenIds.Contains(id))
-                    candidate.Problem = $"room id '{id}' already exists";
-                else if (!derivedSoFar.Add(id))
-                    candidate.Problem = $"another candidate already derives '{id}'";
+                // Short-circuits deliberately: an id that already failed one of
+                // the shared checks is NOT recorded in derivedSoFar, so a later
+                // file deriving the same id reports that same first reason
+                // rather than the misleading "another candidate derives it".
+                candidate.Problem = CheckRoomId(candidate.RoomId, takenIds);
+                if (candidate.Problem == null && !derivedSoFar.Add(candidate.RoomId))
+                    candidate.Problem = $"another candidate already derives '{candidate.RoomId}'";
 
                 result.Add(candidate);
             }
@@ -208,6 +253,10 @@ namespace SorceryForge
         /// NOT reload the registry or load the room — the caller owns that, in
         /// that order (RoomManifest.Reload → RoomMeta.RebuildAll → LoadRoom).
         /// </summary>
+        // Nor does it write the background PNG: New Room's already exists (it
+        // is what the candidate was found from), and the screenshot import
+        // writes its own before calling here. Keeping the PNG out means this
+        // method needs no GraphicsDevice and stays headlessly exercisable.
         public static CreateResult Create(RoomCandidate candidate, string contentDir, string dataDir)
         {
             var result = new CreateResult();

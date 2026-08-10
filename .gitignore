@@ -82,3 +82,10 @@ $RECYCLE.BIN/
 
 # SorceryForge exit-time safety net for unsaved background pixel edits
 Content/*.autosave.png
+
+# Screenshot import drop folder (SorceryForge's Import button). The captures
+# dropped here are INPUTS: the import reads one and writes a PNG into Content/,
+# which is what gets committed. The folder's README.md is deliberately tracked.
+assets/import/*.jpg
+assets/import/*.jpeg
+assets/import/*.png

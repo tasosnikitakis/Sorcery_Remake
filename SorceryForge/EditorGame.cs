@@ -470,7 +470,7 @@ namespace SorceryForge
 
         // Indices into _buttons for the labels we update at runtime, and for
         // the ones RelayoutButtons places outside their list order.
-        private int _btnSnapIdx, _btnModeIdx, _btnPunchIdx, _btnNewRoomIdx;
+        private int _btnSnapIdx, _btnModeIdx, _btnPunchIdx, _btnNewRoomIdx, _btnImportIdx;
 
         // Where the "left bank" of buttons ends and the "right bank" begins,
         // in screen X. Recomputed each RelayoutButtons() — used to center
@@ -505,6 +505,9 @@ namespace SorceryForge
             _btnNewRoomIdx = _buttons.Count;
             _buttons.Add(new UiButton("New Room", default, OpenNewRoomPicker));
 
+            _btnImportIdx = _buttons.Count;
+            _buttons.Add(new UiButton("Import", default, OpenImportPicker));
+
             RelayoutButtons();
         }
 
@@ -520,15 +523,18 @@ namespace SorceryForge
             int bh = EditorLayout.TopBarHeight - 24;
             int W = EditorLayout.WindowWidth;
 
-            // Left bank: Prev | Next | New Room | Mode
-            // New Room sits with the room-navigation buttons rather than in
-            // the right-hand tool bank — it is how you get to a room, not a
-            // tool you use inside one.
+            // Left bank: Prev | Next | New Room | Import | Mode
+            // New Room and Import sit with the room-navigation buttons rather
+            // than in the right-hand tool bank — they are how you get to a
+            // room, not tools you use inside one. Import sits beside New Room
+            // because it is the same act with one more step: it produces the
+            // background PNG that New Room would otherwise need you to have.
             _buttons[0].Bounds = new Rectangle(8,   by,  80, bh);
             _buttons[1].Bounds = new Rectangle(96,  by,  80, bh);
             _buttons[_btnNewRoomIdx].Bounds = new Rectangle(186, by, 110, bh);
-            _buttons[2].Bounds = new Rectangle(302, by, 130, bh);
-            _leftBankRight = 302 + 130;
+            _buttons[_btnImportIdx].Bounds  = new Rectangle(302, by,  86, bh);
+            _buttons[2].Bounds = new Rectangle(394, by, 130, bh);
+            _leftBankRight = 394 + 130;
 
             // Right bank (right-to-left):
             // Save | Snap | Punch | Puzzle | Doors | Validate | Fullscreen
@@ -720,17 +726,7 @@ namespace SorceryForge
                     && meta.BackgroundAsset != null)
                 {
                     string pngPath = Path.Combine(EditorPaths.RepoContentDir, meta.BackgroundAsset + ".png");
-                    string tmpPath = pngPath + ".tmp";
-                    try
-                    {
-                        using (var fs = File.Create(tmpPath))
-                            _currentBackground.SaveAsPng(fs, _currentBackground.Width, _currentBackground.Height);
-                        File.Move(tmpPath, pngPath, overwrite: true);
-                    }
-                    finally
-                    {
-                        if (File.Exists(tmpPath)) File.Delete(tmpPath);
-                    }
+                    WriteTextureAsPng(_currentBackground, pngPath);
                     // The restore brush now restores to this saved state.
                     _bgOriginal = (Color[])_bgPixels.Clone();
                     _state.BackgroundDirty = false;
@@ -749,6 +745,30 @@ namespace SorceryForge
             catch (Exception ex)
             {
                 _state.Status = "Save failed: " + ex.Message;
+            }
+        }
+
+        /// <summary>
+        /// Write a texture out as a PNG atomically: encode into
+        /// &lt;path&gt;.tmp, then move that over the target. A failed or
+        /// half-finished encode can then never destroy the file it was
+        /// replacing.
+        /// </summary>
+        // Shared by the Erase-mode background save and the screenshot import.
+        // Both are overwriting an asset in Content/ that the user has no other
+        // copy of, so both get the same guarantee from the same six lines.
+        private static void WriteTextureAsPng(Texture2D texture, string path)
+        {
+            string tmpPath = path + ".tmp";
+            try
+            {
+                using (var fs = File.Create(tmpPath))
+                    texture.SaveAsPng(fs, texture.Width, texture.Height);
+                File.Move(tmpPath, path, overwrite: true);
+            }
+            finally
+            {
+                if (File.Exists(tmpPath)) File.Delete(tmpPath);
             }
         }
 
@@ -837,14 +857,16 @@ namespace SorceryForge
         /// RoomMeta.All is derived from that, so reloading them the other way
         /// round would rebuild the catalogue from the stale registry.
         /// </summary>
-        private void CreateRoom(RoomCandidate candidate)
+        // THE one path by which a room comes into existence. New Room calls it
+        // with a candidate found from an unused PNG; the screenshot import
+        // calls it after writing that PNG itself. Everything a new room needs
+        // — collision grid, .mgcb block, registry entry, both caches, the load
+        // — happens here and nowhere else, so the two entry points cannot
+        // produce differently-registered rooms.
+        private NewRoomFlow.CreateResult CreateAndOpenRoom(RoomCandidate candidate)
         {
             var result = NewRoomFlow.Create(candidate, EditorPaths.RepoContentDir, EditorPaths.RepoAssetsDataDir);
-            if (!result.Ok)
-            {
-                CloseNewRoomPicker(result.Message);
-                return;
-            }
+            if (!result.Ok) return result;
 
             RoomManifest.Reload();
             RoomMeta.RebuildAll();
@@ -856,10 +878,21 @@ namespace SorceryForge
             for (int i = 0; i < RoomMeta.All.Count; i++)
                 if (RoomMeta.All[i].RoomId == candidate.RoomId) { index = i; break; }
 
-            _newRoomOpen = false;
-            _newRoomButtons.Clear();
             LoadRoom(index);
             _state.Status = result.Message;   // after LoadRoom, which sets its own
+            return result;
+        }
+
+        private void CreateRoom(RoomCandidate candidate)
+        {
+            // Closed up front, on both outcomes: the picker was modal, and
+            // whichever way this goes the status line it leaves behind is the
+            // thing the user needs to read.
+            _newRoomOpen = false;
+            _newRoomButtons.Clear();
+
+            var result = CreateAndOpenRoom(candidate);
+            if (!result.Ok) _state.Status = result.Message;
         }
 
         // Panel geometry. Computed from the window rather than stored so a
@@ -929,9 +962,9 @@ namespace SorceryForge
                     new Vector2(list.X + 6, list.Y + 8), new Color(230, 230, 240));
                 DrawText("Every background is already claimed by a room.",
                     new Vector2(list.X + 6, list.Y + 30), new Color(180, 185, 200));
-                DrawText("To add a room from a screenshot, use the import flow",
+                DrawText("To add a room from a screenshot, use Import instead —",
                     new Vector2(list.X + 6, list.Y + 58), new Color(150, 160, 185));
-                DrawText("(drop a 320x144 PNG into Content/ as RoomBG_<Name>.png).",
+                DrawText("it writes the RoomBG_*.png this picker lists.",
                     new Vector2(list.X + 6, list.Y + 78), new Color(150, 160, 185));
             }
 
@@ -985,6 +1018,365 @@ namespace SorceryForge
             DrawText("Esc / right-click cancels",
                 new Vector2(panel.X + 14, panel.Bottom - NewRoomFooterHeight + 12),
                 new Color(150, 160, 185));
+        }
+
+        // ====================================================================
+        // IMPORT SCREENSHOT — source picker overlay
+        // ====================================================================
+        // EDITOR_REVIEW item A. Scans assets/import/ and turns the file you
+        // pick into Content/RoomBG_<Name>.png, then hands it to the very same
+        // CreateAndOpenRoom that New Room uses. One click from "a screenshot
+        // sitting in a folder" to "the editor is in that room, editing it".
+        //
+        // Same widget pattern as the New Room picker above — modal list, click
+        // zones populated in Draw and consumed in Update, transient state kept
+        // here rather than on EditorState. Same zero-typing rule too: the
+        // source filename decides the asset name, the room id and the display
+        // name (ImageImport's header spells the rule out).
+        //
+        // The one control it adds is the CPC quantize toggle. See
+        // ImageImport.QuantizeToCpc for what it does and why it defaults ON.
+        // ====================================================================
+
+        private bool _importOpen;
+        private List<ImportCandidate> _importCandidates = new();
+        private float _importScrollY;
+        private int _importContentHeight;
+        private readonly List<(Rectangle bounds, Action action)> _importButtons = new();
+
+        // Session preference, not room data: it survives closing and reopening
+        // the picker, because importing a set of screenshots is one decision
+        // made once, not one per file. ON by default — the sources are captures
+        // of a CPC game, so snapping to the hardware palette is the answer
+        // nearly always.
+        private bool _importQuantize = true;
+
+        private void OpenImportPicker()
+        {
+            // Importing LOADS the new room, discarding unsaved edits in the
+            // current one — so the guard runs here, at the click that opens the
+            // modal, exactly as it does for New Room. Its "repeat the action to
+            // discard" warning belongs in the status bar the user is looking
+            // at, not behind an overlay.
+            if (!ConfirmDiscardUnsavedEdits()) return;
+
+            // Created rather than merely read: the folder ships in the repo,
+            // but a fresh clone with an aggressive clean, or a user who deleted
+            // it, should get a working "put your files here" instruction rather
+            // than an empty list and no explanation.
+            try { Directory.CreateDirectory(EditorPaths.RepoImportDir); }
+            catch (Exception ex)
+            {
+                _state.Status = $"Import: cannot use {EditorPaths.RepoImportDir} — {ex.Message}";
+                return;
+            }
+
+            _importCandidates = ImageImport.FindCandidates(
+                EditorPaths.RepoImportDir, EditorPaths.RepoContentDir, RoomManifest.All);
+            _importScrollY = 0f;
+            _importButtons.Clear();
+            _importOpen = true;
+
+            int usable = 0;
+            foreach (var c in _importCandidates) if (c.CanCreate) usable++;
+            _state.Status = _importCandidates.Count == 0
+                ? "Import: assets/import/ holds no .jpg/.jpeg/.png — drop a screenshot in and click Import again."
+                : $"Import: pick a screenshot ({usable} of {_importCandidates.Count} importable). Esc or right-click cancels.";
+        }
+
+        private void CloseImportPicker(string status)
+        {
+            _importOpen = false;
+            _importButtons.Clear();
+            _state.Status = status;
+        }
+
+        /// <summary>
+        /// Modal input, mirroring HandleNewRoomPicker: while the picker is open
+        /// it runs instead of every other handler, so a stray click can't reach
+        /// the canvas underneath.
+        /// </summary>
+        private void HandleImportPicker()
+        {
+            if (Pressed(Keys.Escape) || RightClicked())
+            {
+                CloseImportPicker("Import cancelled.");
+                return;
+            }
+
+            int delta = _mouseNow.ScrollWheelValue - _mousePrev.ScrollWheelValue;
+            if (delta != 0) _importScrollY -= delta * 0.25f;
+            float maxScroll = Math.Max(0, _importContentHeight - ImportListRect.Height);
+            _importScrollY = Math.Clamp(_importScrollY, 0, maxScroll);
+
+            if (!LeftClicked()) return;
+            var p = new Point(_mouseNow.X, _mouseNow.Y);
+            for (int i = _importButtons.Count - 1; i >= 0; i--)
+            {
+                if (_importButtons[i].bounds.Contains(p))
+                {
+                    _importButtons[i].action();
+                    return;
+                }
+            }
+        }
+
+        private void ToggleImportQuantize()
+        {
+            _importQuantize = !_importQuantize;
+            _state.Status = _importQuantize
+                ? "Import: CPC quantize ON — pixels snap to the 27 hardware colours (kills JPEG noise)."
+                : "Import: CPC quantize OFF — source colours pass through untouched.";
+        }
+
+        /// <summary>
+        /// Decode a source file into straight-alpha pixels. This and
+        /// FinishImport are the only two places in the import path that touch
+        /// MonoGame; everything between them is ImageImport's plain Color[]
+        /// arithmetic, which is why the interesting half is headlessly testable.
+        /// </summary>
+        private bool TryDecodeImportSource(ImportCandidate candidate,
+                                           out Color[] pixels, out int width, out int height)
+        {
+            pixels = Array.Empty<Color>();
+            width = height = 0;
+            try
+            {
+                // FromStream is what makes "no new NuGet dependency" true: the
+                // JPEG decoder is already inside MonoGame (bundled
+                // StbImageSharp), and it hands back straight (non-premultiplied)
+                // alpha — the same form LoadRoom relies on and SaveAsPng
+                // round-trips losslessly.
+                using var fs = File.OpenRead(candidate.SourcePath);
+                using var tex = Texture2D.FromStream(GraphicsDevice, fs);
+                width = tex.Width;
+                height = tex.Height;
+                pixels = new Color[width * height];
+                tex.GetData(pixels);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _state.Status = $"Import: could not decode {candidate.FileName} — {ex.Message}";
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Import a source whose size is already 320x144 or an exact multiple:
+        /// decode, point-sample down, optionally quantize, then create the room.
+        /// </summary>
+        private void RunImport(ImportCandidate candidate)
+        {
+            _importOpen = false;
+            _importButtons.Clear();
+
+            if (!TryDecodeImportSource(candidate, out var src, out int w, out int h)) return;
+
+            // The picker classified this file from its HEADER. Re-check against
+            // what the decoder actually produced: a header we misread would
+            // otherwise reach PointSample as a bad region and throw.
+            if (ImageImport.ExactMultiple(w, h) <= 0)
+            {
+                _state.Status = $"Import: {candidate.FileName} decoded as " +
+                                ImageImport.ExpectedSizeMessage(w, h) + ".";
+                return;
+            }
+
+            var pixels = ImageImport.BuildRoomBackground(
+                src, w, h, ImageImport.WholeImage(w, h), _importQuantize);
+            FinishImport(candidate, pixels);
+        }
+
+        /// <summary>
+        /// Write the finished 320x144 pixels to Content/ and register the room.
+        /// The tail of every import route.
+        /// </summary>
+        private void FinishImport(ImportCandidate candidate, Color[] pixels)
+        {
+            string pngPath = Path.Combine(EditorPaths.RepoContentDir, candidate.BackgroundAsset + ".png");
+            try
+            {
+                using var tex = new Texture2D(GraphicsDevice, ImageImport.RoomWidth, ImageImport.RoomHeight);
+                tex.SetData(pixels);
+                WriteTextureAsPng(tex, pngPath);
+            }
+            catch (Exception ex)
+            {
+                _state.Status = $"Import: writing {candidate.BackgroundAsset}.png failed — {ex.Message}";
+                return;
+            }
+
+            // PNG first, registration second. Should the registration fail, the
+            // leftover is an unused background in Content/ — which is exactly
+            // what the New Room picker lists, so the user can finish the job
+            // from there. The other order would put a room in rooms.json
+            // naming an asset that isn't on disk, which the game refuses to
+            // start with.
+            var result = CreateAndOpenRoom(candidate);
+            string mode = _importQuantize ? "CPC" : "raw";
+            _state.Status = result.Ok
+                ? $"Imported {candidate.FileName} [{mode}] -> {candidate.BackgroundAsset}.png. {result.Message}"
+                : $"Wrote {candidate.BackgroundAsset}.png but registration failed: {result.Message} " +
+                  "The PNG is now an unused background — New Room can finish it.";
+        }
+
+        // Panel geometry. Computed from the window rather than stored, so a
+        // resize while the picker is open can't leave the click zones and the
+        // drawn rows disagreeing. Wider than the New Room panel because each
+        // row carries a filename, a size and a derived room id.
+        private static Rectangle ImportPanelRect
+        {
+            get
+            {
+                int w = Math.Min(760, EditorLayout.WindowWidth - 80);
+                int h = Math.Min(560, EditorLayout.WindowHeight - 120);
+                return new Rectangle((EditorLayout.WindowWidth - w) / 2,
+                                     (EditorLayout.WindowHeight - h) / 2, w, h);
+            }
+        }
+
+        private const int ImportTitleHeight = 56;
+        private const int ImportToggleHeight = 36;
+        private const int ImportFooterHeight = 44;
+
+        private static Rectangle ImportToggleRect
+        {
+            get
+            {
+                var p = ImportPanelRect;
+                return new Rectangle(p.X + 10, p.Y + ImportTitleHeight, p.Width - 20, 28);
+            }
+        }
+
+        private static Rectangle ImportListRect
+        {
+            get
+            {
+                var p = ImportPanelRect;
+                return new Rectangle(p.X + 10, p.Y + ImportTitleHeight + ImportToggleHeight,
+                                     p.Width - 20,
+                                     Math.Max(0, p.Height - ImportTitleHeight - ImportToggleHeight - ImportFooterHeight));
+            }
+        }
+
+        /// <summary>
+        /// The picker: a dimmed screen, a panel, the quantize toggle, one row
+        /// per file in assets/import/. Rows register their click zones here and
+        /// HandleImportPicker consumes them next frame — the inspector's
+        /// pattern, and the New Room picker's.
+        /// </summary>
+        private void DrawImportPicker()
+        {
+            if (!_importOpen) return;
+
+            _importButtons.Clear();
+
+            FillRect(new Rectangle(0, 0, EditorLayout.WindowWidth, EditorLayout.WindowHeight),
+                     new Color(0, 0, 0, 170));
+
+            var panel = ImportPanelRect;
+            FillRect(panel, new Color(30, 33, 42));
+            DrawRectOutline(panel, new Color(120, 130, 160));
+
+            DrawText("IMPORT SCREENSHOT — pick a file from assets/import/",
+                new Vector2(panel.X + 14, panel.Y + 12), new Color(255, 220, 110));
+            DrawText(TruncateText(EditorPaths.RepoImportDir, panel.Width - 28),
+                new Vector2(panel.X + 14, panel.Y + 32), new Color(150, 160, 185));
+
+            DrawImportQuantizeToggle();
+
+            var list = ImportListRect;
+            int rowH = 46;
+            int y = list.Y - (int)_importScrollY;
+            _importContentHeight = _importCandidates.Count * (rowH + 4);
+
+            if (_importCandidates.Count == 0)
+            {
+                DrawText("Nothing to import.",
+                    new Vector2(list.X + 6, list.Y + 8), new Color(230, 230, 240));
+                DrawText("Drop a .jpg / .jpeg / .png screenshot into assets/import/",
+                    new Vector2(list.X + 6, list.Y + 34), new Color(180, 185, 200));
+                DrawText("and click Import again. The file name becomes the room:",
+                    new Vector2(list.X + 6, list.Y + 54), new Color(180, 185, 200));
+                DrawText("Chateau3.jpg  ->  RoomBG_Chateau3.png  ->  chateau_3",
+                    new Vector2(list.X + 6, list.Y + 80), new Color(150, 160, 185));
+            }
+
+            foreach (var candidate in _importCandidates)
+            {
+                var row = new Rectangle(list.X, y, list.Width, rowH);
+                y += rowH + 4;
+
+                // Cull rows scrolled out of the list viewport — and skip their
+                // click zones with them, so an invisible row can't be clicked.
+                if (row.Bottom <= list.Top || row.Top >= list.Bottom) continue;
+
+                var captured = candidate;
+                bool hover = captured.CanCreate && row.Contains(_mouseNow.X, _mouseNow.Y)
+                             && list.Contains(_mouseNow.X, _mouseNow.Y);
+
+                Color bg = !captured.CanCreate ? new Color(46, 36, 40)
+                         : hover               ? new Color(60, 75, 110)
+                                               : new Color(40, 46, 60);
+                FillRect(row, bg);
+                DrawRectOutline(row, new Color(90, 100, 130));
+
+                DrawText(TruncateText($"{captured.FileName}   {captured.SizeLabel}", row.Width - 20),
+                    new Vector2(row.X + 8, row.Y + 5),
+                    captured.CanCreate ? Color.White : new Color(190, 150, 150));
+
+                string sub = captured.CanCreate
+                    ? $"-> {captured.BackgroundAsset}.png   ->   {captured.RoomId}   \"{captured.DisplayName}\""
+                    : $"unavailable: {captured.Problem}";
+                DrawText(TruncateText(sub, row.Width - 20),
+                    new Vector2(row.X + 8, row.Y + 25),
+                    captured.CanCreate ? new Color(180, 200, 230) : new Color(255, 140, 140));
+
+                if (captured.CanCreate)
+                    _importButtons.Add((row, () => RunImport(captured)));
+            }
+
+            var cancel = new Rectangle(panel.Right - 110, panel.Bottom - ImportFooterHeight + 6, 100, 28);
+            bool cancelHover = cancel.Contains(_mouseNow.X, _mouseNow.Y);
+            FillRect(cancel, cancelHover ? new Color(70, 78, 100) : new Color(50, 55, 70));
+            DrawRectOutline(cancel, new Color(110, 120, 150));
+            var cz = MeasureText("Cancel");
+            DrawText("Cancel",
+                new Vector2(cancel.X + (cancel.Width - cz.X) / 2, cancel.Y + (cancel.Height - cz.Y) / 2),
+                Color.White);
+            _importButtons.Add((cancel, () => CloseImportPicker("Import cancelled.")));
+
+            DrawText("Esc / right-click cancels   |   sources are never modified or deleted",
+                new Vector2(panel.X + 14, panel.Bottom - ImportFooterHeight + 12),
+                new Color(150, 160, 185));
+        }
+
+        /// <summary>
+        /// The CPC quantize checkbox. A whole row rather than a small box, so
+        /// the click target is obvious and the "why" fits beside it.
+        /// </summary>
+        private void DrawImportQuantizeToggle()
+        {
+            var rect = ImportToggleRect;
+            bool hover = rect.Contains(_mouseNow.X, _mouseNow.Y);
+            FillRect(rect, hover ? new Color(60, 75, 110) : new Color(40, 46, 60));
+            DrawRectOutline(rect, new Color(90, 100, 130));
+
+            var box = new Rectangle(rect.X + 7, rect.Y + 7, 14, 14);
+            DrawRectOutline(box, new Color(170, 180, 205));
+            if (_importQuantize)
+                FillRect(new Rectangle(box.X + 3, box.Y + 3, 8, 8), new Color(120, 230, 140));
+
+            DrawText(TruncateText(
+                    _importQuantize
+                        ? "CPC quantize ON — snap to the 27 hardware colours (removes JPEG noise)"
+                        : "CPC quantize OFF — source colours pass through untouched",
+                    rect.Width - 40),
+                new Vector2(rect.X + 30, rect.Y + 5),
+                _importQuantize ? new Color(210, 230, 210) : new Color(200, 200, 215));
+
+            _importButtons.Add((rect, ToggleImportQuantize));
         }
 
         // Armed by the first destructive attempt (room switch, exit) while
@@ -1072,13 +1464,21 @@ namespace SorceryForge
             _mousePrev = _mouseNow;
             _mouseNow = Mouse.GetState();
 
-            // The New Room picker is modal: while it's open it consumes every
-            // input, so a click meant for a candidate row can't fall through
-            // to the canvas behind it and Escape closes the picker rather than
-            // the editor.
+            // The New Room and Import pickers are modal: while one is open it
+            // consumes every input, so a click meant for a candidate row can't
+            // fall through to the canvas behind it and Escape closes the picker
+            // rather than the editor. At most one is ever open — the top-bar
+            // buttons that open them are themselves unreachable from here.
             if (_newRoomOpen)
             {
                 HandleNewRoomPicker();
+                base.Update(gameTime);
+                return;
+            }
+
+            if (_importOpen)
+            {
+                HandleImportPicker();
                 base.Update(gameTime);
                 return;
             }
@@ -2184,9 +2584,10 @@ namespace SorceryForge
             DrawInspector();
             DrawStatusBar();
             DrawDragGhost();
-            // Last, so the modal covers every panel — it blocks input to all
-            // of them and must look like it does.
+            // Last, so a modal covers every panel — it blocks input to all of
+            // them and must look like it does. Only one can be open at a time.
             DrawNewRoomPicker();
+            DrawImportPicker();
             _spriteBatch.End();
 
             base.Draw(gameTime);
@@ -2201,23 +2602,42 @@ namespace SorceryForge
 
             foreach (var b in _buttons) DrawButton(b);
 
-            // Centre the room title in the empty stretch between the left
-            // and right button banks (computed in RelayoutButtons). Skip
-            // drawing when there's no room — falls off the side instead of
-            // overlapping a button.
+            // Centre the room title in the empty stretch between the left and
+            // right button banks (computed in RelayoutButtons), and draw the
+            // longest form that fits in it.
+            //
             // Trailing "*" whenever ANY edit is unsaved (placements, collision
             // grid, or background pixels) — the same condition that makes
             // ConfirmDiscardUnsavedEdits block a room switch or exit.
+            //
+            // The shorter forms exist because that "*" is the only always-on
+            // sign of unsaved work, and the gap is not guaranteed: the top bar
+            // gained the Import button, which pushed the left bank right by
+            // ~90 px, and the full title stops fitting a little under the
+            // default 1280 px window. Degrading to the bare room id and then to
+            // the marker alone keeps the warning visible where an all-or-
+            // nothing title would silently drop it. (Narrower still, the two
+            // banks themselves overlap — that is a pre-existing limit of the
+            // fixed top bar, now reached at ~1244 px rather than ~1152.)
             bool dirty = _state.PlacementsDirty || _state.CollisionDirty || _state.BackgroundDirty;
-            string title = $"Room: {_state.CurrentRoom.DisplayName}  ({_state.CurrentRoom.RoomId})"
-                         + (dirty ? " *" : "");
-            var size = MeasureText(title);
-            int gap = _rightBankLeft - _leftBankRight;
-            if (gap >= size.X + 16)
+            string mark = dirty ? " *" : "";
+            string[] forms =
             {
+                $"Room: {_state.CurrentRoom.DisplayName}  ({_state.CurrentRoom.RoomId}){mark}",
+                _state.CurrentRoom.RoomId + mark,
+                dirty ? "*" : "",
+            };
+
+            int gap = _rightBankLeft - _leftBankRight;
+            foreach (string title in forms)
+            {
+                if (title.Length == 0) continue;
+                var size = MeasureText(title);
+                if (gap < size.X + 16) continue;
                 float tx = _leftBankRight + (gap - size.X) / 2f;
                 float ty = (EditorLayout.TopBarHeight - size.Y) / 2f;
                 DrawText(title, new Vector2(tx, ty), Color.White);
+                break;
             }
         }
 

@@ -20,6 +20,13 @@ namespace SorceryForge
         /// <summary>Source-tree Content folder (raw PNGs).</summary>
         public static string RepoContentDir => Path.Combine(RepoRoot, "Content");
 
+        /// <summary>
+        /// Drop folder the screenshot import scans. Source captures land here;
+        /// the import reads them and writes a PNG into Content/. Its image
+        /// files are gitignored — they are inputs, never repository content.
+        /// </summary>
+        public static string RepoImportDir => Path.Combine(RepoRoot, "assets", "import");
+
         private static string FindRepoRoot()
         {
             string dir = AppDomain.CurrentDomain.BaseDirectory;
