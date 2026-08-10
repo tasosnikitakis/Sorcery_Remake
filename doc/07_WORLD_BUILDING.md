@@ -282,6 +282,89 @@ If `forest_1`'s right door targets `forest_2`, then `forest_2` must have a door 
 
 There is no automatic two-way door wiring; mismatched IDs silently fail (the transition lands in the target room but at fallback position `(160, 60)`).
 
+## World Map
+
+**Tab** in SorceryForge flips between the room editor and the world map: every
+registry room as a box carrying its own background, door links as arrows
+between them. At nine rooms Prev/Next cycling is fine; at the target
+seventy-five it is not, and the map is what replaces it.
+
+Tab rather than a button because the top bar is full — its restructure is a
+later PR. The keybind is shown at the right-hand end of the status bar in both
+modes, which is the whole discoverability story until then.
+
+| In map mode | |
+|---|---|
+| **Tab** or **Esc** | back to the room editor. Esc here does *not* quit — the exit path lives in room view, where the unsaved work it protects is. |
+| **wheel** | zoom, anchored at the cursor. Five levels, `6%` to `100%`; each is a power of two so a thumbnail is always an exact integer downscale of its background. |
+| **middle-drag**, or **left-drag on empty space** | pan |
+| **arrow keys** | pan by half a room |
+| **click a room** | open it in the room editor |
+
+Map mode suspends room editing completely: no palette, no canvas, no paint or
+punch, and every top-bar button is drawn inert because none of them means
+anything against a board. The room you were editing stays loaded behind it,
+untouched — which is why *entering* the map needs no discard guard and why
+*clicking a room* gets the same one Prev/Next uses. Unsaved edits warn on the
+first click and go through on the second; they are never discarded silently.
+
+### How the board is arranged
+
+Rooms nobody has moved are placed automatically: **column = distance in door
+links from the first registry room** (`chateau_0`), row = order reached within
+that column. Rooms no chain of doors reaches get a trailing column of their
+own.
+
+Two rules make it deterministic, and they are rules rather than accidents — a
+layout that reshuffles between sessions is *worse* than no layout, because it
+teaches you something false:
+
+- rooms are seeded and enqueued in **registry order**, never dictionary order;
+- **adjacency is undirected** even though doors are not. A one-way drop still
+  makes two rooms neighbours, and a room whose only link points *into* the
+  start room is plainly next to it. The map says where things are; the arrows
+  carry the direction.
+
+A whole disconnected *component* currently lands in the trailing column as a
+flat stack rather than getting its own layout — today that is the
+stonehenge/wastelands/tunnelmouth chain plus the two unwired chateau rooms.
+
+### Arrows
+
+Built from the same door data and the same verdicts as the **Doors** button —
+`SorceryForge/DoorValidator.cs`, which both call — so an arrow can never say a
+link is fine while the button says it is broken. Validation runs on entering
+the map, and it includes the current room's *unsaved* doors, so a link you just
+authored is on the board before you save it.
+
+| Colour | Verdict | |
+|---|---|---|
+| green | `ok` | wired both ways — drawn as **one** line with an arrowhead at each end |
+| dim green | `ok-test` | targets `room_1` / `room_2`, which are registered in code and are not on the board |
+| yellow | `asymmetric` | the partner door exists but points elsewhere: one-way |
+| red | `orphan-door` | the target room exists, that door does not |
+| red | `orphan-room` | no such room |
+
+Each arrow leaves its room at the **door's own position on the door's own
+edge**, so a room with a top-left and a top-right door shows two arrows leaving
+from where those doors actually are. A link with no box at the far end — a test
+room, a room that does not exist, or a door pointing back into its own room —
+is drawn as a short spur pointing out of the source door, which is the true
+statement: *this door leads somewhere not on this board*.
+
+Thumbnails are the raw `Content/RoomBG_*.png` files, loaded lazily as boxes come
+into view and cached for the session. A room with no readable PNG gets a plain
+slate. Saving background pixel edits drops that room's cached thumbnail, so the
+board shows the erased version next time.
+
+### Checking the board without a screen
+
+`tools/MapCheck` computes the whole board headlessly and asserts it: the layout
+is deterministic, every door becomes exactly one arrow, and every arrow lands
+on the rooms and doors it claims to. `--board` prints the computed layout and
+arrow list, which is how you tell a wrong *picture* from wrong *data*. See
+[`tools/MapCheck/README.md`](../tools/MapCheck/README.md).
+
 ## Door System
 
 ### Door Types

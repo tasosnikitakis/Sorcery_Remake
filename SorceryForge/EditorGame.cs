@@ -727,6 +727,10 @@ namespace SorceryForge
                 {
                     string pngPath = Path.Combine(EditorPaths.RepoContentDir, meta.BackgroundAsset + ".png");
                     WriteTextureAsPng(_currentBackground, pngPath);
+                    // The file the map's thumbnail cache read just changed
+                    // under it — drop it so the board shows the erased version
+                    // rather than the one from before the stroke.
+                    InvalidateMapThumbnail(meta.BackgroundAsset);
                     // The restore brush now restores to this saved state.
                     _bgOriginal = (Color[])_bgPixels.Clone();
                     _state.BackgroundDirty = false;
@@ -1692,6 +1696,455 @@ namespace SorceryForge
             _importButtons.Add((rect, ToggleImportQuantize));
         }
 
+        // ====================================================================
+        // WORLD MAP MODE
+        // ====================================================================
+        // EDITOR_REVIEW item D. Every registry room as a box carrying its own
+        // background, door links as arrows between them, coloured by the same
+        // verdicts the Doors button reports. Tab in, Tab or Esc out, click a
+        // room to open it.
+        //
+        // It is a MODE, not an overlay: while it is up, nothing of the room
+        // editor runs. No palette, no canvas, no paint or punch, none of the
+        // room keyboard shortcuts — HandleMapInput is the whole of Update. The
+        // current room stays loaded behind it untouched, which is why entering
+        // the map needs no discard guard and why clicking a room does.
+        //
+        // The board is drawn across the full window between the top bar and the
+        // status bar, over where the palette and inspector would be: at
+        // seventy-five rooms, space is the scarce thing, and neither panel has
+        // anything to say about a world.
+        // ====================================================================
+
+        private bool _mapMode;
+        private readonly MapView _mapView = new();
+        private readonly List<MapRoom> _mapRooms = new();
+        private List<MapEdge> _mapEdges = new();
+        private Rectangle _mapContentBounds;
+        private DoorReport _mapDoors = new();
+
+        // The first entry frames the whole board; later entries keep whatever
+        // view the user left behind, because re-framing every time would undo
+        // the deliberate act of zooming in on a corner of the world.
+        private bool _mapFramed;
+
+        // Thumbnails, keyed by background asset. A NULL value is cached too and
+        // means "tried, and there is no readable PNG" — without that, a missing
+        // background would be re-opened from disk every single frame.
+        //
+        // Its own cache, deliberately not _textures: those go through
+        // LoadAndCache, which black-keys them for sprite transparency, and
+        // black-keying a room background would punch holes straight through the
+        // picture. Nor does it touch _currentBackground — the room editor's
+        // pixel-edit state is not something a thumbnail may disturb.
+        private readonly Dictionary<string, Texture2D?> _mapThumbs = new();
+
+        // Click-versus-drag. A press remembers where it started and what was
+        // under it; travel past MapClickSlop turns it into a pan and cancels
+        // the click, so a shaky hand cannot open a room the user was scrolling
+        // past.
+        private const int MapClickSlop = 4;
+        private bool _mapLeftDown, _mapMidDown;
+        private Point _mapPressScreen;
+        private Vector2 _mapPressPan;
+        private bool _mapPressMoved;
+        private MapRoom? _mapPressRoom;
+
+        /// <summary>Everything between the top bar and the status bar.</summary>
+        private static Rectangle MapBoardRect => new(
+            0, EditorLayout.TopBarHeight, EditorLayout.WindowWidth,
+            Math.Max(0, EditorLayout.WindowHeight - EditorLayout.TopBarHeight - EditorLayout.StatusBarHeight));
+
+        private void ToggleMapMode()
+        {
+            if (_mapMode) LeaveMapMode();
+            else EnterMapMode();
+        }
+
+        private void EnterMapMode()
+        {
+            _mapMode = true;
+            _mapLeftDown = _mapMidDown = _mapPressMoved = false;
+            _mapPressRoom = null;
+
+            RebuildMapBoard();
+
+            _mapView.Viewport = MapBoardRect;
+            if (!_mapFramed) { _mapView.FitTo(_mapContentBounds); _mapFramed = true; }
+            else _mapView.ClampPan(_mapContentBounds);
+
+            _state.Status = MapStatusLine();
+        }
+
+        private void LeaveMapMode()
+        {
+            _mapMode = false;
+            _mapLeftDown = _mapMidDown = false;
+            _state.Status = $"Room view — {_state.CurrentRoom.DisplayName}. Tab returns to the map.";
+        }
+
+        /// <summary>
+        /// Recompute the board: validate the world's doors, lay the rooms out,
+        /// build the arrows. Runs on every entry, so a room created or a door
+        /// rewired since last time is on the map when you come back.
+        /// </summary>
+        private void RebuildMapBoard()
+        {
+            // The verdicts colour the arrows, and they come from the shared
+            // validator — so an arrow can never say a link is fine while the
+            // Doors button says it is broken. It also fills _lastDoorTable,
+            // which is the table the arrows are then built from: same doors,
+            // same answers, one source.
+            _mapDoors = RunDoorValidation();
+
+            _mapRooms.Clear();
+            foreach (var meta in RoomMeta.All)
+                _mapRooms.Add(new MapRoom
+                {
+                    RoomId = meta.RoomId,
+                    DisplayName = meta.DisplayName,
+                    BackgroundAsset = meta.BackgroundAsset ?? "",
+                });
+
+            // No stored positions yet: every box is auto-placed by the BFS
+            // layout, which is deterministic, so the board looks the same every
+            // time it is built from the same world.
+            WorldMap.PlaceRooms(_mapRooms, null, _lastDoorTable);
+
+            _mapEdges = WorldMap.BuildEdges(_mapRooms, _lastDoorTable, _state.DoorStatus);
+            _mapContentBounds = WorldMap.ContentBounds(_mapRooms);
+        }
+
+        private string MapStatusLine()
+        {
+            string doors = _mapDoors.Bad == 0
+                ? $"{_mapDoors.Total} door links, all clean"
+                : $"{_mapDoors.Bad} of {_mapDoors.Total} door links broken";
+            return $"World map: {_mapRooms.Count} rooms, {doors}. Click a room to open it.";
+        }
+
+        // --------------------------------------------------------------------
+        // MAP INPUT
+        // --------------------------------------------------------------------
+
+        private void HandleMapInput()
+        {
+            // Re-read every frame: the window can be resized while the map is
+            // up, and a stale viewport would put the click zones somewhere
+            // other than the boxes.
+            _mapView.Viewport = MapBoardRect;
+
+            // Esc returns to the room view. It deliberately does NOT exit the
+            // editor here — the exit-with-autosave path lives in room view,
+            // where the unsaved work it protects actually is.
+            if (Pressed(Keys.Escape)) { LeaveMapMode(); return; }
+
+            var mouse = new Point(_mouseNow.X, _mouseNow.Y);
+            bool overBoard = MapBoardRect.Contains(mouse);
+
+            int wheel = _mouseNow.ScrollWheelValue - _mousePrev.ScrollWheelValue;
+            if (wheel != 0 && overBoard)
+            {
+                _mapView.StepZoom(Math.Sign(wheel), mouse, _mapContentBounds);
+                _state.Status = MapStatusLine();
+            }
+
+            // Arrow keys nudge the view, matching room mode's arrow panning.
+            // One room-width per press, so it moves by something meaningful at
+            // any zoom rather than by a screen pixel.
+            int nudge = WorldMap.RoomWidth / 2;
+            if (Pressed(Keys.Left))  PanMap(-nudge, 0);
+            if (Pressed(Keys.Right)) PanMap(nudge, 0);
+            if (Pressed(Keys.Up))    PanMap(0, -nudge);
+            if (Pressed(Keys.Down))  PanMap(0, nudge);
+
+            HandleMapDrag(mouse, overBoard);
+            PumpMapThumbnails();
+        }
+
+        private void PanMap(int dx, int dy)
+        {
+            _mapView.Pan += new Vector2(dx, dy);
+            _mapView.ClampPan(_mapContentBounds);
+        }
+
+        /// <summary>
+        /// Middle-drag pans. Left-press arms a click; travel past the slop
+        /// turns it into a pan instead, and a release inside the slop over a
+        /// room opens that room.
+        /// </summary>
+        private void HandleMapDrag(Point mouse, bool overBoard)
+        {
+            bool midDown = _mouseNow.MiddleButton == ButtonState.Pressed;
+            bool midWas = _mousePrev.MiddleButton == ButtonState.Pressed;
+
+            if (midDown && !midWas && overBoard) StartMapPress(mouse, out _mapMidDown);
+            if (!midDown) _mapMidDown = false;
+
+            if (LeftClicked() && overBoard)
+            {
+                StartMapPress(mouse, out _mapLeftDown);
+                _mapPressRoom = WorldMap.RoomAt(_mapRooms, _mapView.ScreenToMap(mouse));
+            }
+
+            if (!(_mapLeftDown || _mapMidDown))
+            {
+                if (LeftReleased()) _mapPressRoom = null;
+                return;
+            }
+
+            int travelX = mouse.X - _mapPressScreen.X;
+            int travelY = mouse.Y - _mapPressScreen.Y;
+            if (Math.Abs(travelX) > MapClickSlop || Math.Abs(travelY) > MapClickSlop)
+                _mapPressMoved = true;
+
+            // Middle-drag pans from the first pixel; left-drag only once it has
+            // stopped looking like a click. Both offset from the pan recorded at
+            // press rather than accumulating per-frame deltas, so a slow drag
+            // out and back returns the board to where it started.
+            if (_mapMidDown || _mapPressMoved)
+            {
+                _mapView.Pan = _mapPressPan - _mapView.ScreenDeltaToMap(new Point(travelX, travelY));
+                _mapView.ClampPan(_mapContentBounds);
+            }
+
+            if (_mapLeftDown && LeftReleased())
+            {
+                _mapLeftDown = false;
+                if (!_mapPressMoved && _mapPressRoom != null) OpenRoomFromMap(_mapPressRoom);
+                _mapPressRoom = null;
+            }
+        }
+
+        private void StartMapPress(Point mouse, out bool flag)
+        {
+            flag = true;
+            _mapPressScreen = mouse;
+            _mapPressPan = _mapView.Pan;
+            _mapPressMoved = false;
+        }
+
+        /// <summary>
+        /// Switch to the room view and load the clicked room — through the same
+        /// discard guard Prev/Next uses.
+        /// </summary>
+        // PR 1's guarantee is that no path silently throws away unsaved work,
+        // and a click on the map is now one of the paths that loads a room. It
+        // gets the identical treatment: the first click warns and stays on the
+        // map, the second goes through.
+        private void OpenRoomFromMap(MapRoom room)
+        {
+            if (!ConfirmDiscardUnsavedEdits()) return;
+
+            int index = -1;
+            for (int i = 0; i < RoomMeta.All.Count; i++)
+                if (RoomMeta.All[i].RoomId == room.RoomId) { index = i; break; }
+
+            if (index < 0)
+            {
+                // The registry was reloaded under the board (a room created and
+                // the map not rebuilt). Rebuilding is the honest recovery.
+                RebuildMapBoard();
+                _state.Status = $"Map: '{room.RoomId}' is no longer in the registry — board refreshed.";
+                return;
+            }
+
+            _mapMode = false;
+            LoadRoom(index);
+            _state.Status = $"Opened {room.DisplayName} ({room.RoomId}) from the map. Tab returns to it.";
+        }
+
+        // --------------------------------------------------------------------
+        // THUMBNAILS
+        // --------------------------------------------------------------------
+
+        /// <summary>
+        /// Load at most a couple of on-screen thumbnails per frame, from
+        /// Update rather than Draw.
+        /// </summary>
+        // Two reasons it is here and not in the draw loop: creating textures
+        // in the middle of an open SpriteBatch is the sort of thing that works
+        // until it doesn't, and seventy-five decodes in the frame the map opens
+        // would be a visible stall. Off-screen rooms are never loaded at all —
+        // pan to a room and it appears.
+        private void PumpMapThumbnails()
+        {
+            const int budgetPerFrame = 2;
+            int loaded = 0;
+
+            foreach (var room in _mapRooms)
+            {
+                if (loaded >= budgetPerFrame) return;
+                if (string.IsNullOrEmpty(room.BackgroundAsset)) continue;
+                if (_mapThumbs.ContainsKey(room.BackgroundAsset)) continue;
+                if (!_mapView.MapRectToScreen(room.Box).Intersects(MapBoardRect)) continue;
+
+                LoadMapThumbnail(room.BackgroundAsset);
+                loaded++;
+            }
+        }
+
+        private void LoadMapThumbnail(string asset)
+        {
+            Texture2D? tex = null;
+            string path = Path.Combine(EditorPaths.RepoContentDir, asset + ".png");
+            if (File.Exists(path))
+            {
+                try
+                {
+                    using var fs = File.OpenRead(path);
+                    tex = Texture2D.FromStream(GraphicsDevice, fs);
+                }
+                catch { tex = null; }
+            }
+            // Cached even when null: "there is no readable PNG here" is an
+            // answer, and re-asking it sixty times a second is not.
+            _mapThumbs[asset] = tex;
+        }
+
+        /// <summary>
+        /// Drop a cached thumbnail so the next map entry re-reads it. Called
+        /// after Erase-mode saves the room's PNG, which is the one way the file
+        /// changes while the editor is running.
+        /// </summary>
+        private void InvalidateMapThumbnail(string asset)
+        {
+            if (!_mapThumbs.TryGetValue(asset, out var tex)) return;
+            tex?.Dispose();
+            _mapThumbs.Remove(asset);
+        }
+
+        // --------------------------------------------------------------------
+        // MAP DRAW
+        // --------------------------------------------------------------------
+
+        private void DrawMapMode()
+        {
+            _mapView.Viewport = MapBoardRect;
+
+            _spriteBatch.Begin(samplerState: SamplerState.PointClamp);
+            DrawTopBar();
+            _spriteBatch.End();
+
+            // Scissored, so a box panned half off the board is cut at the edge
+            // instead of painting over the top bar.
+            GraphicsDevice.ScissorRectangle = MapBoardRect;
+            _spriteBatch.Begin(samplerState: SamplerState.PointClamp, rasterizerState: ScissorOn);
+            DrawMapBoard();
+            _spriteBatch.End();
+
+            _spriteBatch.Begin(samplerState: SamplerState.PointClamp);
+            DrawStatusBar();
+            _spriteBatch.End();
+        }
+
+        private void DrawMapBoard()
+        {
+            FillRect(MapBoardRect, new Color(20, 22, 28));
+
+            // Arrows first: a box then covers the stub of any arrow that starts
+            // underneath it, and the lines read as passing behind the rooms.
+            foreach (var edge in _mapEdges) DrawMapEdge(edge);
+            foreach (var room in _mapRooms) DrawMapRoomBox(room);
+        }
+
+        private void DrawMapRoomBox(MapRoom room)
+        {
+            var dest = _mapView.MapRectToScreen(room.Box);
+            if (!dest.Intersects(MapBoardRect)) return;
+
+            var thumb = string.IsNullOrEmpty(room.BackgroundAsset) ? null
+                      : _mapThumbs.TryGetValue(room.BackgroundAsset, out var t) ? t : null;
+
+            if (thumb != null)
+            {
+                _spriteBatch.Draw(thumb, dest, Color.White);
+            }
+            else
+            {
+                // Either not loaded yet or there is no readable PNG. Both look
+                // the same on purpose: an empty slate that says "a room is
+                // here" without pretending to know what it looks like.
+                FillRect(dest, new Color(44, 48, 60));
+            }
+
+            bool isCurrent = room.RoomId == _state.CurrentRoom.RoomId;
+            bool hover = dest.Contains(_mouseNow.X, _mouseNow.Y)
+                         && MapBoardRect.Contains(_mouseNow.X, _mouseNow.Y);
+
+            Color border = isCurrent ? new Color(255, 220, 60)
+                         : hover     ? new Color(200, 215, 255)
+                                     : new Color(90, 100, 130);
+            DrawRectOutline(InflateRect(dest, 1), border);
+            if (isCurrent) DrawRectOutline(InflateRect(dest, 2), border);
+
+            // The label is the room ID — the persistence key, the thing door
+            // targets name, and what you actually need when wiring a world.
+            // Skipped when the box is too small to read one, rather than
+            // stacking unreadable text at every zoom level.
+            if (dest.Width < 56) return;
+            string label = TruncateText(room.RoomId, dest.Width);
+            var size = MeasureText(label);
+            DrawText(label,
+                new Vector2(dest.X + (dest.Width - size.X) / 2f, dest.Bottom + 3),
+                isCurrent ? new Color(255, 235, 150) : new Color(185, 195, 215));
+        }
+
+        private void DrawMapEdge(MapEdge edge)
+        {
+            var a = _mapView.MapToScreen(edge.From).ToVector2();
+            var b = _mapView.MapToScreen(edge.To).ToVector2();
+
+            // Cheap cull: skip lines whose bounding box misses the board.
+            var bounds = new Rectangle(
+                (int)Math.Min(a.X, b.X) - 8, (int)Math.Min(a.Y, b.Y) - 8,
+                (int)Math.Abs(a.X - b.X) + 16, (int)Math.Abs(a.Y - b.Y) + 16);
+            if (!bounds.Intersects(MapBoardRect)) return;
+
+            Color color = StatusColor(edge.Status);
+            DrawLine(a, b, color);
+
+            float head = Math.Clamp(10f * _mapView.Scale * 4f, 5f, 12f);
+            DrawArrowHead(b, b - a, color, head);
+            // A correctly-wired pair is ONE line with a head at each end: the
+            // link is bidirectional and drawing it twice would say nothing
+            // extra while doubling the clutter at seventy-five rooms.
+            if (edge.BothWays) DrawArrowHead(a, a - b, color, head);
+        }
+
+        /// <summary>A 1-px line between two screen points, drawn from the UI pixel.</summary>
+        // The editor had no line primitive before the map — everything else is
+        // axis-aligned rectangles. This is the standard rotate-and-stretch of a
+        // 1x1 texture; the (0, 0.5) origin centres the stroke on the endpoints
+        // so a line and its arrowheads meet exactly.
+        private void DrawLine(Vector2 from, Vector2 to, Color color, float thickness = 1f)
+        {
+            Vector2 delta = to - from;
+            float length = delta.Length();
+            if (length < 0.5f) return;
+            _spriteBatch.Draw(_pixel, from, null, color,
+                              MathF.Atan2(delta.Y, delta.X), new Vector2(0f, 0.5f),
+                              new Vector2(length, thickness), SpriteEffects.None, 0f);
+        }
+
+        /// <summary>Two short strokes at <paramref name="tip"/>, opening back along <paramref name="incoming"/>.</summary>
+        private void DrawArrowHead(Vector2 tip, Vector2 incoming, Color color, float size)
+        {
+            float length = incoming.Length();
+            if (length < 0.5f) return;
+            Vector2 dir = incoming / length;
+
+            // +/- 30 degrees off the incoming direction: narrow enough to read
+            // as an arrow at a 20-pixel-wide thumbnail, wide enough to see.
+            const float spread = MathF.PI / 6f;
+            float baseAngle = MathF.Atan2(dir.Y, dir.X);
+            DrawLine(tip, tip + Radial(baseAngle + spread, size), color);
+            DrawLine(tip, tip + Radial(baseAngle - spread, size), color);
+        }
+
+        private static Vector2 Radial(float angle, float length) =>
+            new(MathF.Cos(angle) * length, MathF.Sin(angle) * length);
+
         // Armed by the first destructive attempt (room switch, exit) while
         // background pixel, collision, or placement edits are unsaved; the
         // second attempt goes through. Disarmed by saving or by further
@@ -1806,9 +2259,34 @@ namespace SorceryForge
                 return;
             }
 
+            // Tab flips between the room editor and the world map, from either
+            // side. Handled before both, and returning immediately, so the
+            // press that changed mode is not also read by the mode it landed
+            // in. Tab rather than a button because the top bar is full — its
+            // restructure is a later PR, and until then the map is a keybind
+            // advertised in the status line.
+            if (Pressed(Keys.Tab))
+            {
+                ToggleMapMode();
+                base.Update(gameTime);
+                return;
+            }
+
+            // Map mode suspends room editing entirely: no palette, no canvas,
+            // no paint, no punch, no room keyboard shortcuts. Its own handler
+            // is the only thing that runs.
+            if (_mapMode)
+            {
+                HandleMapInput();
+                base.Update(gameTime);
+                return;
+            }
+
             // Escape exits, but never silently throws away unsaved edits:
             // the first press arms the discard guard (status bar warning),
-            // the second confirms.
+            // the second confirms. (In map mode Escape returns to the room
+            // view instead — see HandleMapInput. The exit path is reachable
+            // from room view exactly as it always was.)
             if (Pressed(Keys.Escape) && ConfirmDiscardUnsavedEdits()) Exit();
 
             HandleButtons();
@@ -2561,90 +3039,54 @@ namespace SorceryForge
         /// TargetDoorId. If either lookup fails, the player lands at the
         /// (160, 60) fallback — silent in-game, but a real authoring bug.
         /// </summary>
+        // The rules themselves moved to DoorValidator when the world map needed
+        // the same answers for its arrows. This is now the button: run the
+        // shared check, publish the verdicts the canvas overlays read, report.
         private void ValidateDoors()
         {
-            _state.DoorStatus.Clear();
-            int orphanRoom = 0, orphanDoor = 0, asymmetric = 0, ok = 0;
+            var report = RunDoorValidation();
 
-            // Build a snapshot of "doors per room" — using Placements for the
-            // current room (so unsaved authored doors are validated too) and
-            // saved RoomMeta.Doors for every other room.
-            var doorsByRoom = new Dictionary<string, List<DoorDef>>();
-            foreach (var room in RoomMeta.All)
-                doorsByRoom[room.RoomId] = new List<DoorDef>(room.Doors);
-
-            string currentRoomId = _state.CurrentRoom.RoomId;
-            doorsByRoom[currentRoomId] = new List<DoorDef>();
-            foreach (var p in _state.Placements)
-            {
-                if (p.Kind != PlacementKind.Door) continue;
-                doorsByRoom[currentRoomId].Add(new DoorDef(
-                    p.Id, p.Position, p.DoorOpeningSide, p.DoorTargetRoomId, p.DoorTargetDoorId));
-            }
-
-            foreach (var room in RoomMeta.All)
-            {
-                foreach (var door in doorsByRoom[room.RoomId])
-                {
-                    // The test rooms are registered in Game1.RegisterTestRooms,
-                    // not in RoomManifest, so RoomMeta.Find can't see them and
-                    // a door targeting one would read as orphan-room. The link
-                    // is real — we just can't verify the far side from here.
-                    if (RoomManifest.TestRoomIds.Contains(door.TargetRoomId))
-                    {
-                        _state.DoorStatus[door.DoorId] = "ok-test";
-                        ok++;
-                        continue;
-                    }
-
-                    var target = RoomMeta.Find(door.TargetRoomId);
-                    if (target == null)
-                    {
-                        _state.DoorStatus[door.DoorId] = "orphan-room";
-                        orphanRoom++;
-                        continue;
-                    }
-
-                    DoorDef? back = null;
-                    foreach (var d in doorsByRoom[target.RoomId])
-                        if (d.DoorId == door.TargetDoorId) { back = d; break; }
-
-                    if (back == null)
-                    {
-                        _state.DoorStatus[door.DoorId] = "orphan-door";
-                        orphanDoor++;
-                        continue;
-                    }
-
-                    // The back-door should target this door. If not, the link
-                    // is one-way — works walking through this door, but a
-                    // player coming the other way ends up somewhere else.
-                    if (back.TargetRoomId != room.RoomId || back.TargetDoorId != door.DoorId)
-                    {
-                        _state.DoorStatus[door.DoorId] = "asymmetric";
-                        asymmetric++;
-                        continue;
-                    }
-
-                    _state.DoorStatus[door.DoorId] = "ok";
-                    ok++;
-                }
-            }
-
-            _state.HasValidatedDoors = true;
-            int bad = orphanRoom + orphanDoor + asymmetric;
+            int bad = report.Bad;
             if (bad == 0)
             {
-                _state.Status = $"Doors: all {ok} doors link cleanly across {RoomMeta.All.Count} rooms.";
+                _state.Status = $"Doors: all {report.Ok} doors link cleanly across {RoomMeta.All.Count} rooms.";
             }
             else
             {
                 _state.Status =
                     $"Doors: {bad} broken " +
-                    $"(orphan-room={orphanRoom}, orphan-door={orphanDoor}, asymmetric={asymmetric}). " +
+                    $"(orphan-room={report.OrphanRoom}, orphan-door={report.OrphanDoor}, asymmetric={report.Asymmetric}). " +
                     $"Red markers on canvas show local room's issues.";
             }
         }
+
+        /// <summary>
+        /// Validate every door in the world and publish the verdicts into
+        /// EditorState, without touching the status line. The map calls this on
+        /// entry; the Doors button calls it and then reports.
+        /// </summary>
+        // The door table overlays the current room's unsaved placements, so the
+        // map's arrows and the canvas's outlines both reflect doors that have
+        // been authored but not yet written — which is the whole reason the
+        // overlay exists.
+        private DoorReport RunDoorValidation()
+        {
+            var doorsByRoom = DoorValidator.BuildDoorTable(
+                RoomMeta.All, _state.CurrentRoom.RoomId, _state.Placements);
+            var report = DoorValidator.Validate(DoorValidator.RoomIdsOf(RoomMeta.All), doorsByRoom);
+
+            _state.DoorStatus.Clear();
+            foreach (var pair in report.Status) _state.DoorStatus[pair.Key] = pair.Value;
+            _state.HasValidatedDoors = true;
+
+            _lastDoorTable = doorsByRoom;
+            return report;
+        }
+
+        // Kept from the last validation so the map can build its arrows from
+        // exactly the table the verdicts were computed against, rather than
+        // rebuilding one that might disagree.
+        private Dictionary<string, List<DoorDef>> _lastDoorTable = new();
 
         /// <summary>True iff a 24x24 hitbox at (px, py) doesn't overlap any solid tile.</summary>
         private bool PlayerFitsAt(int px, int py)
@@ -2867,6 +3309,29 @@ namespace SorceryForge
         {
             GraphicsDevice.Clear(new Color(36, 38, 46));
 
+            if (_mapMode) DrawMapMode();
+            else DrawRoomMode();
+
+            // The pickers sit above whichever mode is underneath: they are
+            // reachable from the top bar in room view, and (once the map has
+            // its own entry points) from the board too. Only one is ever open.
+            _spriteBatch.Begin(samplerState: SamplerState.PointClamp);
+            DrawNewRoomPicker();
+            DrawImportPicker();
+            _spriteBatch.End();
+
+            // The crop step owns its own two passes — the source image wants
+            // LINEAR filtering (it is shown at an arbitrary fractional scale,
+            // where point sampling drops whole rows and makes a screenshot
+            // unrecognisable), its chrome wants the PointClamp everything else
+            // uses. No-op unless the crop step is open.
+            DrawCropOverlay();
+
+            base.Draw(gameTime);
+        }
+
+        private void DrawRoomMode()
+        {
             // Pass 1: UI chrome and the canvas frame.
             _spriteBatch.Begin(samplerState: SamplerState.PointClamp);
             DrawTopBar();
@@ -2907,20 +3372,7 @@ namespace SorceryForge
             DrawInspector();
             DrawStatusBar();
             DrawDragGhost();
-            // Last, so a modal covers every panel — it blocks input to all of
-            // them and must look like it does. Only one can be open at a time.
-            DrawNewRoomPicker();
-            DrawImportPicker();
             _spriteBatch.End();
-
-            // Pass 4: the crop step, which owns its own two passes — the source
-            // image wants LINEAR filtering (it is shown at an arbitrary
-            // fractional scale, where point sampling drops whole rows and makes
-            // a screenshot unrecognisable), its chrome wants the PointClamp
-            // everything else uses. No-op unless the crop step is open.
-            DrawCropOverlay();
-
-            base.Draw(gameTime);
         }
 
         // -- Top bar with room cycle, room name, save, snap toggle ----------
@@ -2931,6 +3383,23 @@ namespace SorceryForge
             DrawRectOutline(EditorLayout.TopBarRect, new Color(60, 64, 78));
 
             foreach (var b in _buttons) DrawButton(b);
+
+            // Map mode suspends every one of those buttons — they all act on
+            // the room being edited, and none of them means anything against a
+            // board. DrawButton greys them; here the centre says what mode this
+            // is and how to leave, in place of the room title.
+            if (_mapMode)
+            {
+                string mapTitle = $"WORLD MAP — {_mapRooms.Count} rooms   |   Tab or Esc: back to {_state.CurrentRoom.RoomId}";
+                var mapSize = MeasureText(mapTitle);
+                int mapGap = _rightBankLeft - _leftBankRight;
+                if (mapGap >= mapSize.X + 16)
+                    DrawText(mapTitle,
+                        new Vector2(_leftBankRight + (mapGap - mapSize.X) / 2f,
+                                    (EditorLayout.TopBarHeight - mapSize.Y) / 2f),
+                        new Color(255, 220, 110));
+                return;
+            }
 
             // Centre the room title in the empty stretch between the left and
             // right button banks (computed in RelayoutButtons), and draw the
@@ -3144,22 +3613,23 @@ namespace SorceryForge
             }
         }
 
-        private Color DoorStatusColor(Placement door)
+        /// <summary>The one colour language for door verdicts.</summary>
+        // Shared by the room canvas's door outlines and the world map's arrows,
+        // so the same link is the same colour wherever it is drawn.
+        private static Color StatusColor(string status) => status switch
         {
-            if (_state.HasValidatedDoors && _state.DoorStatus.TryGetValue(door.Id, out var status))
-            {
-                return status switch
-                {
-                    "ok"          => new Color( 80, 230, 110),
-                    // Dimmer green: the target is a programmatic test room, so
-                    // the link is accepted but its far side is unverified.
-                    "ok-test"     => new Color( 80, 180, 110),
-                    "asymmetric"  => new Color(255, 200,  60),
-                    _             => new Color(255,  60,  60),  // orphan-*
-                };
-            }
-            return new Color(180, 180, 200);
-        }
+            "ok"          => new Color( 80, 230, 110),
+            // Dimmer green: the target is a programmatic test room, so the
+            // link is accepted but its far side is unverified.
+            "ok-test"     => new Color( 80, 180, 110),
+            "asymmetric"  => new Color(255, 200,  60),
+            _             => new Color(255,  60,  60),  // orphan-*
+        };
+
+        private Color DoorStatusColor(Placement door) =>
+            _state.HasValidatedDoors && _state.DoorStatus.TryGetValue(door.Id, out var status)
+                ? StatusColor(status)
+                : new Color(180, 180, 200);
 
         /// <summary>
         /// Outlines every door placement in the current room with its
@@ -3670,11 +4140,21 @@ namespace SorceryForge
             FillRect(EditorLayout.StatusBarRect, new Color(20, 22, 28));
             DrawRectOutline(EditorLayout.StatusBarRect, new Color(60, 64, 78));
 
-            // Right-aligned view info: zoom level always, brush size in
-            // Erase mode, unsaved-pixels marker while the PNG is dirty.
-            string view = $"Zoom {EditorLayout.Zoom}x";
-            if (_state.Mode == EditorMode.Erase) view += $" | Brush {_state.BrushSize}px";
-            if (_state.BackgroundDirty) view += " | PNG*";
+            // Right-aligned view info and the mode keybind. The keybind is the
+            // whole discoverability story for map mode: the top bar is full, so
+            // Tab is advertised here instead of on a button.
+            string view;
+            if (_mapMode)
+            {
+                view = $"Map {_mapView.ZoomPercent}% | Tab/Esc: room";
+            }
+            else
+            {
+                view = $"Zoom {EditorLayout.Zoom}x";
+                if (_state.Mode == EditorMode.Erase) view += $" | Brush {_state.BrushSize}px";
+                if (_state.BackgroundDirty) view += " | PNG*";
+                view += " | Tab: map";
+            }
             var viewSize = MeasureText(view);
             float viewX = EditorLayout.WindowWidth - viewSize.X - 8;
             DrawText(view, new Vector2(viewX, EditorLayout.StatusBarY + 10), new Color(150, 170, 200));
@@ -3745,6 +4225,21 @@ namespace SorceryForge
 
         private void DrawButton(UiButton b)
         {
+            // In map mode every top-bar button is inert (HandleButtons never
+            // runs), so it is drawn inert: no hover response, dimmed label. A
+            // button that looks live and does nothing is worse than no button.
+            if (_mapMode)
+            {
+                FillRect(b.Bounds, new Color(38, 41, 50));
+                DrawRectOutline(b.Bounds, new Color(70, 76, 92));
+                var dimSize = MeasureText(b.Label);
+                DrawText(b.Label,
+                    new Vector2(b.Bounds.X + (b.Bounds.Width - dimSize.X) / 2,
+                                b.Bounds.Y + (b.Bounds.Height - dimSize.Y) / 2),
+                    new Color(120, 125, 140));
+                return;
+            }
+
             bool hover = b.Bounds.Contains(_mouseNow.X, _mouseNow.Y);
             FillRect(b.Bounds, hover ? new Color(70, 78, 100) : new Color(50, 55, 70));
             DrawRectOutline(b.Bounds, new Color(110, 120, 150));

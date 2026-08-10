@@ -1,0 +1,69 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- ========================================
+       MAPCHECK — WORLD-MAP REGRESSION HARNESS
+       Third of the headless harnesses, same shape as tools/RoundTrip and
+       tools/ImportCheck: compile the editor's OWN sources and drive them,
+       rather than testing a reimplementation.
+
+       SorceryForge/WorldMap.cs, DoorValidator.cs and MapView.cs are free of
+       Texture2D and GraphicsDevice by design — the board's layout, its arrows
+       and its view transform are all arithmetic, and EditorGame only turns the
+       results into pixels. That is what lets the layout be proved
+       deterministic and the arrows proved to land on the right rooms with no
+       desktop session.
+
+       MonoGame is referenced only for value types (Vector2, Rectangle, Point).
+       No GraphicsDevice is ever created.
+       ======================================== -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RollForward>Major</RollForward>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <RootNamespace>SorceryRemake.Tools.MapCheck</RootNamespace>
+    <AssemblyName>MapCheck</AssemblyName>
+    <!-- The default glob would sweep up bin/obj leftovers from a previous
+         run; we list every source explicitly below instead. -->
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="MonoGame.Framework.DesktopGL" Version="3.8.1.303" />
+  </ItemGroup>
+
+  <!-- ========================================
+       SHARED GAME SOURCE
+       Mirrors SorceryForge.csproj's globs, as the other two harnesses do.
+       RoomMeta needs Rooms/ (the registry and the layout loader).
+       ======================================== -->
+
+  <ItemGroup>
+    <Compile Include="..\..\Core\**\*.cs" Exclude="..\..\Core\PlayerController.cs" />
+    <Compile Include="..\..\Graphics\**\*.cs" />
+    <Compile Include="..\..\Tiles\**\*.cs" />
+    <Compile Include="..\..\Rooms\**\*.cs" />
+    <Compile Include="..\..\Doors\**\*.cs" />
+    <Compile Include="..\..\Physics\**\*.cs" />
+  </ItemGroup>
+
+  <!-- ========================================
+       EDITOR MAP PATH (no UI)
+       The files under test, plus the model types they name. Everything
+       MonoGame-windowed (EditorGame, EditorLayout) is left out.
+       ======================================== -->
+
+  <ItemGroup>
+    <Compile Include="..\..\SorceryForge\EditorPaths.cs" />
+    <Compile Include="..\..\SorceryForge\DoorValidator.cs" />
+    <Compile Include="..\..\SorceryForge\MapView.cs" />
+    <Compile Include="..\..\SorceryForge\PaletteEntry.cs" />
+    <Compile Include="..\..\SorceryForge\Placement.cs" />
+    <Compile Include="..\..\SorceryForge\RoomMeta.cs" />
+    <Compile Include="..\..\SorceryForge\WorldMap.cs" />
+    <Compile Include="Program.cs" />
+  </ItemGroup>
+
+</Project>
