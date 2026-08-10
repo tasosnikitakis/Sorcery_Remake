@@ -882,6 +882,14 @@ namespace SorceryForge
             for (int i = 0; i < RoomMeta.All.Count; i++)
                 if (RoomMeta.All[i].RoomId == candidate.RoomId) { index = i; break; }
 
+            // Creating a room from the world map lands you IN it, in the room
+            // editor — the point of making a room is to author it, and the
+            // alternative (a new empty box appearing on a board) would leave
+            // the user to hunt for it. It joins the board on the next Tab,
+            // auto-placed like any unwired room. The arrangement is untouched:
+            // it lives in _mapStored, which nothing here goes near.
+            _mapMode = false;
+
             LoadRoom(index);
             _state.Status = result.Message;   // after LoadRoom, which sets its own
             return result;
@@ -1925,6 +1933,17 @@ namespace SorceryForge
             // save, one key that means "persist what is in front of you".
             bool ctrl = _keysNow.IsKeyDown(Keys.LeftControl) || _keysNow.IsKeyDown(Keys.RightControl);
             if (ctrl && Pressed(Keys.S)) { SaveWorldMap(); return; }
+
+            // N and I open the New Room and Import pickers — the SAME overlays
+            // the top bar opens, invoked from here because the map is where
+            // "the world is missing a room" is a thing you notice. Keys rather
+            // than buttons for the same reason Tab is: the bar is full.
+            //
+            // Their discard guards are untouched and still concern the CURRENT
+            // ROOM's unsaved edits, which exist just as much while the map is
+            // up — creating a room loads it, and loading replaces them.
+            if (!ctrl && Pressed(Keys.N)) { OpenNewRoomPicker(); return; }
+            if (!ctrl && Pressed(Keys.I)) { OpenImportPicker(); return; }
 
             var mouse = new Point(_mouseNow.X, _mouseNow.Y);
             bool overBoard = MapBoardRect.Contains(mouse);
@@ -4300,7 +4319,9 @@ namespace SorceryForge
             {
                 view = $"Map {_mapView.ZoomPercent}%";
                 if (_state.MapDirty) view += " | map*";
-                view += " | Tab/Esc: room";
+                // Persistent hints belong here rather than in the transient
+                // left-hand status text, which any drag or zoom overwrites.
+                view += " | N: new | I: import | Tab/Esc: room";
             }
             else
             {

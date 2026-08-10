@@ -302,6 +302,16 @@ modes, which is the whole discoverability story until then.
 | **click a room** | open it in the room editor |
 | **drag a room** | move it; its position persists (see below) |
 | **Ctrl+S** | save the arrangement to `assets/data/worldmap.json` |
+| **N** | open the [New Room](#the-short-way-sorceryforges-new-room-button) picker |
+| **I** | open the [Import](#importing-a-screenshot-room) picker |
+
+**N** and **I** open the same overlays the top-bar buttons do, with the same
+discard guards — those concern the *current room's* unsaved edits, which exist
+just as much while the map is up, because creating a room loads it. Creating a
+room lands you **in it, in the room editor**: the point of making a room is to
+author it. It joins the board on the next Tab, auto-placed like any unwired
+room, and adding it moves nothing that was already there. Cancelling either
+picker returns you to the map exactly as you left it.
 
 Map mode suspends room editing completely: no palette, no canvas, no paint or
 punch, and every top-bar button is drawn inert because none of them means

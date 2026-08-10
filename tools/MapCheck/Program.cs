@@ -425,6 +425,30 @@ namespace SorceryRemake.Tools.MapCheck
                 }
             Assert("no two auto-placed boxes overlap", !overlap);
 
+            // ---- a room added to the registry ----
+            // The map's N / I entry points create rooms, and a fresh room has
+            // no doors, so it is unreachable and joins the trailing column.
+            // What matters is that its arrival does not MOVE anything: an
+            // arrangement the user has learned must survive adding to it.
+            var grown = BuildRealBoard(rooms, doorsByRoom);
+            var grownDoors = new Dictionary<string, List<DoorDef>>(doorsByRoom, StringComparer.Ordinal);
+            grown.Add(Node("brand_new_room"));
+            grownDoors["brand_new_room"] = new List<DoorDef>();
+            WorldMap.PlaceRooms(grown, null, grownDoors);
+
+            bool nothingMoved = true;
+            for (int i = 0; i < board.Count; i++)
+                if (grown[i].RoomId != board[i].RoomId || grown[i].Position != board[i].Position)
+                    nothingMoved = false;
+            Assert("adding a room moves none of the existing ones", nothingMoved);
+
+            var newcomer = grown[^1];
+            bool newcomerClear = true;
+            for (int i = 0; i < board.Count; i++)
+                if (grown[i].Box.Intersects(newcomer.Box)) newcomerClear = false;
+            Assert("  and the newcomer gets a clear spot of its own", newcomerClear,
+                newcomer.Position.ToString());
+
             // ---- stored positions win, and only where given ----
             var mixed = BuildRealBoard(rooms, doorsByRoom);
             var stored = new Dictionary<string, Vector2> { [mixed[0].RoomId] = new Vector2(-1000, -500) };
