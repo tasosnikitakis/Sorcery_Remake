@@ -38,6 +38,8 @@
 //   7 creation    Create against a scratch tree: collision grid, an
 //                 append-only .mgcb edit, one new rooms.json row
 //   8 headers     PNG and JPEG dimension reading, including a real repo PNG
+//   9 crop        the aspect-locked selection algebra and the fit transform,
+//                 then the pixels an awkward-scale crop actually cuts
 //
 // HOW TO RUN
 //
@@ -163,6 +165,7 @@ namespace SorceryRemake.Tools.ImportCheck
             CheckCandidates(scratchImport, scratchContent);
             CheckCreation(scratchContent, scratchData);
             CheckImageHeaders(scratch, repoRoot);
+            CheckCrop();
 
             Console.WriteLine();
             Console.WriteLine($"  {_checks} checks, {_failures} failure(s)");
@@ -487,6 +490,7 @@ namespace SorceryRemake.Tools.ImportCheck
             WritePngStub(Path.Combine(importDir, "Chateau0.png"), 320, 144);
             WritePngStub(Path.Combine(importDir, "Room1.png"), 320, 144);
             WritePngStub(Path.Combine(importDir, "Odd.png"), 700, 500);
+            WritePngStub(Path.Combine(importDir, "Tiny.png"), 100, 50);
             WritePngStub(Path.Combine(importDir, "Ghost.png"), 320, 144);
             File.WriteAllText(Path.Combine(importDir, "NotAnImage.png"), "this is not an image");
             File.WriteAllText(Path.Combine(importDir, "notes.txt"), "ignored: wrong extension");
@@ -497,7 +501,7 @@ namespace SorceryRemake.Tools.ImportCheck
 
             var found = ImageImport.FindCandidates(importDir, contentDir, RoomManifest.All);
 
-            Assert("only image extensions are listed (notes.txt ignored)", found.Count == 8, $"{found.Count} listed");
+            Assert("only image extensions are listed (notes.txt ignored)", found.Count == 9, $"{found.Count} listed");
 
             var chateau3 = Find(found, "Chateau3.jpg");
             Assert("Chateau3.jpg is importable", chateau3 != null && chateau3.CanCreate,
@@ -510,10 +514,18 @@ namespace SorceryRemake.Tools.ImportCheck
                 Assert("  -> 640x288 read as a 2x source", chateau3.Multiple == 2, chateau3.SizeLabel);
             }
 
+            // An awkward size is not a refusal — it routes to the crop step.
+            var odd = Find(found, "Odd.png");
+            Assert("Odd.png (700x500) is importable via the crop step",
+                odd != null && odd.CanCreate && odd.NeedsCrop, odd?.Problem ?? "not listed");
+            var exact = Find(found, "Chateau3.jpg");
+            Assert("an exact multiple does NOT route to the crop step",
+                exact != null && !exact.NeedsCrop);
+
             AssertProblemMentions(found, "Bad Name.png", "rename the file");
             AssertProblemMentions(found, "Chateau0.png", "already exists");
             AssertProblemMentions(found, "Room1.png", "reserved");
-            AssertProblemMentions(found, "Odd.png", "not 320x144 or an exact multiple");
+            AssertProblemMentions(found, "Tiny.png", "smaller than a 320x144 room");
             AssertProblemMentions(found, "Ghost.png", "already exists in Content/");
             AssertProblemMentions(found, "NotAnImage.png", "could not read the image size");
             AssertProblemMentions(found, "Chateau3.png", "already derives");
@@ -660,6 +672,214 @@ namespace SorceryRemake.Tools.ImportCheck
                 // does; compare without it.
                 string bare = trimmed.TrimEnd(',');
                 if (!after.Contains(bare, StringComparison.Ordinal)) return false;
+            }
+            return true;
+        }
+
+        // ====================================================================
+        // 9. CROP
+        // ====================================================================
+        // Two halves. The rectangle algebra — aspect lock, minimum, clamping,
+        // the wheel step, the fit transform — is checked case by case. Then the
+        // thing that actually matters: that the pixels which come out of a crop
+        // are pixels that went in, at the positions the box said.
+        //
+        // The source for that is built so every pixel carries its own
+        // coordinates as a colour. Decoding an output pixel therefore says
+        // where it came from, independently of the sampling code — a blended
+        // pixel decodes to coordinates that are wrong or nonexistent, and there
+        // is nowhere for a filter to hide.
+        // ====================================================================
+
+        private static Color Coded(int x, int y) =>
+            new((byte)(x & 0xFF), (byte)(y & 0xFF), (byte)(((x >> 8) << 4) | (y >> 8)));
+
+        private static bool DecodeCoded(Color c, out int x, out int y)
+        {
+            x = c.R | ((c.B >> 4) << 8);
+            y = c.G | ((c.B & 0x0F) << 8);
+            return true;
+        }
+
+        private static Color[] BuildCodedSource(int srcW, int srcH)
+        {
+            var src = new Color[srcW * srcH];
+            for (int y = 0; y < srcH; y++)
+            for (int x = 0; x < srcW; x++)
+                src[y * srcW + x] = Coded(x, y);
+            return src;
+        }
+
+        private static void CheckCrop()
+        {
+            Section("9. CROP — aspect-locked selection, and the pixels it cuts");
+
+            // ---- rectangle algebra ----
+            Assert("320 wide -> 144 tall (the room's own aspect)", ImageImport.CropHeightFor(320) == 144);
+            Assert("640 wide -> 288 tall", ImageImport.CropHeightFor(640) == 288);
+            Assert("700 wide -> 315 tall", ImageImport.CropHeightFor(700) == 315,
+                ImageImport.CropHeightFor(700).ToString());
+
+            Assert("a source at least one room in both axes can be cropped", ImageImport.CanCrop(320, 144));
+            Assert("a too-narrow source cannot", !ImageImport.CanCrop(319, 500));
+            Assert("a too-short source cannot", !ImageImport.CanCrop(700, 143));
+
+            Assert("700x500: the widest selection is the full width",
+                ImageImport.MaxCropWidth(700, 500) == 700, ImageImport.MaxCropWidth(700, 500).ToString());
+            Assert("1920x1080: the widest selection is the full width",
+                ImageImport.MaxCropWidth(1920, 1080) == 1920, ImageImport.MaxCropWidth(1920, 1080).ToString());
+            Assert("400x200: height is the limit, not width",
+                ImageImport.MaxCropWidth(400, 200) == 400, ImageImport.MaxCropWidth(400, 200).ToString());
+            Assert("2000x200: height is the limit",
+                ImageImport.CropHeightFor(ImageImport.MaxCropWidth(2000, 200)) <= 200);
+
+            var def = ImageImport.DefaultCropRect(700, 500);
+            Assert("the default selection is as large as fits, centred",
+                def == new Rectangle(0, 92, 700, 315), def.ToString());
+
+            var clamped = ImageImport.ClampCropRect(new Rectangle(-50, -50, 10, 10), 700, 500);
+            Assert("an undersized, out-of-bounds selection clamps to the minimum at the origin",
+                clamped == new Rectangle(0, 0, 320, 144), clamped.ToString());
+
+            var oversized = ImageImport.ClampCropRect(new Rectangle(600, 400, 5000, 5000), 700, 500);
+            Assert("an oversized selection clamps to the source and stays inside it",
+                oversized.Width <= 700 && oversized.Height <= 500
+                && oversized.Right <= 700 && oversized.Bottom <= 500, oversized.ToString());
+
+            bool aspectHeld = true;
+            var walk = ImageImport.DefaultCropRect(1920, 1080);
+            for (int i = 0; i < 60; i++)
+            {
+                walk = ImageImport.StepCropWidth(walk, +1, 1920, 1080);
+                if (walk.Height != ImageImport.CropHeightFor(walk.Width)) aspectHeld = false;
+                if (walk.Width < ImageImport.RoomWidth) aspectHeld = false;
+                if (walk.Right > 1920 || walk.Bottom > 1080 || walk.X < 0 || walk.Y < 0) aspectHeld = false;
+            }
+            Assert("60 wheel notches in: aspect, minimum and bounds all still hold",
+                aspectHeld && walk.Width == ImageImport.RoomWidth, walk.ToString());
+
+            for (int i = 0; i < 60; i++) walk = ImageImport.StepCropWidth(walk, -1, 1920, 1080);
+            Assert("and 60 back out reaches the maximum again",
+                walk.Width == ImageImport.MaxCropWidth(1920, 1080), walk.ToString());
+
+            // The wheel resizes about the selection's centre, so a notch in and
+            // a notch out returns to (near enough) where it started rather than
+            // walking the box across the image.
+            var mid = ImageImport.ClampCropRect(new Rectangle(100, 40, 500, 225), 700, 500);
+            var there = ImageImport.StepCropWidth(mid, +1, 700, 500);
+            var back = ImageImport.StepCropWidth(there, -1, 700, 500);
+            Assert("in-then-out keeps the selection centred where it was",
+                Math.Abs((back.X + back.Width / 2) - (mid.X + mid.Width / 2)) <= 1
+                && Math.Abs((back.Y + back.Height / 2) - (mid.Y + mid.Height / 2)) <= 1,
+                $"{mid} -> {there} -> {back}");
+
+            // ---- the fit transform ----
+            var area = new Rectangle(100, 50, 960, 432);
+            var fit = ImageImport.FitInside(700, 500, area);
+            Assert("the fitted image stays inside the area",
+                area.Contains(fit), fit.ToString());
+            Assert("the fitted image keeps the source's aspect",
+                Math.Abs(fit.Width / (float)fit.Height - 700f / 500f) < 0.01f, fit.ToString());
+            Assert("the fitted image is centred in the area",
+                Math.Abs((fit.X + fit.Width / 2) - (area.X + area.Width / 2)) <= 1
+                && Math.Abs((fit.Y + fit.Height / 2) - (area.Y + area.Height / 2)) <= 1, fit.ToString());
+
+            var corner = ImageImport.ScreenToSource(new Point(fit.X, fit.Y), fit, 700, 500);
+            Assert("the fitted top-left maps back to source (0, 0)", corner == Point.Zero, corner.ToString());
+            var far = ImageImport.ScreenToSource(new Point(fit.Right + 500, fit.Bottom + 500), fit, 700, 500);
+            Assert("a point past the image clamps to the last source pixel",
+                far == new Point(699, 499), far.ToString());
+
+            var whole = ImageImport.SourceRectToScreen(new Rectangle(0, 0, 700, 500), fit, 700, 500);
+            Assert("the whole source maps back onto the whole fitted rectangle",
+                whole == fit, $"{whole} vs {fit}");
+
+            // ---- the pixels ----
+            CheckCropPixels();
+        }
+
+        private static void CheckCropPixels()
+        {
+            const int srcW = 700, srcH = 500;
+            var src = BuildCodedSource(srcW, srcH);
+
+            // An exact 2x region inside an awkward source: the answer is
+            // knowable in closed form, so assert it exactly.
+            var exact = new Rectangle(40, 30, 640, 288);
+            var dst = ImageImport.PointSample(src, srcW, srcH, exact,
+                                              ImageImport.RoomWidth, ImageImport.RoomHeight);
+            bool exactOk = true;
+            for (int dy = 0; dy < ImageImport.RoomHeight && exactOk; dy++)
+            for (int dx = 0; dx < ImageImport.RoomWidth && exactOk; dx++)
+                if (dst[dy * ImageImport.RoomWidth + dx] != Coded(40 + dx * 2, 30 + dy * 2)) exactOk = false;
+            Assert("a 640x288 region of a 700x500 source cuts exactly those pixels", exactOk);
+
+            // An awkward region — 700x315 down to 320x144, a scale of 2.1875.
+            // Nothing here assumes the sampling formula: every output pixel is
+            // decoded back to the source coordinates it came from, and those
+            // are what get checked.
+            var awkward = ImageImport.DefaultCropRect(srcW, srcH);
+            var odd = ImageImport.PointSample(src, srcW, srcH, awkward,
+                                              ImageImport.RoomWidth, ImageImport.RoomHeight);
+
+            bool insideRegion = true, monotone = true;
+            var seenX = new HashSet<int>();
+            var seenY = new HashSet<int>();
+            int prevRowY = -1;
+            for (int dy = 0; dy < ImageImport.RoomHeight; dy++)
+            {
+                int prevX = -1;
+                for (int dx = 0; dx < ImageImport.RoomWidth; dx++)
+                {
+                    DecodeCoded(odd[dy * ImageImport.RoomWidth + dx], out int sx, out int sy);
+                    if (sx < awkward.Left || sx >= awkward.Right
+                        || sy < awkward.Top || sy >= awkward.Bottom) insideRegion = false;
+                    if (sx < prevX) monotone = false;
+                    prevX = sx;
+                    if (dy == 0) seenX.Add(sx);
+                    if (dx == 0)
+                    {
+                        if (sy < prevRowY) monotone = false;
+                        prevRowY = sy;
+                        seenY.Add(sy);
+                    }
+                }
+            }
+            Assert("an awkward 2.19x crop takes every pixel from inside the selection", insideRegion);
+            Assert("  and sweeps it left-to-right, top-to-bottom without doubling back", monotone);
+            Assert("  and reaches 320 distinct columns and 144 distinct rows",
+                seenX.Count == ImageImport.RoomWidth && seenY.Count == ImageImport.RoomHeight,
+                $"{seenX.Count} columns, {seenY.Count} rows");
+            Assert("  its first pixel is the selection's own top-left corner",
+                odd[0] == Coded(awkward.X, awkward.Y));
+            Assert("  every output value is a real source colour (nothing was blended)",
+                AllAreSourcePixels(odd, srcW, srcH));
+
+            // A crop that is exactly one room is the identity.
+            var oneRoom = ImageImport.ClampCropRect(new Rectangle(11, 7, 320, 144), srcW, srcH);
+            var identity = ImageImport.PointSample(src, srcW, srcH, oneRoom,
+                                                   ImageImport.RoomWidth, ImageImport.RoomHeight);
+            bool identityOk = true;
+            for (int dy = 0; dy < ImageImport.RoomHeight && identityOk; dy++)
+            for (int dx = 0; dx < ImageImport.RoomWidth && identityOk; dx++)
+                if (identity[dy * ImageImport.RoomWidth + dx] != Coded(11 + dx, 7 + dy)) identityOk = false;
+            Assert("a 320x144 selection is copied out pixel for pixel", identityOk);
+
+            // And the quantize toggle composes with the crop the same way it
+            // composes with a whole-image import.
+            var quantized = ImageImport.BuildRoomBackground(src, srcW, srcH, awkward, quantize: true);
+            var expected = (Color[])odd.Clone();
+            ImageImport.QuantizeToCpc(expected);
+            Assert("quantize applies to a cropped import identically", SequenceEqual(quantized, expected));
+        }
+
+        private static bool AllAreSourcePixels(Color[] pixels, int srcW, int srcH)
+        {
+            foreach (var c in pixels)
+            {
+                DecodeCoded(c, out int x, out int y);
+                if (x < 0 || y < 0 || x >= srcW || y >= srcH) return false;
+                if (Coded(x, y) != c) return false;   // the colour must round-trip
             }
             return true;
         }

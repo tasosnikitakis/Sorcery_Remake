@@ -35,8 +35,16 @@ is why the character set is narrow and why nothing renames a room afterwards.
 - **An exact multiple** — 640×288, 960×432, … Downscaled by taking every Nth
   pixel, which for a scaled-up capture of a 320×144 screen gives the original
   screen back exactly.
-- **Anything else** — selecting it opens a crop step: drag a 20:9 selection
-  over the image, wheel to resize, Enter to confirm.
+- **Anything else** — selecting it opens a crop step (the picker marks those
+  rows `[crop]`): drag the 20:9 selection over the image, wheel to resize,
+  `Enter` to confirm, `Esc` to back out. It opens at the largest size that
+  fits, centred. Nothing is written until you confirm.
+- **Smaller than 320×144** — refused. Cropping could only upscale, and the
+  answer to a too-small capture is a better capture.
+
+Capture at an exact multiple when you can: an awkward scale factor drops whole
+columns and wobbles the spacing by a pixel. Unavoidable, still better than a
+filter, and the quantize cleans up what it leaves.
 
 ## The CPC quantize toggle
 

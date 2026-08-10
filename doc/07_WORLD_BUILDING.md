@@ -121,6 +121,25 @@ through the crop step, whose output is point-sampled to 320×144 the same way.
 Nothing is ever filtered or blended — a filter would invent colours that aren't
 in the palette and blur exactly the hard edges the punch-out tool needs.
 
+**The crop step**, for the sizes real emulator captures actually come in.
+Picking such a file shows the whole source fitted to the canvas area with a
+20:9 selection box over it (marked `[crop]` in the picker, so it is never a
+surprise):
+
+| | |
+|---|---|
+| drag inside the image | move the selection |
+| wheel | resize it — aspect stays locked at 20:9, floor 320×144 source pixels, always inside the image |
+| `Enter` / **Confirm** | cut the selection to 320×144 and carry on into the import |
+| `Esc` / right-click / **Cancel** | back out; nothing has been written at this point, so there is no trace to clean up |
+
+The selection opens at the largest size that fits, centred, which is one nudge
+away from right for the usual case of one room plus a border. Scaling a crop
+that isn't a near-integer factor loses whole columns and wobbles the spacing by
+a pixel — that is unavoidable and still better than a filter, and the CPC
+quantize cleans up what it leaves. Capture at an exact multiple of 320×144 when
+you can.
+
 **CPC quantize** (default on) snaps every pixel to the nearest of the 27
 Amstrad CPC hardware colours — three levels per RGB channel, taken from
 `extraction/convert_cpc_graphics.py`, the project's own Mode 0 decoder. JPEG's

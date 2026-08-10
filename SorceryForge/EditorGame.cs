@@ -1163,8 +1163,8 @@ namespace SorceryForge
         }
 
         /// <summary>
-        /// Import a source whose size is already 320x144 or an exact multiple:
-        /// decode, point-sample down, optionally quantize, then create the room.
+        /// Act on a picked source. A size that is already 320x144 or an exact
+        /// multiple goes straight through; anything else opens the crop step.
         /// </summary>
         private void RunImport(ImportCandidate candidate)
         {
@@ -1173,19 +1173,26 @@ namespace SorceryForge
 
             if (!TryDecodeImportSource(candidate, out var src, out int w, out int h)) return;
 
-            // The picker classified this file from its HEADER. Re-check against
-            // what the decoder actually produced: a header we misread would
-            // otherwise reach PointSample as a bad region and throw.
-            if (ImageImport.ExactMultiple(w, h) <= 0)
+            // The picker classified this file from its HEADER. Everything below
+            // branches on what the DECODER actually produced, so a header we
+            // misread costs a different (correct) branch rather than reaching
+            // PointSample as an out-of-range region.
+            if (ImageImport.ExactMultiple(w, h) > 0)
             {
-                _state.Status = $"Import: {candidate.FileName} decoded as " +
-                                ImageImport.ExpectedSizeMessage(w, h) + ".";
+                var pixels = ImageImport.BuildRoomBackground(
+                    src, w, h, ImageImport.WholeImage(w, h), _importQuantize);
+                FinishImport(candidate, pixels);
                 return;
             }
 
-            var pixels = ImageImport.BuildRoomBackground(
-                src, w, h, ImageImport.WholeImage(w, h), _importQuantize);
-            FinishImport(candidate, pixels);
+            if (!ImageImport.CanCrop(w, h))
+            {
+                _state.Status = $"Import: {candidate.FileName} decoded as {w}x{h}, smaller than a " +
+                                $"{ImageImport.RoomWidth}x{ImageImport.RoomHeight} room — nothing to crop.";
+                return;
+            }
+
+            OpenCrop(candidate, src, w, h);
         }
 
         /// <summary>
@@ -1326,8 +1333,11 @@ namespace SorceryForge
                     new Vector2(row.X + 8, row.Y + 5),
                     captured.CanCreate ? Color.White : new Color(190, 150, 150));
 
+                // "[crop]" marks the sources that open the crop step instead of
+                // importing on the click, so that is never a surprise.
                 string sub = captured.CanCreate
-                    ? $"-> {captured.BackgroundAsset}.png   ->   {captured.RoomId}   \"{captured.DisplayName}\""
+                    ? (captured.NeedsCrop ? "[crop] " : "") +
+                      $"-> {captured.BackgroundAsset}.png   ->   {captured.RoomId}   \"{captured.DisplayName}\""
                     : $"unavailable: {captured.Problem}";
                 DrawText(TruncateText(sub, row.Width - 20),
                     new Vector2(row.X + 8, row.Y + 25),
@@ -1350,6 +1360,309 @@ namespace SorceryForge
             DrawText("Esc / right-click cancels   |   sources are never modified or deleted",
                 new Vector2(panel.X + 14, panel.Bottom - ImportFooterHeight + 12),
                 new Color(150, 160, 185));
+        }
+
+        // ====================================================================
+        // IMPORT — CROP OVERLAY
+        // ====================================================================
+        // A real emulator capture has a border round it and whatever scale the
+        // screenshot key produced, so "320x144 or an exact multiple" covers
+        // very few of them. Picking one of the others opens this: the whole
+        // source fitted to the canvas area with a fixed 20:9 box over it, drag
+        // to move, wheel to resize, Enter to cut.
+        //
+        // An overlay state, not a mode. It is modal in exactly the way the two
+        // pickers are — it consumes every input while open, and everything it
+        // owns is torn down when it closes. Nothing has been written to disk at
+        // this point, so cancelling really does leave no trace; that is also
+        // why the discard guard is not involved here but at the click that
+        // opened the Import picker, several steps earlier.
+        //
+        // All the arithmetic — the fit transform, both mappings, the aspect
+        // lock, the clamping, the final sample — is in ImageImport, where
+        // tools/ImportCheck can drive it. What lives here is the gesture.
+        // ====================================================================
+
+        private bool _cropOpen;
+        private ImportCandidate? _cropCandidate;
+        private Texture2D? _cropTexture;                       // ours to dispose
+        private Color[] _cropPixels = Array.Empty<Color>();
+        private int _cropSrcW, _cropSrcH;
+        private Rectangle _cropRect;                           // in SOURCE pixels
+        private bool _cropDragging;
+        private Point _cropDragStartMouse;
+        private Point _cropDragStartOrigin;                    // rect top-left at drag start
+        private readonly List<(Rectangle bounds, Action action)> _cropButtons = new();
+
+        private void OpenCrop(ImportCandidate candidate, Color[] pixels, int srcW, int srcH)
+        {
+            _cropCandidate = candidate;
+            _cropPixels = pixels;
+            _cropSrcW = srcW;
+            _cropSrcH = srcH;
+            _cropRect = ImageImport.DefaultCropRect(srcW, srcH);
+            _cropDragging = false;
+            _cropButtons.Clear();
+
+            // Built back up from the decoded pixels rather than kept from the
+            // decode, so what is on screen is provably the same array the crop
+            // will sample — not a second decode that could differ.
+            try
+            {
+                _cropTexture?.Dispose();
+                _cropTexture = new Texture2D(GraphicsDevice, srcW, srcH);
+                _cropTexture.SetData(pixels);
+            }
+            catch (Exception ex)
+            {
+                CloseCrop($"Import: cannot preview {candidate.FileName} at {srcW}x{srcH} — {ex.Message}");
+                return;
+            }
+
+            _cropOpen = true;
+            _state.Status = $"Crop {candidate.FileName} ({srcW}x{srcH}): drag to move, wheel to resize, " +
+                            "Enter confirms, Esc cancels.";
+        }
+
+        private void CloseCrop(string? status)
+        {
+            _cropOpen = false;
+            _cropButtons.Clear();
+            _cropTexture?.Dispose();
+            _cropTexture = null;
+            _cropPixels = Array.Empty<Color>();
+            _cropCandidate = null;
+            _cropDragging = false;
+            if (status != null) _state.Status = status;
+        }
+
+        /// <summary>
+        /// Cut the selection to 320x144, quantize if the picker's toggle says
+        /// so, and hand it to the same FinishImport the direct path uses.
+        /// </summary>
+        private void ConfirmCrop()
+        {
+            if (_cropCandidate == null) { CloseCrop("Import cancelled."); return; }
+
+            // Everything CloseCrop is about to throw away, captured first.
+            var candidate = _cropCandidate;
+            var pixels = ImageImport.BuildRoomBackground(
+                _cropPixels, _cropSrcW, _cropSrcH, _cropRect, _importQuantize);
+            var rect = _cropRect;
+
+            CloseCrop(null);
+            FinishImport(candidate, pixels);
+
+            // FinishImport owns the status line; append what was cut, since the
+            // crop is the part of this import the user made a decision about.
+            _state.Status += $" Cropped {rect.Width}x{rect.Height} at ({rect.X}, {rect.Y}).";
+        }
+
+        /// <summary>Modal input for the crop step.</summary>
+        private void HandleCropOverlay()
+        {
+            // A modal with nothing to show would swallow every input forever.
+            // Nothing can currently reach this state — OpenCrop only sets
+            // _cropOpen after the preview texture exists — but the cost of
+            // being sure is one line, and the cost of being wrong is a wedged
+            // editor with unsaved work in it.
+            if (_cropTexture == null || _cropCandidate == null)
+            {
+                CloseCrop("Import cancelled — the crop preview was lost.");
+                return;
+            }
+
+            if (Pressed(Keys.Escape) || RightClicked())
+            {
+                CloseCrop("Import cancelled — nothing was written.");
+                return;
+            }
+
+            if (Pressed(Keys.Enter))
+            {
+                ConfirmCrop();
+                return;
+            }
+
+            int wheel = _mouseNow.ScrollWheelValue - _mousePrev.ScrollWheelValue;
+            if (wheel != 0)
+            {
+                _cropRect = ImageImport.StepCropWidth(_cropRect, Math.Sign(wheel), _cropSrcW, _cropSrcH);
+                _state.Status = CropSelectionSummary();
+            }
+
+            var mouse = new Point(_mouseNow.X, _mouseNow.Y);
+            var fit = CropFitRect;
+
+            // Buttons first: the footer sits outside the image, but checking it
+            // first means a Confirm click can never also start a drag.
+            if (LeftClicked())
+            {
+                for (int i = _cropButtons.Count - 1; i >= 0; i--)
+                {
+                    if (_cropButtons[i].bounds.Contains(mouse))
+                    {
+                        _cropButtons[i].action();
+                        return;
+                    }
+                }
+
+                if (fit.Contains(mouse))
+                {
+                    _cropDragging = true;
+                    _cropDragStartMouse = mouse;
+                    _cropDragStartOrigin = new Point(_cropRect.X, _cropRect.Y);
+                }
+            }
+
+            if (!LeftHeld()) _cropDragging = false;
+
+            if (_cropDragging)
+            {
+                // Measured from the gesture's START, not frame to frame: a
+                // per-frame delta rounds to source pixels every frame and the
+                // rounding error accumulates, so a slow drag out and back does
+                // not return the box to where it began.
+                var delta = ImageImport.ScreenDeltaToSource(
+                    new Point(mouse.X - _cropDragStartMouse.X, mouse.Y - _cropDragStartMouse.Y),
+                    fit, _cropSrcW, _cropSrcH);
+                _cropRect = ImageImport.ClampCropRect(
+                    new Rectangle(_cropDragStartOrigin.X + delta.X, _cropDragStartOrigin.Y + delta.Y,
+                                  _cropRect.Width, _cropRect.Height),
+                    _cropSrcW, _cropSrcH);
+                _state.Status = CropSelectionSummary();
+            }
+        }
+
+        private string CropSelectionSummary()
+        {
+            float scale = _cropRect.Width / (float)ImageImport.RoomWidth;
+            return $"Crop {_cropRect.Width}x{_cropRect.Height} at ({_cropRect.X}, {_cropRect.Y}) " +
+                   $"-> {ImageImport.RoomWidth}x{ImageImport.RoomHeight} ({scale:0.00}x down). " +
+                   "Enter confirms, Esc cancels.";
+        }
+
+        /// <summary>
+        /// Where the source image is drawn: the canvas area, inset a little so
+        /// the selection's outline at a room-edge crop is still visible rather
+        /// than flush with the panel beside it.
+        /// </summary>
+        private static Rectangle CropArea => InflateRect(EditorLayout.CanvasRect, -8);
+
+        private Rectangle CropFitRect => ImageImport.FitInside(_cropSrcW, _cropSrcH, CropArea);
+
+        /// <summary>
+        /// The crop step, drawn in its own two passes (see the call site in
+        /// Draw): the source image with LINEAR filtering, then everything else
+        /// with the PointClamp the rest of the editor uses.
+        /// </summary>
+        private void DrawCropOverlay()
+        {
+            if (!_cropOpen || _cropTexture == null || _cropCandidate == null) return;
+
+            _cropButtons.Clear();
+            var fit = CropFitRect;
+
+            // -- pass A: the source image ------------------------------------
+            // Linear, uniquely in this editor. The image is being shown at an
+            // arbitrary fractional scale, and point sampling at (say) 0.43x
+            // drops more than half the rows — which turns a screenshot into
+            // something you cannot recognise a room in, and recognising the
+            // room is the entire job of this screen. The pixels this affects
+            // are the PREVIEW only; the crop itself is point-sampled.
+            _spriteBatch.Begin(samplerState: SamplerState.LinearClamp);
+            FillRect(new Rectangle(0, 0, EditorLayout.WindowWidth, EditorLayout.WindowHeight),
+                     new Color(0, 0, 0, 210));
+            _spriteBatch.Draw(_cropTexture, fit, Color.White);
+            _spriteBatch.End();
+
+            // -- pass B: chrome ----------------------------------------------
+            _spriteBatch.Begin(samplerState: SamplerState.PointClamp);
+
+            var sel = ImageImport.SourceRectToScreen(_cropRect, fit, _cropSrcW, _cropSrcH);
+
+            // Darken everything outside the selection, in four bands, so the
+            // eye reads the bright part as "this is the room". Widths are
+            // floored at zero: at a punishingly small window the selection can
+            // round out to a pixel wider than the band arithmetic expects, and
+            // a negative-width rect is not something SpriteBatch should be
+            // handed.
+            var shade = new Color(0, 0, 0, 150);
+            FillRect(new Rectangle(fit.X, fit.Y, fit.Width, Math.Max(0, sel.Y - fit.Y)), shade);
+            FillRect(new Rectangle(fit.X, sel.Bottom, fit.Width, Math.Max(0, fit.Bottom - sel.Bottom)), shade);
+            FillRect(new Rectangle(fit.X, sel.Y, Math.Max(0, sel.X - fit.X), sel.Height), shade);
+            FillRect(new Rectangle(sel.Right, sel.Y, Math.Max(0, fit.Right - sel.Right), sel.Height), shade);
+
+            DrawRectOutline(InflateRect(sel, 1), Color.Black);
+            DrawRectOutline(sel, Color.White);
+            DrawCropCornerTicks(sel);
+            DrawRectOutline(fit, new Color(90, 100, 130));
+
+            // Header strip over the top bar: what is being cropped, and into what.
+            var header = new Rectangle(0, 0, EditorLayout.WindowWidth, EditorLayout.TopBarHeight);
+            FillRect(header, new Color(24, 26, 32));
+            DrawRectOutline(header, new Color(120, 130, 160));
+            DrawText(TruncateText(
+                    $"CROP  {_cropCandidate.FileName}  ({_cropSrcW}x{_cropSrcH})  ->  " +
+                    $"{_cropCandidate.RoomId}   \"{_cropCandidate.DisplayName}\"",
+                    header.Width - 28),
+                new Vector2(14, 8), new Color(255, 220, 110));
+            float scale = _cropRect.Width / (float)ImageImport.RoomWidth;
+            DrawText(TruncateText(
+                    $"selection {_cropRect.Width}x{_cropRect.Height} at ({_cropRect.X}, {_cropRect.Y})  ->  " +
+                    $"{ImageImport.RoomWidth}x{ImageImport.RoomHeight} ({scale:0.00}x down)   |   " +
+                    $"CPC quantize {(_importQuantize ? "ON" : "OFF")}",
+                    header.Width - 28),
+                new Vector2(14, 30), new Color(160, 175, 200));
+
+            // Footer strip over the status bar: the controls, and the two
+            // buttons. Escape and Enter do the same as the buttons; the buttons
+            // exist because a modal with no visible way out is a usability trap.
+            var footer = new Rectangle(0, EditorLayout.WindowHeight - EditorLayout.StatusBarHeight,
+                                       EditorLayout.WindowWidth, EditorLayout.StatusBarHeight);
+            FillRect(footer, new Color(20, 22, 28));
+            DrawRectOutline(footer, new Color(120, 130, 160));
+            DrawText("drag to move   |   wheel resizes (20:9 locked)   |   Enter confirms   |   Esc / right-click cancels",
+                new Vector2(8, footer.Y + 8), new Color(200, 200, 220));
+
+            int by = footer.Y + 3;
+            int bh = EditorLayout.StatusBarHeight - 6;
+            var confirm = new Rectangle(EditorLayout.WindowWidth - 108, by, 100, bh);
+            var cancel = new Rectangle(EditorLayout.WindowWidth - 216, by, 100, bh);
+            DrawCropButton(confirm, "Confirm", new Color(60, 100, 70), ConfirmCrop);
+            DrawCropButton(cancel, "Cancel", new Color(60, 55, 70),
+                () => CloseCrop("Import cancelled — nothing was written."));
+
+            _spriteBatch.End();
+        }
+
+        /// <summary>Short bars at the selection's corners — the box reads as a handle-less crop frame.</summary>
+        private void DrawCropCornerTicks(Rectangle sel)
+        {
+            int t = Math.Max(6, Math.Min(20, sel.Width / 12));
+            var c = Color.White;
+            FillRect(new Rectangle(sel.Left, sel.Top, t, 3), c);
+            FillRect(new Rectangle(sel.Left, sel.Top, 3, t), c);
+            FillRect(new Rectangle(sel.Right - t, sel.Top, t, 3), c);
+            FillRect(new Rectangle(sel.Right - 3, sel.Top, 3, t), c);
+            FillRect(new Rectangle(sel.Left, sel.Bottom - 3, t, 3), c);
+            FillRect(new Rectangle(sel.Left, sel.Bottom - t, 3, t), c);
+            FillRect(new Rectangle(sel.Right - t, sel.Bottom - 3, t, 3), c);
+            FillRect(new Rectangle(sel.Right - 3, sel.Bottom - t, 3, t), c);
+        }
+
+        private void DrawCropButton(Rectangle bounds, string label, Color baseColor, Action action)
+        {
+            bool hover = bounds.Contains(_mouseNow.X, _mouseNow.Y);
+            FillRect(bounds, hover
+                ? new Color(baseColor.R + 25, baseColor.G + 25, baseColor.B + 30)
+                : baseColor);
+            DrawRectOutline(bounds, new Color(120, 135, 165));
+            var sz = MeasureText(label);
+            DrawText(label,
+                new Vector2(bounds.X + (bounds.Width - sz.X) / 2, bounds.Y + (bounds.Height - sz.Y) / 2),
+                Color.White);
+            _cropButtons.Add((bounds, action));
         }
 
         /// <summary>
@@ -1479,6 +1792,16 @@ namespace SorceryForge
             if (_importOpen)
             {
                 HandleImportPicker();
+                base.Update(gameTime);
+                return;
+            }
+
+            // The crop step is the same kind of modal, reached from the import
+            // picker rather than from a button. Nothing has been written to
+            // disk while it is open, so its Escape is a plain cancel.
+            if (_cropOpen)
+            {
+                HandleCropOverlay();
                 base.Update(gameTime);
                 return;
             }
@@ -2589,6 +2912,13 @@ namespace SorceryForge
             DrawNewRoomPicker();
             DrawImportPicker();
             _spriteBatch.End();
+
+            // Pass 4: the crop step, which owns its own two passes — the source
+            // image wants LINEAR filtering (it is shown at an arbitrary
+            // fractional scale, where point sampling drops whole rows and makes
+            // a screenshot unrecognisable), its chrome wants the PointClamp
+            // everything else uses. No-op unless the crop step is open.
+            DrawCropOverlay();
 
             base.Draw(gameTime);
         }

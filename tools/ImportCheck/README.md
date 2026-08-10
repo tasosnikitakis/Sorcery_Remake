@@ -48,6 +48,12 @@ dotnet run --project tools/ImportCheck/ImportCheck.csproj -- --probe "C:\shots\c
 | 6 candidates | A scratch import folder with one file per outcome: importable, illegal name, taken id, reserved id, wrong size, target PNG already present, unreadable header, duplicate derivation, wrong extension. Each refusal's *reason* is checked, not just the refusal. |
 | 7 creation | `NewRoomFlow.Create` against a scratch copy of `Content.mgcb` and an empty data dir: an all-empty 40×18 collision grid, an **append-only** `.mgcb` edit that is idempotent, and one new `rooms.json` row with the header comment and every pre-existing row untouched. |
 | 8 headers | PNG and JPEG dimension reading, including a real repo PNG, a progressive JPEG, and a JPEG whose APP1 holds a decoy frame header (an EXIF thumbnail) that must **not** be mistaken for the real one. |
+| 9 crop | The aspect lock, the 320×144 floor, clamping, the wheel step (60 notches in and 60 back out, checking the invariants every time) and the fit transform in both directions — then the pixels an awkward 2.19× crop actually cuts. |
+
+Section 9's source carries each pixel's own coordinates as its colour, so
+decoding an output pixel says where it came from **independently of the
+sampling code**. A blend decodes to coordinates that are wrong or don't exist;
+there is nowhere for a filter to hide.
 
 ## What it cannot cover
 

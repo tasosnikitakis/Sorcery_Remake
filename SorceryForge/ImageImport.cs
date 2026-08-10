@@ -28,7 +28,10 @@
 //   assets/import/Chateau3.jpg              (the user drops this in)
 //     -> FindCandidates                      filename rule + size + id checks
 //     -> EditorGame: Texture2D.FromStream    decode to Color[]
-//     -> PointSample                         down to 320x144
+//     -> [crop overlay]                      only when the size is not a whole
+//                                            multiple of a room; the user drags
+//                                            a 20:9 box and it becomes `region`
+//     -> PointSample(region)                 down to 320x144
 //     -> QuantizeToCpc (toggle, default ON)  snap to the 27 CPC colours
 //     -> EditorGame: SaveAsPng               Content/RoomBG_Chateau3.png
 //     -> NewRoomFlow.Create                  collision + .mgcb + rooms.json
@@ -64,6 +67,13 @@ namespace SorceryForge
         /// 320x144 capture, 2 for 640x288, and so on. 0 for any other size.
         /// </summary>
         public int Multiple;
+
+        /// <summary>
+        /// True when picking this file opens the crop step rather than
+        /// importing straight away: the size is usable but not a whole
+        /// multiple of a room.
+        /// </summary>
+        public bool NeedsCrop => Problem == null && Multiple <= 0;
 
         /// <summary>Human-readable source size for the picker row.</summary>
         public string SizeLabel =>
@@ -268,6 +278,160 @@ namespace SorceryForge
             $"({RoomWidth * 2}x{RoomHeight * 2}, {RoomWidth * 3}x{RoomHeight * 3}, ...)";
 
         // ====================================================================
+        // CROP SELECTION
+        // ====================================================================
+        // A real emulator capture arrives with a border, a scaled window, and
+        // whatever aspect the screenshot key produced — almost never an exact
+        // multiple of 320x144. The crop step is how those get in: the user
+        // drags a fixed-aspect box over the image and that box becomes the
+        // room.
+        //
+        // The maths lives here rather than in the overlay for the usual reason
+        // — no GraphicsDevice, so tools/ImportCheck can drive a crop directly
+        // and check the pixels that come out, which is the one thing clicking
+        // around in the editor cannot tell you.
+        //
+        // ASPECT. 320:144 is 20:9. The selection's height is always derived
+        // from its width, so the aspect cannot drift while dragging; the
+        // rounding in CropHeightFor leaves it out by at most half a source
+        // pixel, which point sampling absorbs entirely.
+        //
+        // MINIMUM. 320x144 source pixels. Below that the crop would be
+        // upscaling, which invents pixels — if the capture really is smaller
+        // than one room, the answer is a better capture, not interpolation.
+        // ====================================================================
+
+        /// <summary>Height of a room-aspect selection <paramref name="width"/> source pixels wide.</summary>
+        public static int CropHeightFor(int width) =>
+            (width * RoomHeight + RoomWidth / 2) / RoomWidth;
+
+        /// <summary>True when a source is at least one room in both dimensions.</summary>
+        public static bool CanCrop(int srcW, int srcH) => srcW >= RoomWidth && srcH >= RoomHeight;
+
+        /// <summary>Widest room-aspect selection that still fits inside the source.</summary>
+        public static int MaxCropWidth(int srcW, int srcH)
+        {
+            int w = Math.Min(srcW, srcH * RoomWidth / RoomHeight);
+            // CropHeightFor rounds, so the width the division suggested can
+            // still be one pixel too tall. Walk it back rather than solving the
+            // rounding algebraically — it is at most a step or two.
+            while (w > RoomWidth && CropHeightFor(w) > srcH) w--;
+            return w;
+        }
+
+        /// <summary>
+        /// Force a selection back into shape: room aspect, no smaller than one
+        /// room, no bigger than the source, and wholly inside it.
+        /// </summary>
+        // Every mutation of the selection goes through here, so "the rectangle
+        // is always valid" is a property of the type rather than something each
+        // drag and wheel handler has to remember.
+        public static Rectangle ClampCropRect(Rectangle rect, int srcW, int srcH)
+        {
+            int maxW = Math.Max(RoomWidth, MaxCropWidth(srcW, srcH));
+            int w = Math.Clamp(rect.Width, RoomWidth, maxW);
+            int h = CropHeightFor(w);
+            int x = Math.Clamp(rect.X, 0, Math.Max(0, srcW - w));
+            int y = Math.Clamp(rect.Y, 0, Math.Max(0, srcH - h));
+            return new Rectangle(x, y, w, h);
+        }
+
+        /// <summary>The selection the crop step opens with: as large as fits, centred.</summary>
+        // Starting at maximum means the common case — a capture that is one
+        // room plus a border — needs a nudge inward rather than a hunt for the
+        // room in an image the box does not yet cover.
+        public static Rectangle DefaultCropRect(int srcW, int srcH)
+        {
+            int w = MaxCropWidth(srcW, srcH);
+            int h = CropHeightFor(w);
+            return ClampCropRect(new Rectangle((srcW - w) / 2, (srcH - h) / 2, w, h), srcW, srcH);
+        }
+
+        /// <summary>Smallest width change one wheel notch can make, in source pixels.</summary>
+        public const int CropMinStep = 8;
+
+        /// <summary>
+        /// Resize the selection by one wheel notch about its own centre.
+        /// <paramref name="direction"/> is +1 for wheel-up, which tightens the
+        /// selection — the same "up means closer in" the canvas zoom uses.
+        /// </summary>
+        // The step is a tenth of the current width rather than a constant, so
+        // the number of notches it takes to cross the whole range is the same
+        // whether the source is 700 pixels wide or 4000.
+        public static Rectangle StepCropWidth(Rectangle rect, int direction, int srcW, int srcH)
+        {
+            if (direction == 0) return rect;
+            int delta = Math.Max(CropMinStep, rect.Width / 10);
+            int wanted = rect.Width + (direction > 0 ? -delta : delta);
+
+            int maxW = Math.Max(RoomWidth, MaxCropWidth(srcW, srcH));
+            int w = Math.Clamp(wanted, RoomWidth, maxW);
+            int h = CropHeightFor(w);
+
+            int cx = rect.X + rect.Width / 2;
+            int cy = rect.Y + rect.Height / 2;
+            return ClampCropRect(new Rectangle(cx - w / 2, cy - h / 2, w, h), srcW, srcH);
+        }
+
+        // ====================================================================
+        // FIT TRANSFORM
+        // ====================================================================
+        // The crop overlay shows the whole source scaled to fit the canvas
+        // area, and has to turn mouse positions into source pixels and the
+        // selection back into screen pixels. Both directions live here so they
+        // cannot disagree — the classic way a crop box ends up cutting
+        // somewhere other than where it was drawn.
+        // ====================================================================
+
+        /// <summary>
+        /// The largest rectangle with the source's aspect that fits inside
+        /// <paramref name="area"/>, centred in it.
+        /// </summary>
+        public static Rectangle FitInside(int srcW, int srcH, Rectangle area)
+        {
+            if (srcW <= 0 || srcH <= 0 || area.Width <= 0 || area.Height <= 0)
+                return new Rectangle(area.X, area.Y, 0, 0);
+
+            float scale = Math.Min(area.Width / (float)srcW, area.Height / (float)srcH);
+            int w = Math.Max(1, (int)(srcW * scale));
+            int h = Math.Max(1, (int)(srcH * scale));
+            return new Rectangle(area.X + (area.Width - w) / 2, area.Y + (area.Height - h) / 2, w, h);
+        }
+
+        /// <summary>Screen point → source pixel, through a FitInside rectangle.</summary>
+        public static Point ScreenToSource(Point screen, Rectangle fit, int srcW, int srcH)
+        {
+            if (fit.Width <= 0 || fit.Height <= 0) return Point.Zero;
+            return new Point(
+                Math.Clamp((screen.X - fit.X) * srcW / fit.Width, 0, Math.Max(0, srcW - 1)),
+                Math.Clamp((screen.Y - fit.Y) * srcH / fit.Height, 0, Math.Max(0, srcH - 1)));
+        }
+
+        /// <summary>Source-pixel distance for a screen-pixel distance (drag deltas).</summary>
+        public static Point ScreenDeltaToSource(Point delta, Rectangle fit, int srcW, int srcH)
+        {
+            if (fit.Width <= 0 || fit.Height <= 0) return Point.Zero;
+            return new Point(
+                (int)Math.Round(delta.X * srcW / (float)fit.Width),
+                (int)Math.Round(delta.Y * srcH / (float)fit.Height));
+        }
+
+        /// <summary>Source rectangle → screen rectangle, through a FitInside rectangle.</summary>
+        public static Rectangle SourceRectToScreen(Rectangle rect, Rectangle fit, int srcW, int srcH)
+        {
+            if (srcW <= 0 || srcH <= 0) return Rectangle.Empty;
+            // Both edges are mapped and then subtracted, rather than mapping
+            // the origin and scaling the size: that keeps the drawn box flush
+            // with the drawn image at every scale instead of drifting a pixel
+            // wide or narrow as the selection moves.
+            int left   = fit.X + rect.Left   * fit.Width  / srcW;
+            int right  = fit.X + rect.Right  * fit.Width  / srcW;
+            int top    = fit.Y + rect.Top    * fit.Height / srcH;
+            int bottom = fit.Y + rect.Bottom * fit.Height / srcH;
+            return new Rectangle(left, top, Math.Max(1, right - left), Math.Max(1, bottom - top));
+        }
+
+        // ====================================================================
         // THE FILENAME RULE
         // ====================================================================
         // Zero typing, same as New Room: the source file's base name is the
@@ -405,8 +569,12 @@ namespace SorceryForge
             if (candidate.SourceWidth <= 0)
                 return "could not read the image size — is the file a real JPEG or PNG?";
 
-            if (candidate.Multiple <= 0)
-                return ExpectedSizeMessage(candidate.SourceWidth, candidate.SourceHeight);
+            // Any other size is not a refusal: picking it opens the crop step
+            // (NeedsCrop). The one size that IS a refusal is a source smaller
+            // than a single room, because cropping it could only upscale.
+            if (candidate.Multiple <= 0 && !CanCrop(candidate.SourceWidth, candidate.SourceHeight))
+                return $"{candidate.SourceWidth}x{candidate.SourceHeight} is smaller than a " +
+                       $"{RoomWidth}x{RoomHeight} room — there is nothing to crop out of it";
 
             return null;
         }
