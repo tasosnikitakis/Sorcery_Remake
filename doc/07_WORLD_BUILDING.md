@@ -78,7 +78,33 @@ _rooms["room_1"] = room1;
 
 ## Adding a New Room
 
-The full workflow for a new background-image room:
+### The short way: SorceryForge's **New Room** button
+
+1. Put a 320×144 PNG in `Content/`, named `RoomBG_<Name>.png`.
+2. In SorceryForge, click **New Room**. The picker lists every `RoomBG_*.png` that no room in `rooms.json` has claimed.
+3. Pick it. The room is created and opened.
+
+That writes all three things step 1–2 below describe by hand: the `#begin` block in `Content/Content.mgcb`, an all-empty `collision_<id>.json`, and the appended `rooms.json` entry. It does **not** create `content_<id>.json` or `layout_<id>.json` — those appear the first time you save something real into the room (see [Per-Room JSON Files](#per-room-json-files--when-they-exist)).
+
+**The id and name come from the filename** — the editor has no text field, and the flow is designed so it never needs one:
+
+| PNG | Room ID | Display Name |
+|-----|---------|--------------|
+| `RoomBG_Chateau3.png` | `chateau_3` | `Chateau 3` |
+| `RoomBG_NearChateau.png` | `near_chateau` | `Near Chateau` |
+| `RoomBG_Stonehenge.png` | `stonehenge` | `Stonehenge` |
+
+The rule (`SorceryForge/NewRoomFlow.cs`): strip `RoomBG_` and `.png`, split at each internal capital and at a trailing digit run, then join the words with spaces for the display name and with underscores, lowercased, for the id. **Rename the file to change the room's id** — there is no rename-after-the-fact. A derived id that collides with an existing room or with a reserved test-room id (`room_1` / `room_2`) is listed in the picker but greyed out with the reason.
+
+One shipped room diverges from this rule: `tunnelmouth` would derive as `tunnel_mouth`. Its three multi-word siblings (`near_chateau`, `inside_chateau`, `outside_chateau`) *are* snake_case, so it's the outlier. Nothing re-derives ids for existing rooms, so the divergence is inert — and room ids are persistence keys, so don't "fix" it.
+
+The game needs a **content rebuild** (`dotnet build SorceryRemake.csproj`) before it can load the new background; the editor reads the raw PNG and shows it immediately.
+
+If the picker is empty, every background is already claimed — the intended path for a room that has no PNG yet is the screenshot import flow.
+
+### The long way: by hand
+
+Still supported, and what the button automates. Steps 1, 2 and 3 are the ones New Room performs.
 
 ### 1. Author the background image
 
@@ -112,9 +138,18 @@ The room *registry* is data, not code. Append one entry to the `rooms` array:
 
 **Array order is room order** — the editor's Prev/Next buttons cycle rooms in exactly this sequence, and every "for each room" loop walks it. Appending is always safe; reordering re-orders the editor.
 
-`Rooms/RoomManifest.cs` loads and validates this file once per process (it is shared source, so the game, SorceryForge and `tools/RoundTrip` all read the same file). Validation is deliberately fatal: a missing file, malformed JSON, a duplicate `id`, or an entry with no `backgroundAsset` throws at startup with the path and problem named, rather than booting into a silently empty world. The file may carry `//` comments — the loader reads with `JsonCommentHandling.Skip`.
+`Rooms/RoomManifest.cs` loads and validates this file once per process (it is shared source, so the game, SorceryForge and `tools/RoundTrip` all read the same file). Validation is deliberately fatal: a missing file, malformed JSON, a duplicate `id`, an `id` reserved for a test room, or an entry with no `backgroundAsset` throws at startup with the path and problem named, rather than booting into a silently empty world. The file may carry `//` comments — the loader reads with `JsonCommentHandling.Skip`.
 
-Test rooms `room_1` / `room_2` are deliberately absent from the registry; they are built programmatically in `Game1.RegisterTestRooms` and listed in `RoomManifest.TestRoomIds` so validators can distinguish them from a typo'd room ID.
+Test rooms `room_1` / `room_2` are deliberately absent from the registry; they are built programmatically in `Game1.RegisterTestRooms` and listed in `RoomManifest.TestRoomIds` so validators can distinguish them from a typo'd room ID. **Those two ids are reserved**: `RegisterTestRooms` runs first, so a registry entry reusing one would lose the `RoomManager` slot and its background, collision and doors would silently never load. `RoomManifest.LoadAll` rejects it rather than shipping a room that looks registered and isn't.
+
+#### rooms.json is also machine-written
+
+`RoomManifest.Save` writes it — that is how New Room appends an entry. Two properties are load-bearing and guarded by `tools/RoundTrip`'s self-test:
+
+- **The header comment survives a write.** `JsonSerializer.Serialize` would drop it (comments aren't part of the object model), taking the array-order rule with it. The writer re-emits it textually from the `RoomsJsonHeader` constant in `RoomManifest.cs` — so **edit the header there, not in the file**, or the next New Room overwrites your edit.
+- **Load → save with no changes is byte-identical.** Entries stay one-per-line and column-aligned, so a New Room diff is one added line. (Adding a room with an id longer than every existing one re-pads that column across all rows — a one-time whole-file diff, stable afterwards.)
+
+The registry is cached in a `Lazy<T>`. `RoomManifest.Reload()` drops that cache and is **editor-only**: the game registers its rooms and loads its background textures once at startup, so a mid-session reload would produce entries the `RoomManager` and texture dictionary know nothing about. SorceryForge calls `Reload()` then `RoomMeta.RebuildAll()`, in that order, after writing the file.
 
 That is the whole code-side registration. `Game1.RegisterRoomsFromManifest` iterates the registry at startup and builds each room's loader lambda — background, collision tilemap, and doors — from the entry plus the room's own JSON files. There is no per-room C# to write.
 

@@ -329,6 +329,23 @@ namespace SorceryRemake.Tools.RoundTrip
                 && rereadSpawn?.playerSpawn != null
                 && rereadSpawn.playerSpawn.x == 32 && rereadSpawn.playerSpawn.y == 64);
 
+            // ---- registry ----
+            // rooms.json is machine-written now (SorceryForge's New Room
+            // appends through RoomManifest.Save), and the writer re-emits the
+            // header comment textually because JsonSerializer would drop it.
+            // Load -> save with no change must therefore be byte-identical, or
+            // every New Room reformats the file and buries its one added line
+            // in whole-file noise. This is also the check that catches
+            // RoomsJsonHeader drifting away from the header on disk.
+            //
+            // Writes into the scratch copy; the CleanScratch that follows
+            // RunSelfTest deletes it before the round trip seeds real data.
+            string registryOut = Path.Combine(scratch, "rooms.json");
+            RoomManifest.Save(RoomManifest.All, registryOut);
+            failures += Assert("registry: rooms.json load -> save is byte-identical",
+                BytesEqual(File.ReadAllBytes(RoomManifest.RoomsJsonPath),
+                           File.ReadAllBytes(registryOut)));
+
             Console.WriteLine();
             return failures;
         }

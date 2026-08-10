@@ -468,8 +468,9 @@ namespace SorceryForge
             if (_state.PaletteScrollY > maxScroll) _state.PaletteScrollY = maxScroll;
         }
 
-        // Indices into _buttons for the labels we update at runtime.
-        private int _btnSnapIdx, _btnModeIdx, _btnPunchIdx;
+        // Indices into _buttons for the labels we update at runtime, and for
+        // the ones RelayoutButtons places outside their list order.
+        private int _btnSnapIdx, _btnModeIdx, _btnPunchIdx, _btnNewRoomIdx;
 
         // Where the "left bank" of buttons ends and the "right bank" begins,
         // in screen X. Recomputed each RelayoutButtons() — used to center
@@ -501,6 +502,9 @@ namespace SorceryForge
             _btnPunchIdx = _buttons.Count;
             _buttons.Add(new UiButton("Punch: OFF", default, ToggleAutoPunch));
 
+            _btnNewRoomIdx = _buttons.Count;
+            _buttons.Add(new UiButton("New Room", default, OpenNewRoomPicker));
+
             RelayoutButtons();
         }
 
@@ -516,11 +520,15 @@ namespace SorceryForge
             int bh = EditorLayout.TopBarHeight - 24;
             int W = EditorLayout.WindowWidth;
 
-            // Left bank: Prev | Next | Mode
+            // Left bank: Prev | Next | New Room | Mode
+            // New Room sits with the room-navigation buttons rather than in
+            // the right-hand tool bank — it is how you get to a room, not a
+            // tool you use inside one.
             _buttons[0].Bounds = new Rectangle(8,   by,  80, bh);
             _buttons[1].Bounds = new Rectangle(96,  by,  80, bh);
-            _buttons[2].Bounds = new Rectangle(186, by, 130, bh);
-            _leftBankRight = 186 + 130;
+            _buttons[_btnNewRoomIdx].Bounds = new Rectangle(186, by, 110, bh);
+            _buttons[2].Bounds = new Rectangle(302, by, 130, bh);
+            _leftBankRight = 302 + 130;
 
             // Right bank (right-to-left):
             // Save | Snap | Punch | Puzzle | Doors | Validate | Fullscreen
@@ -744,6 +752,241 @@ namespace SorceryForge
             }
         }
 
+        // ====================================================================
+        // NEW ROOM — background picker overlay
+        // ====================================================================
+        // A modal list of every unused RoomBG_*.png, built on the same
+        // populate-in-Draw / consume-in-Update click-zone pattern the
+        // inspector uses. State lives here rather than on EditorState because
+        // it is transient view plumbing (like _inspectorButtons and
+        // _discardArmed), not room data — nothing here survives a room switch
+        // or reaches disk.
+        //
+        // Zero typing: the room id and display name come from the filename
+        // (NewRoomFlow's derivation rule). The editor has no text field, and
+        // the picker is designed so it never needs one.
+        // ====================================================================
+
+        private bool _newRoomOpen;
+        private List<RoomCandidate> _newRoomCandidates = new();
+        private float _newRoomScrollY;
+        private int _newRoomContentHeight;
+        private readonly List<(Rectangle bounds, Action action)> _newRoomButtons = new();
+
+        private void OpenNewRoomPicker()
+        {
+            // Creating a room LOADS it, which discards unsaved edits in the
+            // current one. The guard therefore runs here, at the click that
+            // opens the modal, not at the click that picks a background: its
+            // "repeat the action to discard" warning belongs in the status bar
+            // the user is looking at, not behind an overlay. Nothing can dirty
+            // the room while the picker is open — it swallows all input.
+            if (!ConfirmDiscardUnsavedEdits()) return;
+
+            _newRoomCandidates = NewRoomFlow.FindCandidates(EditorPaths.RepoContentDir, RoomManifest.All);
+            _newRoomScrollY = 0f;
+            _newRoomButtons.Clear();
+            _newRoomOpen = true;
+
+            int usable = 0;
+            foreach (var c in _newRoomCandidates) if (c.CanCreate) usable++;
+            _state.Status = usable > 0
+                ? $"New Room: pick a background ({usable} unused). Esc or right-click cancels."
+                : "New Room: no unused RoomBG_*.png in Content/ — import a screenshot first.";
+        }
+
+        private void CloseNewRoomPicker(string status)
+        {
+            _newRoomOpen = false;
+            _newRoomButtons.Clear();
+            _state.Status = status;
+        }
+
+        /// <summary>
+        /// Modal input. Runs instead of every other handler while the picker is
+        /// open, so a stray click can't reach the canvas underneath.
+        /// </summary>
+        private void HandleNewRoomPicker()
+        {
+            if (Pressed(Keys.Escape) || RightClicked())
+            {
+                CloseNewRoomPicker("New Room cancelled.");
+                return;
+            }
+
+            int delta = _mouseNow.ScrollWheelValue - _mousePrev.ScrollWheelValue;
+            if (delta != 0) _newRoomScrollY -= delta * 0.25f;
+            float maxScroll = Math.Max(0, _newRoomContentHeight - NewRoomListRect.Height);
+            _newRoomScrollY = Math.Clamp(_newRoomScrollY, 0, maxScroll);
+
+            if (!LeftClicked()) return;
+            var p = new Point(_mouseNow.X, _mouseNow.Y);
+            for (int i = _newRoomButtons.Count - 1; i >= 0; i--)
+            {
+                if (_newRoomButtons[i].bounds.Contains(p))
+                {
+                    _newRoomButtons[i].action();
+                    return;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Write the room's files, refresh both caches, and open it. The order
+        /// is load-bearing: RoomManifest caches the registry in a Lazy and
+        /// RoomMeta.All is derived from that, so reloading them the other way
+        /// round would rebuild the catalogue from the stale registry.
+        /// </summary>
+        private void CreateRoom(RoomCandidate candidate)
+        {
+            var result = NewRoomFlow.Create(candidate, EditorPaths.RepoContentDir, EditorPaths.RepoAssetsDataDir);
+            if (!result.Ok)
+            {
+                CloseNewRoomPicker(result.Message);
+                return;
+            }
+
+            RoomManifest.Reload();
+            RoomMeta.RebuildAll();
+
+            // By id, not by "the last one": Save writes the array in the order
+            // it was given, but looking the room up by the key we just wrote
+            // can't be wrong.
+            int index = 0;
+            for (int i = 0; i < RoomMeta.All.Count; i++)
+                if (RoomMeta.All[i].RoomId == candidate.RoomId) { index = i; break; }
+
+            _newRoomOpen = false;
+            _newRoomButtons.Clear();
+            LoadRoom(index);
+            _state.Status = result.Message;   // after LoadRoom, which sets its own
+        }
+
+        // Panel geometry. Computed from the window rather than stored so a
+        // resize while the picker is open can't leave the click zones and the
+        // drawn rows disagreeing.
+        private static Rectangle NewRoomPanelRect
+        {
+            get
+            {
+                int w = Math.Min(660, EditorLayout.WindowWidth - 80);
+                int h = Math.Min(540, EditorLayout.WindowHeight - 120);
+                return new Rectangle((EditorLayout.WindowWidth - w) / 2,
+                                     (EditorLayout.WindowHeight - h) / 2, w, h);
+            }
+        }
+
+        private const int NewRoomTitleHeight = 56;
+        private const int NewRoomFooterHeight = 44;
+
+        private static Rectangle NewRoomListRect
+        {
+            get
+            {
+                var p = NewRoomPanelRect;
+                return new Rectangle(p.X + 10, p.Y + NewRoomTitleHeight,
+                                     p.Width - 20,
+                                     Math.Max(0, p.Height - NewRoomTitleHeight - NewRoomFooterHeight));
+            }
+        }
+
+        /// <summary>
+        /// The picker: a dimmed screen, a panel, one row per candidate. Rows
+        /// register their click zones here (consumed by HandleNewRoomPicker on
+        /// the next frame — the inspector's pattern).
+        /// </summary>
+        private void DrawNewRoomPicker()
+        {
+            if (!_newRoomOpen) return;
+
+            _newRoomButtons.Clear();
+
+            // Dim everything behind the modal so it reads as blocking input,
+            // which it does.
+            FillRect(new Rectangle(0, 0, EditorLayout.WindowWidth, EditorLayout.WindowHeight),
+                     new Color(0, 0, 0, 170));
+
+            var panel = NewRoomPanelRect;
+            FillRect(panel, new Color(30, 33, 42));
+            DrawRectOutline(panel, new Color(120, 130, 160));
+
+            DrawText("NEW ROOM — pick an unused background",
+                new Vector2(panel.X + 14, panel.Y + 12), new Color(255, 220, 110));
+            DrawText("Content/RoomBG_*.png not already claimed by a room in rooms.json",
+                new Vector2(panel.X + 14, panel.Y + 32), new Color(150, 160, 185));
+
+            var list = NewRoomListRect;
+            int rowH = 46;
+            int y = list.Y - (int)_newRoomScrollY;
+            _newRoomContentHeight = _newRoomCandidates.Count * (rowH + 4);
+
+            if (_newRoomCandidates.Count == 0)
+            {
+                // The intended path for a room that has no PNG yet is the
+                // screenshot import (EDITOR_REVIEW item A / PR 5), so say so
+                // rather than leaving an empty box.
+                DrawText("No unused RoomBG_*.png in Content/.",
+                    new Vector2(list.X + 6, list.Y + 8), new Color(230, 230, 240));
+                DrawText("Every background is already claimed by a room.",
+                    new Vector2(list.X + 6, list.Y + 30), new Color(180, 185, 200));
+                DrawText("To add a room from a screenshot, use the import flow",
+                    new Vector2(list.X + 6, list.Y + 58), new Color(150, 160, 185));
+                DrawText("(drop a 320x144 PNG into Content/ as RoomBG_<Name>.png).",
+                    new Vector2(list.X + 6, list.Y + 78), new Color(150, 160, 185));
+            }
+
+            foreach (var candidate in _newRoomCandidates)
+            {
+                var row = new Rectangle(list.X, y, list.Width, rowH);
+                y += rowH + 4;
+
+                // Cull rows scrolled out of the list viewport — and skip their
+                // click zones with them, so an invisible row can't be clicked.
+                if (row.Bottom <= list.Top || row.Top >= list.Bottom) continue;
+
+                var captured = candidate;
+                bool hover = captured.CanCreate && row.Contains(_mouseNow.X, _mouseNow.Y)
+                             && list.Contains(_mouseNow.X, _mouseNow.Y);
+
+                Color bg = !captured.CanCreate ? new Color(46, 36, 40)
+                         : hover               ? new Color(60, 75, 110)
+                                               : new Color(40, 46, 60);
+                FillRect(row, bg);
+                DrawRectOutline(row, new Color(90, 100, 130));
+
+                DrawText(TruncateText(captured.BackgroundAsset + ".png", row.Width - 20),
+                    new Vector2(row.X + 8, row.Y + 5),
+                    captured.CanCreate ? Color.White : new Color(190, 150, 150));
+
+                string sub = captured.CanCreate
+                    ? $"-> {captured.RoomId}   \"{captured.DisplayName}\""
+                    : $"unavailable: {captured.Problem}";
+                DrawText(TruncateText(sub, row.Width - 20),
+                    new Vector2(row.X + 8, row.Y + 25),
+                    captured.CanCreate ? new Color(180, 200, 230) : new Color(255, 140, 140));
+
+                if (captured.CanCreate)
+                    _newRoomButtons.Add((row, () => CreateRoom(captured)));
+            }
+
+            // Footer: Cancel. Escape and right-click do the same thing; the
+            // button is here because a modal with no visible way out is a
+            // usability trap.
+            var cancel = new Rectangle(panel.Right - 110, panel.Bottom - NewRoomFooterHeight + 6, 100, 28);
+            bool cancelHover = cancel.Contains(_mouseNow.X, _mouseNow.Y);
+            FillRect(cancel, cancelHover ? new Color(70, 78, 100) : new Color(50, 55, 70));
+            DrawRectOutline(cancel, new Color(110, 120, 150));
+            var cz = MeasureText("Cancel");
+            DrawText("Cancel",
+                new Vector2(cancel.X + (cancel.Width - cz.X) / 2, cancel.Y + (cancel.Height - cz.Y) / 2),
+                Color.White);
+            _newRoomButtons.Add((cancel, () => CloseNewRoomPicker("New Room cancelled.")));
+
+            DrawText("Esc / right-click cancels",
+                new Vector2(panel.X + 14, panel.Bottom - NewRoomFooterHeight + 12),
+                new Color(150, 160, 185));
+        }
+
         // Armed by the first destructive attempt (room switch, exit) while
         // background pixel, collision, or placement edits are unsaved; the
         // second attempt goes through. Disarmed by saving or by further
@@ -828,6 +1071,17 @@ namespace SorceryForge
             _keysNow = Keyboard.GetState();
             _mousePrev = _mouseNow;
             _mouseNow = Mouse.GetState();
+
+            // The New Room picker is modal: while it's open it consumes every
+            // input, so a click meant for a candidate row can't fall through
+            // to the canvas behind it and Escape closes the picker rather than
+            // the editor.
+            if (_newRoomOpen)
+            {
+                HandleNewRoomPicker();
+                base.Update(gameTime);
+                return;
+            }
 
             // Escape exits, but never silently throws away unsaved edits:
             // the first press arms the discard guard (status bar warning),
@@ -1930,6 +2184,9 @@ namespace SorceryForge
             DrawInspector();
             DrawStatusBar();
             DrawDragGhost();
+            // Last, so the modal covers every panel — it blocks input to all
+            // of them and must look like it does.
+            DrawNewRoomPicker();
             _spriteBatch.End();
 
             base.Draw(gameTime);
@@ -2688,6 +2945,14 @@ namespace SorceryForge
         {
             foreach (var entry in _state.Palette)
             {
+                // The spawn entry is never a placement's sprite. Without this
+                // it would match an Item placement whose type is None — which
+                // a content JSON hand-written with "type": "None" produces —
+                // and that entity would draw as a player-spawn marker. Such a
+                // placement matched no entry before the META section existed
+                // and must keep matching none.
+                if (entry.IsPlayerSpawn) continue;
+
                 if (entry.Kind != p.Kind) continue;
                 if (p.Kind == PlacementKind.Item && entry.ItemType != p.ItemType) continue;
                 if (p.Kind == PlacementKind.Enemy && entry.EnemyType != p.EnemyType) continue;

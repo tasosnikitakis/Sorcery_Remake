@@ -16,6 +16,7 @@
 // Fields:
 //   id              persistence key. Entity IDs are built from it and
 //                   WorldState remembers them, so never rename casually.
+//                   room_1 / room_2 are reserved (see below) and rejected.
 //   displayName     shown in the editor's room picker and the game's HUD.
 //   backgroundAsset Content pipeline asset name (no extension). Must have a
 //                   matching #begin block in Content/Content.mgcb.
@@ -26,6 +27,12 @@
 // programmatically in Game1.RegisterTestRooms and listed in
 // RoomManifest.TestRoomIds.
 //
+// THIS FILE IS ALSO MACHINE-WRITTEN. SorceryForge's New Room button appends
+// an entry through RoomManifest.Save, which re-emits this header verbatim
+// from the RoomsJsonHeader constant and re-aligns the columns below. Edit it
+// by hand freely — but a hand-edited header is overwritten by the next New
+// Room, so header changes belong in RoomManifest.cs.
+//
 // Comments are legal here: the loader reads with JsonCommentHandling.Skip.
 // ============================================================================
 {
@@ -33,11 +40,9 @@
     { "id": "chateau_0",       "displayName": "Chateau 0",       "backgroundAsset": "RoomBG_Chateau0",       "collisionFile": "collision_chateau0.json" },
     { "id": "chateau_1",       "displayName": "Chateau 1",       "backgroundAsset": "RoomBG_Chateau1",       "collisionFile": "collision_chateau1.json" },
     { "id": "chateau_2",       "displayName": "Chateau 2",       "backgroundAsset": "RoomBG_Chateau2",       "collisionFile": "collision_chateau2.json" },
-
     { "id": "stonehenge",      "displayName": "Stonehenge",      "backgroundAsset": "RoomBG_Stonehenge",     "collisionFile": "collision_stonehenge.json" },
     { "id": "wastelands",      "displayName": "Wastelands",      "backgroundAsset": "RoomBG_Wastelands",     "collisionFile": "collision_wastelands.json" },
     { "id": "tunnelmouth",     "displayName": "Tunnel Mouth",    "backgroundAsset": "RoomBG_TunnelMouth",    "collisionFile": "collision_tunnelmouth.json" },
-
     { "id": "near_chateau",    "displayName": "Near Chateau",    "backgroundAsset": "RoomBG_NearChateau",    "collisionFile": "collision_near_chateau.json" },
     { "id": "inside_chateau",  "displayName": "Inside Chateau",  "backgroundAsset": "RoomBG_InsideChateau",  "collisionFile": "collision_inside_chateau.json" },
     { "id": "outside_chateau", "displayName": "Outside Chateau", "backgroundAsset": "RoomBG_OutsideChateau", "collisionFile": "collision_outside_chateau.json" }

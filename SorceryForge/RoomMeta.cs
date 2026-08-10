@@ -101,7 +101,28 @@ namespace SorceryForge
         // RoomManifest.All — both projects pick it up.
         // --------------------------------------------------------------------
 
-        public static readonly List<RoomMeta> All = BuildAll();
+        // Lazy rather than a static field initialiser, for the same reason
+        // RoomManifest uses Lazy<T>: a bad rooms.json throws OUR message. Built
+        // from a field initialiser, that message arrived wrapped in a
+        // TypeInitializationException ("The type initializer for
+        // 'SorceryForge.RoomMeta' threw an exception") with the real problem
+        // one level down — exactly the burial RoomManifest went out of its way
+        // to avoid.
+        public static List<RoomMeta> All => _all ??= BuildAll();
+
+        private static List<RoomMeta>? _all;
+
+        /// <summary>
+        /// Re-read the catalogue after the registry changed. Pairs with
+        /// RoomManifest.Reload(), which must run FIRST — this walks
+        /// RoomManifest.All and would otherwise rebuild from the stale one.
+        /// Editor only; the game never adds rooms mid-session.
+        /// </summary>
+        // Callers hold indices into All (EditorState.CurrentRoomIndex), not
+        // references to it, so replacing the list is safe as long as the caller
+        // re-establishes its index afterwards — EditorGame.CreateRoom loads the
+        // new room by index immediately after calling this.
+        public static void RebuildAll() => _all = BuildAll();
 
         private static List<RoomMeta> BuildAll()
         {

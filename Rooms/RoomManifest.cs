@@ -26,6 +26,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Text;
 using System.Text.Json;
 
 namespace SorceryRemake.Rooms
@@ -104,7 +105,9 @@ namespace SorceryRemake.Rooms
         /// </summary>
         public static List<RoomManifest> All => _all.Value;
 
-        private static readonly Lazy<List<RoomManifest>> _all = new(LoadAll);
+        // Not readonly: Reload() below replaces the Lazy so the editor can
+        // re-read the file after appending a room.
+        private static Lazy<List<RoomManifest>> _all = new(LoadAll);
 
         private static readonly JsonSerializerOptions Options = new()
         {
@@ -201,5 +204,142 @@ namespace SorceryRemake.Rooms
             foreach (var m in All) if (m.RoomId == roomId) return m;
             return null;
         }
+
+        // --------------------------------------------------------------------
+        // REGISTRY RELOADING (editor only)
+        // --------------------------------------------------------------------
+
+        /// <summary>
+        /// Throw away the cached registry so the next <see cref="All"/> re-reads
+        /// rooms.json. Call after writing the file — SorceryForge's New Room
+        /// flow does, and nothing else should.
+        /// </summary>
+        // The GAME never calls this. Its rooms are registered once in
+        // Game1.RegisterRoomsFromManifest (loader lambdas captured per entry)
+        // and its backgrounds loaded once in LoadRoomBackgrounds, so a
+        // mid-session reload would produce a registry the RoomManager and the
+        // texture dictionary know nothing about — worse than a restart.
+        //
+        // Not thread-safe: the assignment races any concurrent All reader. The
+        // editor is single-threaded and calls this between frames, which is the
+        // only supported use.
+        public static void Reload() => _all = new Lazy<List<RoomManifest>>(LoadAll);
+
+        // --------------------------------------------------------------------
+        // REGISTRY WRITING
+        // --------------------------------------------------------------------
+        // rooms.json is hand-edited as often as it is written, so the writer's
+        // job is not just "valid JSON" — it is "the same file a human would
+        // have typed". Two consequences:
+        //
+        //   1. The header comment survives. JsonSerializer.Serialize would
+        //      silently drop it (comments are not part of the object model),
+        //      taking the ordering rule with it — the one thing a reader of
+        //      this file most needs to know. It is re-emitted textually from
+        //      RoomsJsonHeader below.
+        //   2. Entries stay one-per-line and column-aligned, exactly as the
+        //      file was hand-authored, so a New Room diff is one added line.
+        //
+        // Load -> Save with no changes is byte-identical; tools/RoundTrip's
+        // self-test asserts it on every run. If you edit RoomsJsonHeader, the
+        // file and the constant disagree until someone saves the registry
+        // once — that assertion is what tells you.
+        // --------------------------------------------------------------------
+
+        /// <summary>
+        /// The header block re-emitted verbatim at the top of every write.
+        /// Must stay identical to the header in assets/data/rooms.json.
+        /// </summary>
+        private static readonly string[] RoomsJsonHeader =
+        {
+            "// ============================================================================",
+            "// ROOM REGISTRY — which rooms exist",
+            "// ============================================================================",
+            "// Read by Rooms/RoomManifest.cs (shared source: the game, SorceryForge and",
+            "// tools/RoundTrip all load this one file). Registry facts ONLY — a room's",
+            "// doors live in layout_<id>.json, its entities in content_<id>.json, and its",
+            "// solid tiles in the collision file named below.",
+            "//",
+            "// ARRAY ORDER IS ROOM ORDER. It is the editor's Prev/Next cycle order and the",
+            "// order every \"for each room\" loop walks. This array was seeded verbatim from",
+            "// the compiled list that used to live in RoomManifest.All, so the order here",
+            "// IS that historical order — chateau set, then the stonehenge/wastelands",
+            "// chain, then the screenshot-derived rooms. Reordering entries reorders the",
+            "// editor's room cycle; appending is always safe.",
+            "//",
+            "// Fields:",
+            "//   id              persistence key. Entity IDs are built from it and",
+            "//                   WorldState remembers them, so never rename casually.",
+            "//                   room_1 / room_2 are reserved (see below) and rejected.",
+            "//   displayName     shown in the editor's room picker and the game's HUD.",
+            "//   backgroundAsset Content pipeline asset name (no extension). Must have a",
+            "//                   matching #begin block in Content/Content.mgcb.",
+            "//   collisionFile   file name inside assets/data. May be \"\" for a room with",
+            "//                   no painted geometry yet.",
+            "//",
+            "// Test rooms room_1 / room_2 are deliberately absent — they are built",
+            "// programmatically in Game1.RegisterTestRooms and listed in",
+            "// RoomManifest.TestRoomIds.",
+            "//",
+            "// THIS FILE IS ALSO MACHINE-WRITTEN. SorceryForge's New Room button appends",
+            "// an entry through RoomManifest.Save, which re-emits this header verbatim",
+            "// from the RoomsJsonHeader constant and re-aligns the columns below. Edit it",
+            "// by hand freely — but a hand-edited header is overwritten by the next New",
+            "// Room, so header changes belong in RoomManifest.cs.",
+            "//",
+            "// Comments are legal here: the loader reads with JsonCommentHandling.Skip.",
+            "// ============================================================================",
+        };
+
+        /// <summary>
+        /// Write the registry back to rooms.json (default: the live path).
+        /// Array order is written exactly as given — it is room order.
+        /// </summary>
+        public static void Save(IReadOnlyList<RoomManifest> rooms, string? path = null)
+        {
+            path ??= RoomsJsonPath;
+
+            // Column widths. A field's token is its quoted value plus the
+            // trailing comma, and every token is padded to the longest one plus
+            // a single separating space — precisely the alignment the file was
+            // hand-authored with, so normalising it moved no column. Hence the
+            // +2: one for the comma, one for that space.
+            //
+            // The last field on a line is never padded; trailing whitespace
+            // would come back as diff noise the first time an editor stripped
+            // it.
+            int idW = 0, nameW = 0, bgW = 0;
+            foreach (var r in rooms)
+            {
+                idW   = Math.Max(idW,   Quote(r.RoomId).Length + 2);
+                nameW = Math.Max(nameW, Quote(r.DisplayName).Length + 2);
+                bgW   = Math.Max(bgW,   Quote(r.BackgroundAsset).Length + 2);
+            }
+
+            var sb = new StringBuilder();
+            string nl = Environment.NewLine;   // CRLF here, matching every other JSON writer in the tree
+            foreach (string line in RoomsJsonHeader) sb.Append(line).Append(nl);
+            sb.Append('{').Append(nl);
+            sb.Append("  \"rooms\": [").Append(nl);
+
+            for (int i = 0; i < rooms.Count; i++)
+            {
+                var r = rooms[i];
+                sb.Append("    { \"id\": ").Append((Quote(r.RoomId) + ",").PadRight(idW))
+                  .Append("\"displayName\": ").Append((Quote(r.DisplayName) + ",").PadRight(nameW))
+                  .Append("\"backgroundAsset\": ").Append((Quote(r.BackgroundAsset) + ",").PadRight(bgW))
+                  .Append("\"collisionFile\": ").Append(Quote(r.CollisionFile))
+                  .Append(" }").Append(i < rooms.Count - 1 ? "," : "").Append(nl);
+            }
+
+            sb.Append("  ]").Append(nl);
+            sb.Append('}').Append(nl);
+
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.WriteAllText(path, sb.ToString());
+        }
+
+        /// <summary>JSON string literal for a value — escaping included.</summary>
+        private static string Quote(string value) => JsonSerializer.Serialize(value ?? "");
     }
 }
