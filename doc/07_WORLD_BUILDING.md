@@ -300,6 +300,8 @@ modes, which is the whole discoverability story until then.
 | **middle-drag**, or **left-drag on empty space** | pan |
 | **arrow keys** | pan by half a room |
 | **click a room** | open it in the room editor |
+| **drag a room** | move it; its position persists (see below) |
+| **Ctrl+S** | save the arrangement to `assets/data/worldmap.json` |
 
 Map mode suspends room editing completely: no palette, no canvas, no paint or
 punch, and every top-bar button is drawn inert because none of them means
@@ -328,6 +330,64 @@ teaches you something false:
 A whole disconnected *component* currently lands in the trailing column as a
 flat stack rather than getting its own layout — today that is the
 stonehenge/wastelands/tunnelmouth chain plus the two unwired chateau rooms.
+Dragging is the answer: a room moved by hand stays where you put it.
+
+### `assets/data/worldmap.json`
+
+Drag a room and it stops being auto-placed. **Ctrl+S in map mode** writes the
+arrangement:
+
+```json
+{
+  "rooms": {
+    "chateau_0":    { "x": 0,   "y": 0   },
+    "near_chateau": { "x": 448, "y": 216 }
+  }
+}
+```
+
+Editor-only — nothing in the game reads it, and it is the map's own file rather
+than a change to any existing schema. Positions are in **map units, which are
+room pixels**: a box is 320×144, so "one room-width apart" is a number you can
+read.
+
+**Only rooms you actually dragged are in it.** Auto-placed positions are never
+written, because writing them would freeze today's BFS output into the
+repository — add a door next week and every room would stay where the old
+layout put it, with no way to tell which positions were decisions and which
+were defaults. What is in the file is exactly the set of deliberate acts:
+
+- a room **in** the file uses its stored position;
+- a room **absent** from it is auto-placed, every time;
+- **delete the file** and the whole board goes back to auto-placement.
+
+Same born-empty discipline as `content_*.json` / `layout_*.json`, and the same
+asymmetry — which is easy to get backwards. Nothing dragged and no file yet
+writes **nothing**, so an untouched map never adds a file to the repo. Nothing
+dragged but the file **exists** writes it anyway, because that is a user who
+dragged every room back to auto-placement and their reset has to persist.
+
+A position for a room that no longer exists (renamed, removed) is ignored on
+load and gone on the next save. Preserving unknown keys sounds tidier and is
+worse: it silts up a file whose whole content is meant to be attributable.
+
+The writer follows house style — one room per line, keys column-aligned, in
+registry order, and load → save with no change is byte-identical, so a moved
+room is a one-line diff. An unreadable file costs you the arrangement and
+nothing else: it is reported in the status bar and the board falls back to
+auto-placement, unlike `rooms.json`, where a parse failure is deliberately
+fatal.
+
+`tools/RoundTrip` never sees this file — it seeds and sweeps `content_*` and
+`layout_*` only — and both `tools/MapCheck` and an end-to-end RoundTrip run
+with a `worldmap.json` present confirm it.
+
+**Unsaved arrangements** show as `map*` in the status bar (in *both* modes) and
+as a `*` on the map's title. Quitting is the only thing that discards one, so
+quitting is the only action that warns about it: room switches, room creation
+and imports all leave the arrangement alone, and a guard that fired on those
+would be a warning nobody believes. There is no autosave sidecar for it — a
+surprise file appearing in `assets/data` would be worse than losing a drag.
 
 ### Arrows
 

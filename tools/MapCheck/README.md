@@ -29,8 +29,10 @@ its column, row and position, and every arrow with its verdict and endpoints.
 Read it when the map looks wrong on screen and you need to know whether the
 picture or the data is at fault.
 
-**It writes nothing, anywhere.** No scratch directory, no `--out`:
-`assets/data` and `Content/` are opened, parsed and left alone.
+`assets/data` and `Content/` are **read only** — opened, parsed, left alone.
+The only thing written is a scratch `worldmap.json` for section 6, inside a
+directory checked first (`--out`, default `%TEMP%\sorcery-mapcheck`); the
+repository's own arrangement file is never opened for writing.
 
 ## What it checks
 
@@ -41,6 +43,7 @@ picture or the data is at fault.
 | 3 geometry | Which edge each door sits on (including the case that defeats a naive rule: a side door at `y=112` is near the *bottom* and must still read as a side door), where its arrow meets the box, two doors on one edge anchoring apart, content bounds, hit-testing. |
 | 4 arrows | Every door is on exactly one arrow and no door is on two; a wired pair collapses to one double-headed line; an orphan-door arrow still reaches the target room; missing rooms, test rooms and self-links become outward stubs; every arrow's status is its own door's verdict. |
 | 5 view | `MapView` round-trips screen↔map at every zoom, keeps the point under the cursor still while zooming, clamps panning back to the board, pins a board smaller than the viewport, and scales a box exactly. |
+| 6 file | `worldmap.json`: an untouched board writes no file; a save records *only* the dragged rooms; load → save is byte-identical; a reset still writes (the deletion has to persist); an unknown room id is dropped on the next save; deleting the file returns the board to auto-placement; an unreadable file costs the arrangement and nothing else. Plus the assertion that the filename falls outside `RoundTrip`'s seed/sweep prefixes. |
 
 Determinism is the one worth stating twice. The map's whole value is that a
 user learns where things are; a layout that reshuffles between sessions is

@@ -45,6 +45,21 @@ namespace SorceryForge
         // content + layout persists".
         public bool PlacementsDirty = false;
 
+        // Tracks an unsaved world-map arrangement — rooms dragged on the board
+        // but not yet written to assets/data/worldmap.json. Set on drag
+        // release, cleared when the file is loaded or saved.
+        //
+        // Deliberately NOT part of the room-switch guard, unlike the three
+        // flags above. Those three are per-room working state that LoadRoom
+        // replaces, so switching rooms really would discard them; the map
+        // arrangement lives in EditorGame and survives every room switch, every
+        // room creation and every import. Exit is the only thing that loses it,
+        // so exit is the only place the guard consults it — see
+        // ConfirmDiscardUnsavedEdits. Warning about it anywhere else would be a
+        // guard that fires when nothing is at risk, and a guard nobody believes
+        // is the failure this family exists to avoid.
+        public bool MapDirty = false;
+
         // Erase-mode brush: side length of the square stamp, in room pixels.
         public int BrushSize = 4;
 

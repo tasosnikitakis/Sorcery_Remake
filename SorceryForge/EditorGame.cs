@@ -1740,15 +1740,26 @@ namespace SorceryForge
         private readonly Dictionary<string, Texture2D?> _mapThumbs = new();
 
         // Click-versus-drag. A press remembers where it started and what was
-        // under it; travel past MapClickSlop turns it into a pan and cancels
+        // under it; travel past MapClickSlop turns it into a drag and cancels
         // the click, so a shaky hand cannot open a room the user was scrolling
-        // past.
+        // past. A drag that began on a room moves that room; anywhere else it
+        // pans the board.
         private const int MapClickSlop = 4;
         private bool _mapLeftDown, _mapMidDown;
         private Point _mapPressScreen;
         private Vector2 _mapPressPan;
+        private Vector2 _mapPressRoomPos;
         private bool _mapPressMoved;
         private MapRoom? _mapPressRoom;
+
+        // Hand-arranged positions, keyed by room id: the working copy of
+        // assets/data/worldmap.json. Read once per session on the first map
+        // entry, updated on every drag release, written by Ctrl+S in map mode.
+        // A room absent from here is auto-placed, every time — which is also
+        // what an absent file means, so "no arrangement yet" needs no special
+        // case anywhere.
+        private readonly Dictionary<string, Vector2> _mapStored = new(StringComparer.Ordinal);
+        private bool _mapPositionsLoaded;
 
         /// <summary>Everything between the top bar and the status bar.</summary>
         private static Rectangle MapBoardRect => new(
@@ -1767,6 +1778,7 @@ namespace SorceryForge
             _mapLeftDown = _mapMidDown = _mapPressMoved = false;
             _mapPressRoom = null;
 
+            LoadMapPositions();
             RebuildMapBoard();
 
             _mapView.Viewport = MapBoardRect;
@@ -1806,13 +1818,79 @@ namespace SorceryForge
                     BackgroundAsset = meta.BackgroundAsset ?? "",
                 });
 
-            // No stored positions yet: every box is auto-placed by the BFS
-            // layout, which is deterministic, so the board looks the same every
-            // time it is built from the same world.
-            WorldMap.PlaceRooms(_mapRooms, null, _lastDoorTable);
+            // Hand-arranged rooms take their stored position; everything else
+            // is auto-placed by the deterministic BFS layout. Rebuilding is
+            // therefore safe at any moment — it never moves a room the user
+            // put somewhere.
+            WorldMap.PlaceRooms(_mapRooms, _mapStored, _lastDoorTable);
 
             _mapEdges = WorldMap.BuildEdges(_mapRooms, _lastDoorTable, _state.DoorStatus);
             _mapContentBounds = WorldMap.ContentBounds(_mapRooms);
+        }
+
+        /// <summary>
+        /// Read worldmap.json once per session, on the first entry into the
+        /// map. Re-reading on later entries would throw away drags the user
+        /// has made but not yet saved.
+        /// </summary>
+        private void LoadMapPositions()
+        {
+            if (_mapPositionsLoaded) return;
+            _mapPositionsLoaded = true;
+
+            var stored = WorldMapFile.Load(EditorPaths.RepoAssetsDataDir, out string? error);
+            _mapStored.Clear();
+
+            // Positions for rooms that no longer exist are dropped here and
+            // gone from the file on the next save. Keeping them would silt up a
+            // file whose entire content is meant to be deliberate acts, with
+            // entries nobody can attribute to anything.
+            int dropped = 0;
+            foreach (var pair in stored)
+            {
+                if (RoomMeta.Find(pair.Key) != null) _mapStored[pair.Key] = pair.Value;
+                else dropped++;
+            }
+
+            _state.MapDirty = false;
+            _mapLoadNote = error ?? (dropped > 0
+                ? $" ({dropped} position(s) for rooms that no longer exist will be dropped on save)"
+                : null);
+        }
+
+        // Carried from the load so the first map status line can mention a
+        // problem with the file without the load having to own the status bar.
+        private string? _mapLoadNote;
+
+        /// <summary>
+        /// Write the arrangement to assets/data/worldmap.json. Ctrl+S in map
+        /// mode; room-mode Ctrl+S is untouched and still saves the room.
+        /// </summary>
+        // Born-empty discipline, the same rule the room loaders follow and for
+        // the same reason: nothing arranged and no file yet writes nothing, so
+        // an untouched map never adds a file to the repository. Nothing
+        // arranged but a file EXISTS still writes — that is a user who dragged
+        // every room back to auto-placement, and their reset has to persist.
+        private void SaveWorldMap()
+        {
+            try
+            {
+                bool wrote = WorldMapFile.Save(_mapRooms, EditorPaths.RepoAssetsDataDir);
+                _state.MapDirty = false;
+                _discardArmed = false;
+
+                int arranged = 0;
+                foreach (var room in _mapRooms) if (room.Arranged) arranged++;
+
+                _state.Status = wrote
+                    ? $"Saved {WorldMapFile.FileName} — {arranged} room(s) arranged by hand, " +
+                      $"{_mapRooms.Count - arranged} auto-placed."
+                    : $"Nothing to save — no room has been dragged, so no {WorldMapFile.FileName} was created.";
+            }
+            catch (Exception ex)
+            {
+                _state.Status = $"Saving {WorldMapFile.FileName} failed: {ex.Message}";
+            }
         }
 
         private string MapStatusLine()
@@ -1820,7 +1898,10 @@ namespace SorceryForge
             string doors = _mapDoors.Bad == 0
                 ? $"{_mapDoors.Total} door links, all clean"
                 : $"{_mapDoors.Bad} of {_mapDoors.Total} door links broken";
-            return $"World map: {_mapRooms.Count} rooms, {doors}. Click a room to open it.";
+            string note = _mapLoadNote ?? "";
+            _mapLoadNote = null;   // said once, on the entry that read the file
+            return $"World map: {_mapRooms.Count} rooms, {doors}. " +
+                   $"Click a room to open it, drag to arrange, Ctrl+S saves the arrangement.{note}";
         }
 
         // --------------------------------------------------------------------
@@ -1838,6 +1919,12 @@ namespace SorceryForge
             // editor here — the exit-with-autosave path lives in room view,
             // where the unsaved work it protects actually is.
             if (Pressed(Keys.Escape)) { LeaveMapMode(); return; }
+
+            // Ctrl+S in map mode saves the ARRANGEMENT. Room Ctrl+S is
+            // untouched and still saves the room: two modes, two things to
+            // save, one key that means "persist what is in front of you".
+            bool ctrl = _keysNow.IsKeyDown(Keys.LeftControl) || _keysNow.IsKeyDown(Keys.RightControl);
+            if (ctrl && Pressed(Keys.S)) { SaveWorldMap(); return; }
 
             var mouse = new Point(_mouseNow.X, _mouseNow.Y);
             bool overBoard = MapBoardRect.Contains(mouse);
@@ -1870,8 +1957,9 @@ namespace SorceryForge
 
         /// <summary>
         /// Middle-drag pans. Left-press arms a click; travel past the slop
-        /// turns it into a pan instead, and a release inside the slop over a
-        /// room opens that room.
+        /// turns it into a drag — of the room under the press, or of the board
+        /// if there wasn't one — and a release inside the slop over a room
+        /// opens that room.
         /// </summary>
         private void HandleMapDrag(Point mouse, bool overBoard)
         {
@@ -1885,6 +1973,7 @@ namespace SorceryForge
             {
                 StartMapPress(mouse, out _mapLeftDown);
                 _mapPressRoom = WorldMap.RoomAt(_mapRooms, _mapView.ScreenToMap(mouse));
+                if (_mapPressRoom != null) _mapPressRoomPos = _mapPressRoom.Position;
             }
 
             if (!(_mapLeftDown || _mapMidDown))
@@ -1898,22 +1987,60 @@ namespace SorceryForge
             if (Math.Abs(travelX) > MapClickSlop || Math.Abs(travelY) > MapClickSlop)
                 _mapPressMoved = true;
 
-            // Middle-drag pans from the first pixel; left-drag only once it has
-            // stopped looking like a click. Both offset from the pan recorded at
-            // press rather than accumulating per-frame deltas, so a slow drag
-            // out and back returns the board to where it started.
-            if (_mapMidDown || _mapPressMoved)
+            // Everything below offsets from the state recorded AT PRESS rather
+            // than accumulating per-frame deltas: a per-frame delta rounds to
+            // map units every frame and the error piles up, so a slow drag out
+            // and back would not return to where it began.
+            var delta = _mapView.ScreenDeltaToMap(new Point(travelX, travelY));
+
+            if (_mapLeftDown && _mapPressMoved && _mapPressRoom != null)
             {
-                _mapView.Pan = _mapPressPan - _mapView.ScreenDeltaToMap(new Point(travelX, travelY));
+                // Dragging a room. Rounded to whole map units so the number
+                // that reaches worldmap.json is one a human can read, and so a
+                // drag at 6% zoom doesn't write sixteen-decimal noise.
+                _mapPressRoom.Position = new Vector2(
+                    MathF.Round(_mapPressRoomPos.X + delta.X),
+                    MathF.Round(_mapPressRoomPos.Y + delta.Y));
+                _mapContentBounds = WorldMap.ContentBounds(_mapRooms);
+            }
+            else if (_mapMidDown || _mapPressMoved)
+            {
+                _mapView.Pan = _mapPressPan - delta;
                 _mapView.ClampPan(_mapContentBounds);
             }
 
             if (_mapLeftDown && LeftReleased())
             {
                 _mapLeftDown = false;
-                if (!_mapPressMoved && _mapPressRoom != null) OpenRoomFromMap(_mapPressRoom);
+                if (_mapPressMoved && _mapPressRoom != null) CommitRoomDrag(_mapPressRoom);
+                else if (!_mapPressMoved && _mapPressRoom != null) OpenRoomFromMap(_mapPressRoom);
                 _mapPressRoom = null;
             }
+        }
+
+        /// <summary>
+        /// A finished room drag: record the position and mark the arrangement
+        /// unsaved.
+        /// </summary>
+        // Committed on RELEASE, not per frame. A drag abandoned by leaving map
+        // mode mid-gesture therefore records nothing, and the next entry's
+        // RebuildMapBoard puts the room back where the file (or the auto
+        // layout) says it belongs.
+        private void CommitRoomDrag(MapRoom room)
+        {
+            room.Arranged = true;
+            _mapStored[room.RoomId] = room.Position;
+            _state.MapDirty = true;
+            _discardArmed = false;         // new edits re-arm the discard guard
+
+            // The arrows are anchored to the boxes, so they have to be rebuilt
+            // around the room's new position. Cheap — it is arithmetic over the
+            // door table already in hand, not a reload.
+            _mapEdges = WorldMap.BuildEdges(_mapRooms, _lastDoorTable, _state.DoorStatus);
+            _mapContentBounds = WorldMap.ContentBounds(_mapRooms);
+
+            _state.Status = $"Moved {room.RoomId} to ({(int)room.Position.X}, {(int)room.Position.Y}). " +
+                            $"Ctrl+S saves the arrangement to {WorldMapFile.FileName}.";
         }
 
         private void StartMapPress(Point mouse, out bool flag)
@@ -2151,12 +2278,31 @@ namespace SorceryForge
         // editing.
         private bool _discardArmed;
 
-        private bool ConfirmDiscardUnsavedEdits()
+        /// <summary>
+        /// Arm-then-allow guard in front of anything that discards unsaved
+        /// work. <paramref name="includeMap"/> adds the world-map arrangement
+        /// to what counts as unsaved.
+        /// </summary>
+        // Only the EXIT path passes it. The three room flags are working state
+        // that LoadRoom replaces, so every room-loading caller must consult
+        // them; the map arrangement lives in EditorGame and survives room
+        // switches, room creation and imports untouched. Quitting is the one
+        // action that loses it — so quitting is the one caller that asks. A
+        // guard that blocks Prev/Next over something Prev/Next cannot destroy
+        // (and that room-mode Ctrl+S cannot clear, since that saves the room)
+        // would train the user to double-tap through every warning, which is
+        // exactly how the class of bug PR 1 fixed gets back in.
+        private bool ConfirmDiscardUnsavedEdits(bool includeMap = false)
         {
-            if (!_state.BackgroundDirty && !_state.CollisionDirty && !_state.PlacementsDirty) return true;
+            bool roomDirty = _state.BackgroundDirty || _state.CollisionDirty || _state.PlacementsDirty;
+            bool mapDirty = includeMap && _state.MapDirty;
+            if (!roomDirty && !mapDirty) return true;
             if (_discardArmed) { _discardArmed = false; return true; }
+
             _discardArmed = true;
-            _state.Status = "Unsaved edits! Save (Ctrl+S), or repeat the action to discard.";
+            _state.Status = roomDirty
+                ? "Unsaved edits! Save (Ctrl+S), or repeat the action to discard."
+                : "Unsaved map arrangement! Tab to the map and Ctrl+S, or repeat the action to discard.";
             return false;
         }
 
@@ -2287,7 +2433,10 @@ namespace SorceryForge
             // the second confirms. (In map mode Escape returns to the room
             // view instead — see HandleMapInput. The exit path is reachable
             // from room view exactly as it always was.)
-            if (Pressed(Keys.Escape) && ConfirmDiscardUnsavedEdits()) Exit();
+            //
+            // includeMap: quitting is the one action that loses an unsaved
+            // board arrangement, so it is the one that has to ask about it.
+            if (Pressed(Keys.Escape) && ConfirmDiscardUnsavedEdits(includeMap: true)) Exit();
 
             HandleButtons();
             HandleInspectorScroll();
@@ -3390,7 +3539,10 @@ namespace SorceryForge
             // is and how to leave, in place of the room title.
             if (_mapMode)
             {
-                string mapTitle = $"WORLD MAP — {_mapRooms.Count} rooms   |   Tab or Esc: back to {_state.CurrentRoom.RoomId}";
+                // Same "*" language the room title uses for unsaved work — here
+                // it means the board has been arranged and not yet written.
+                string mapTitle = $"WORLD MAP{(_state.MapDirty ? " *" : "")} — {_mapRooms.Count} rooms" +
+                                  $"   |   Tab or Esc: back to {_state.CurrentRoom.RoomId}";
                 var mapSize = MeasureText(mapTitle);
                 int mapGap = _rightBankLeft - _leftBankRight;
                 if (mapGap >= mapSize.X + 16)
@@ -4146,13 +4298,20 @@ namespace SorceryForge
             string view;
             if (_mapMode)
             {
-                view = $"Map {_mapView.ZoomPercent}% | Tab/Esc: room";
+                view = $"Map {_mapView.ZoomPercent}%";
+                if (_state.MapDirty) view += " | map*";
+                view += " | Tab/Esc: room";
             }
             else
             {
                 view = $"Zoom {EditorLayout.Zoom}x";
                 if (_state.Mode == EditorMode.Erase) view += $" | Brush {_state.BrushSize}px";
                 if (_state.BackgroundDirty) view += " | PNG*";
+                // Shown from ROOM mode too: an unsaved arrangement is a thing
+                // the user has that quitting would lose, and the room title's
+                // "*" means this room's edits — it would be a lie to fold the
+                // map's state into it.
+                if (_state.MapDirty) view += " | map*";
                 view += " | Tab: map";
             }
             var viewSize = MeasureText(view);

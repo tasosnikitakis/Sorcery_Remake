@@ -40,10 +40,11 @@ namespace SorceryForge
         public Vector2 Position;
 
         /// <summary>
-        /// True when Position came from worldmap.json rather than from
-        /// auto-placement. Only these are written back — see WorldMapFile.
+        /// True when this room was placed BY HAND — loaded from worldmap.json,
+        /// or just dragged. Exactly the set WorldMapFile writes back; an
+        /// auto-placed room is never recorded.
         /// </summary>
-        public bool FromFile;
+        public bool Arranged;
 
         public Rectangle Box =>
             new((int)Position.X, (int)Position.Y, WorldMap.RoomWidth, WorldMap.RoomHeight);
@@ -141,12 +142,12 @@ namespace SorceryForge
                 if (stored != null && stored.TryGetValue(room.RoomId, out var saved))
                 {
                     room.Position = saved;
-                    room.FromFile = true;
+                    room.Arranged = true;
                 }
                 else
                 {
                     room.Position = auto[room.RoomId];
-                    room.FromFile = false;
+                    room.Arranged = false;
                 }
             }
         }

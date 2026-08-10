@@ -35,16 +35,19 @@
 //                 right boxes; statuses match the validator's, door for door
 //   5 view        MapView's transform round-trips, anchors its zoom, clamps
 //                 its pan, and frames the board
+//   6 file        worldmap.json: born empty, only hand-arranged rooms in it,
+//                 byte-identical round trip, invisible to RoundTrip
 //
 // HOW TO RUN
 //
 //   dotnet build tools/MapCheck/MapCheck.csproj
 //   dotnet run   --project tools/MapCheck/MapCheck.csproj
+//   dotnet run   --project tools/MapCheck/MapCheck.csproj -- --out <dir>
 //   dotnet run   --project tools/MapCheck/MapCheck.csproj -- --board
 //
 //   Exit 0 = every check passed. Exit 1 = failures (listed inline as FAIL).
-//   Exit 2 = could not run (bad arguments, repo root not found, unreadable or
-//            invalid assets/data/rooms.json).
+//   Exit 2 = could not run (bad arguments, unsafe --out, repo root not found,
+//            unreadable or invalid assets/data/rooms.json).
 //
 //   --board prints the computed board — every room's column, row and position,
 //   and every arrow with its verdict. Read it when a map looks wrong on screen
@@ -52,9 +55,10 @@
 //
 // SAFETY
 //
-//   Reads only. It never writes a file anywhere, so it needs no scratch
-//   directory and no --out: assets/data and Content/ are opened, parsed, and
-//   left exactly as they were.
+//   assets/data and Content/ are READ ONLY: opened, parsed, left as they were.
+//   The one thing this harness writes is a scratch worldmap.json, inside a
+//   scratch directory validated before anything touches it — the repository's
+//   own arrangement file is never opened for writing.
 // ============================================================================
 
 using Microsoft.Xna.Framework;
@@ -71,9 +75,12 @@ namespace SorceryRemake.Tools.MapCheck
         private static int _failures;
         private static int _checks;
 
+        private const string DefaultScratchName = "sorcery-mapcheck";
+
         private static int Main(string[] args)
         {
             bool dumpBoard = false;
+            string? outArg = null;
 
             for (int i = 0; i < args.Length; i++)
             {
@@ -81,6 +88,10 @@ namespace SorceryRemake.Tools.MapCheck
                 {
                     case "--board":
                         dumpBoard = true;
+                        break;
+                    case "--out":
+                        if (i + 1 >= args.Length) { Console.Error.WriteLine("--out needs a directory"); return 2; }
+                        outArg = args[++i];
                         break;
                     case "-h":
                     case "--help":
@@ -101,8 +112,25 @@ namespace SorceryRemake.Tools.MapCheck
                 return 2;
             }
 
+            string scratch = Path.GetFullPath(outArg ?? Path.Combine(Path.GetTempPath(), DefaultScratchName));
+
             Console.WriteLine("MapCheck — SorceryForge world-map regression harness");
             Console.WriteLine($"  repo  : {repoRoot}");
+            Console.WriteLine($"  scratch: {scratch}");
+
+            // Same contract as the other two harnesses: the scratch directory
+            // may not be, contain, or sit inside the repository, so a mistyped
+            // --out cannot land a worldmap.json in assets/data.
+            string s = Path.TrimEndingDirectorySeparator(scratch);
+            string root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(repoRoot));
+            if (string.Equals(s, root, StringComparison.OrdinalIgnoreCase)
+                || s.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+                || root.StartsWith(s + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+            {
+                Console.Error.WriteLine(
+                    $"refusing to run: '{scratch}' is, sits inside, or contains the repository root '{repoRoot}'.");
+                return 2;
+            }
 
             List<RoomMeta> rooms;
             try
@@ -132,6 +160,7 @@ namespace SorceryRemake.Tools.MapCheck
             CheckGeometry(board);
             CheckArrows(board, doorsByRoom, report, edges);
             CheckView(board);
+            CheckFile(board, scratch);
 
             Console.WriteLine();
             Console.WriteLine($"  {_checks} checks, {_failures} failure(s)");
@@ -146,14 +175,16 @@ namespace SorceryRemake.Tools.MapCheck
 
         private static void PrintUsage()
         {
-            Console.WriteLine("usage: dotnet run --project tools/MapCheck/MapCheck.csproj -- [--board]");
+            Console.WriteLine("usage: dotnet run --project tools/MapCheck/MapCheck.csproj -- [--out <dir>] [--board]");
             Console.WriteLine();
-            Console.WriteLine("  --board  print the computed board (rooms with their columns and");
-            Console.WriteLine("           positions, arrows with their verdicts) and exit.");
+            Console.WriteLine("  --out <dir>  scratch directory for the worldmap.json checks.");
+            Console.WriteLine($"               default: %TEMP%\\{DefaultScratchName}");
+            Console.WriteLine("  --board      print the computed board (rooms with their columns and");
+            Console.WriteLine("               positions, arrows with their verdicts) and exit.");
             Console.WriteLine();
             Console.WriteLine("exit 0 = all checks pass; 1 = failures; 2 = could not run.");
             Console.WriteLine();
-            Console.WriteLine("reads only — it writes nothing, anywhere.");
+            Console.WriteLine("assets/data and Content/ are read only; only the scratch dir is written.");
         }
 
         // ====================================================================
@@ -193,7 +224,7 @@ namespace SorceryRemake.Tools.MapCheck
                 Console.WriteLine($"    {r.RoomId.PadRight(18)} col {(int)r.Position.X / WorldMap.ColumnPitch}" +
                                   $"  row {(int)r.Position.Y / WorldMap.RowPitch}" +
                                   $"  at ({(int)r.Position.X}, {(int)r.Position.Y})" +
-                                  $"  {(r.FromFile ? "[stored]" : "[auto]")}");
+                                  $"  {(r.Arranged ? "[stored]" : "[auto]")}");
 
             Console.WriteLine();
             Console.WriteLine("  ARROWS");
@@ -399,7 +430,7 @@ namespace SorceryRemake.Tools.MapCheck
             var stored = new Dictionary<string, Vector2> { [mixed[0].RoomId] = new Vector2(-1000, -500) };
             WorldMap.PlaceRooms(mixed, stored, doorsByRoom);
             Assert("a stored position overrides auto-placement",
-                mixed[0].Position == new Vector2(-1000, -500) && mixed[0].FromFile);
+                mixed[0].Position == new Vector2(-1000, -500) && mixed[0].Arranged);
             Assert("and leaves every other room exactly where it was",
                 mixed.Count == board.Count && SamePositionsExceptFirst(board, mixed));
         }
@@ -407,7 +438,7 @@ namespace SorceryRemake.Tools.MapCheck
         private static bool SamePositionsExceptFirst(List<MapRoom> a, List<MapRoom> b)
         {
             for (int i = 1; i < a.Count; i++)
-                if (a[i].RoomId != b[i].RoomId || a[i].Position != b[i].Position || b[i].FromFile) return false;
+                if (a[i].RoomId != b[i].RoomId || a[i].Position != b[i].Position || b[i].Arranged) return false;
             return true;
         }
 
@@ -768,6 +799,161 @@ namespace SorceryRemake.Tools.MapCheck
                 view.MapRectToScreen(new Rectangle(0, 0, WorldMap.RoomWidth, WorldMap.RoomHeight)).Width
                     == (int)(WorldMap.RoomWidth * view.Scale));
         }
+
+        // ====================================================================
+        // 6. THE FILE
+        // ====================================================================
+        // assets/data/worldmap.json, exercised in a scratch directory. The real
+        // one is never touched: only the arrangement is at stake, but this
+        // harness's contract is that it writes nothing into the repository.
+        // ====================================================================
+
+        private static void CheckFile(List<MapRoom> board, string scratch)
+        {
+            Section("6. THE FILE — worldmap.json, born empty and stable");
+
+            Directory.CreateDirectory(scratch);
+            string path = WorldMapFile.GetPath(scratch);
+            if (File.Exists(path)) File.Delete(path);
+
+            // ---- born-empty discipline ----
+            // Nothing arranged and no file yet: write nothing, so an untouched
+            // map never adds a file to the repository. This is the 3b rule.
+            var untouched = CloneBoard(board);
+            Assert("an untouched board writes no file",
+                !WorldMapFile.Save(untouched, scratch) && !File.Exists(path));
+
+            // ---- only arranged rooms are recorded ----
+            var arranged = CloneBoard(board);
+            arranged[0].Arranged = true;
+            arranged[0].Position = new Vector2(64, -32);
+            arranged[2].Arranged = true;
+            arranged[2].Position = new Vector2(1000, 2000);
+
+            Assert("dragging two rooms and saving writes the file",
+                WorldMapFile.Save(arranged, scratch) && File.Exists(path));
+
+            var loaded = WorldMapFile.Load(scratch, out string? loadError);
+            Assert("  it loads back with no error", loadError == null, loadError);
+            Assert("  holding exactly the two dragged rooms", loaded.Count == 2, $"{loaded.Count} entries");
+            Assert("  at exactly the positions they were dragged to",
+                loaded.TryGetValue(arranged[0].RoomId, out var p0) && p0 == new Vector2(64, -32)
+                && loaded.TryGetValue(arranged[2].RoomId, out var p2) && p2 == new Vector2(1000, 2000));
+            Assert("  and no auto-placed room in sight",
+                !loaded.ContainsKey(arranged[1].RoomId));
+
+            // ---- byte-identical round trip ----
+            // Same property RoundTrip's self-test pins for rooms.json, for the
+            // same reason: a save that reformats buries the one line that
+            // changed in whole-file noise.
+            string first = File.ReadAllText(path);
+            var reboard = CloneBoard(board);
+            WorldMap.PlaceRooms(reboard, loaded, new Dictionary<string, List<DoorDef>>());
+            WorldMapFile.Save(reboard, scratch);
+            Assert("load -> save is byte-identical", File.ReadAllText(path) == first);
+
+            // ---- registry order, not drag order ----
+            var reversed = CloneBoard(board);
+            reversed.Reverse();
+            WorldMap.PlaceRooms(reversed, loaded, new Dictionary<string, List<DoorDef>>());
+            WorldMapFile.Save(reversed, scratch);
+            string reversedText = File.ReadAllText(path);
+            Assert("line order follows the list given, so registry order is stable",
+                reversedText != first && LineCount(reversedText) == LineCount(first));
+            // Put it back the right way round for the checks that follow.
+            WorldMapFile.Save(reboard, scratch);
+
+            // ---- unknown ids ----
+            File.WriteAllText(path,
+                "{\r\n  \"rooms\": {\r\n" +
+                "    \"" + board[0].RoomId + "\": { \"x\": 10, \"y\": 20 },\r\n" +
+                "    \"a_room_that_was_deleted\": { \"x\": 1, \"y\": 2 }\r\n" +
+                "  }\r\n}\r\n");
+            var withGhost = WorldMapFile.Load(scratch, out _);
+            Assert("an unknown room id survives the raw load", withGhost.Count == 2);
+
+            // ...and is dropped the moment it meets the registry, then gone on
+            // the next save. The editor does this filtering in LoadMapPositions;
+            // the file layer stays dumb on purpose, so a hand-edited file is
+            // never silently rewritten just by being read.
+            var filtered = new Dictionary<string, Vector2>(StringComparer.Ordinal);
+            foreach (var pair in withGhost) if (RoomMeta.Find(pair.Key) != null) filtered[pair.Key] = pair.Value;
+            Assert("  filtering against the registry drops it", filtered.Count == 1);
+
+            var afterGhost = CloneBoard(board);
+            WorldMap.PlaceRooms(afterGhost, filtered, new Dictionary<string, List<DoorDef>>());
+            WorldMapFile.Save(afterGhost, scratch);
+            Assert("  and the next save no longer mentions it",
+                !File.ReadAllText(path).Contains("a_room_that_was_deleted", StringComparison.Ordinal));
+
+            // ---- a reset persists ----
+            // Nothing arranged but a file EXISTS: that is a user who dragged
+            // every room back, and it must be written, not skipped. Getting
+            // this backwards is how a deletion silently fails to stick.
+            var reset = CloneBoard(board);
+            Assert("clearing every arrangement still writes (the reset persists)",
+                WorldMapFile.Save(reset, scratch) && File.Exists(path));
+            Assert("  and the file is now empty of rooms",
+                WorldMapFile.Load(scratch, out _).Count == 0);
+
+            // ---- deleting the file resets the board ----
+            Assert("deleting the file leaves nothing stored", WorldMapFile.Delete(scratch)
+                && WorldMapFile.Load(scratch, out _).Count == 0);
+            var afterDelete = CloneBoard(board);
+            WorldMap.PlaceRooms(afterDelete, WorldMapFile.Load(scratch, out _), RealDoorTableFor(afterDelete));
+            bool backToAuto = true;
+            for (int i = 0; i < board.Count; i++)
+                if (afterDelete[i].Position != board[i].Position || afterDelete[i].Arranged) backToAuto = false;
+            Assert("  and the board is back to auto-placement", backToAuto);
+
+            // ---- a broken file costs the arrangement, not the editor ----
+            File.WriteAllText(path, "{ this is not json");
+            var broken = WorldMapFile.Load(scratch, out string? brokenError);
+            Assert("an unreadable file reports and falls back to auto-placement",
+                broken.Count == 0 && brokenError != null, brokenError ?? "no error reported");
+            File.Delete(path);
+
+            // ---- invisible to RoundTrip ----
+            // tools/RoundTrip seeds and sweeps content_* and layout_* only, and
+            // flags any OTHER file its save path creates in the scratch copy.
+            // worldmap.json is written by neither loader, so it can never
+            // appear there — but "can never" is worth asserting rather than
+            // assuming, because the name is the whole reason.
+            Assert("worldmap.json is outside RoundTrip's seed/sweep prefixes",
+                !WorldMapFile.FileName.StartsWith("content_", StringComparison.OrdinalIgnoreCase)
+                && !WorldMapFile.FileName.StartsWith("layout_", StringComparison.OrdinalIgnoreCase));
+            Assert("  and no room id could ever derive that name",
+                RoomMeta.Find("worldmap") == null
+                && !File.Exists(RoomContentLoader.GetPath("worldmap", scratch)));
+        }
+
+        private static List<MapRoom> CloneBoard(List<MapRoom> board)
+        {
+            var copy = new List<MapRoom>(board.Count);
+            foreach (var r in board)
+                copy.Add(new MapRoom
+                {
+                    RoomId = r.RoomId,
+                    DisplayName = r.DisplayName,
+                    BackgroundAsset = r.BackgroundAsset,
+                    Position = r.Position,
+                    Arranged = r.Arranged,
+                });
+            return copy;
+        }
+
+        private static Dictionary<string, List<DoorDef>> RealDoorTableFor(List<MapRoom> board)
+        {
+            var table = new Dictionary<string, List<DoorDef>>(StringComparer.Ordinal);
+            foreach (var r in board)
+            {
+                var meta = RoomMeta.Find(r.RoomId);
+                table[r.RoomId] = meta != null ? new List<DoorDef>(meta.Doors) : new List<DoorDef>();
+            }
+            return table;
+        }
+
+        private static int LineCount(string text) => text.Replace("\r\n", "\n").Split('\n').Length;
 
         // ====================================================================
         // PLUMBING

@@ -63,6 +63,7 @@
     <Compile Include="..\..\SorceryForge\Placement.cs" />
     <Compile Include="..\..\SorceryForge\RoomMeta.cs" />
     <Compile Include="..\..\SorceryForge\WorldMap.cs" />
+    <Compile Include="..\..\SorceryForge\WorldMapFile.cs" />
     <Compile Include="Program.cs" />
   </ItemGroup>
 
