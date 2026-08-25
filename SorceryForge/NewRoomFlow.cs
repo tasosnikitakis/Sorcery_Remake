@@ -90,8 +90,9 @@ namespace SorceryForge
         //
         //   RoomBG_Chateau3.png
         //     -> strip "RoomBG_" and ".png"        -> "Chateau3"
-        //     -> split into words at each internal
-        //        capital and at a trailing digit run -> ["Chateau", "3"]
+        //     -> split into words at each separator
+        //        ('_' / '-'), at each internal
+        //        capital, and at a trailing digit run -> ["Chateau", "3"]
         //     -> display name = words joined by spaces -> "Chateau 3"
         //     -> room id      = words lowercased,
         //        joined by underscores               -> "chateau_3"
@@ -99,6 +100,32 @@ namespace SorceryForge
         // One decomposition, two renderings — the id is always the display name
         // in snake_case, which is the room-id convention doc/07 documents
         // ("snake_case with the area prefix": forest_1, chateau_0, stonehenge).
+        //
+        // SEPARATORS ARE CONSUMED, NOT CARRIED (PR 5b, and it was a real bug).
+        // The split used to look only for capital and digit boundaries, so a
+        // name that was ALREADY snake_case kept its separator inside the word
+        // in front of it: "chateau_1" split to ["chateau_", "1"] and rejoined
+        // as "chateau__1". Two consequences, the second serious:
+        //
+        //   - mangled ids with a doubled underscore in them, and
+        //   - a COLLISION BYPASS. chateau_1 is a shipped room, so a capture
+        //     named chateau_1.png must be refused — but the id actually derived
+        //     was chateau__1, which collides with nothing, so the check passed
+        //     and the editor happily built a near-duplicate room beside it.
+        //
+        // Hence the property this rule now guarantees, and that
+        // tools/ImportCheck pins:
+        //
+        //     DeriveRoomId(DeriveRoomId(x)) == DeriveRoomId(x)      (idempotent)
+        //     DeriveRoomId(x) never contains "__"
+        //
+        // Idempotence is what makes the collision check trustworthy: feeding a
+        // derived id back through the rule has to land on the same string, or
+        // "is this id taken?" is being asked about a different id than the one
+        // that would be created. It holds because a derived id is lowercase —
+        // so StripPrefix, which matches "RoomBG_" ordinally, can never fire on
+        // one — and because '_' is now a separator rather than a word
+        // character, so a second pass re-splits exactly where the first joined.
         //
         // Checked against all nine shipped rooms: it reproduces every display
         // name exactly, and every room id except tunnelmouth, which this rule
@@ -123,16 +150,53 @@ namespace SorceryForge
                 : asset;
 
         /// <summary>
-        /// Split PascalCase-with-trailing-digits into words: "OutsideChateau"
-        /// → ["Outside", "Chateau"], "Chateau3" → ["Chateau", "3"].
+        /// The two characters that already mean "word boundary" in a base name.
         /// </summary>
+        // These are exactly the two non-alphanumerics IsLegalBaseName admits,
+        // so between them and the case/digit boundaries below there is no
+        // punctuation left that a word could end up carrying.
+        private static bool IsSeparator(char c) => c == '_' || c == '-';
+
+        /// <summary>
+        /// Split a base name into words: "OutsideChateau" → ["Outside",
+        /// "Chateau"], "Chateau3" → ["Chateau", "3"], "chateau_1" →
+        /// ["chateau", "1"], "near-chateau" → ["near", "chateau"].
+        /// </summary>
+        // Two passes rather than one predicate, because the two kinds of
+        // boundary behave differently and conflating them is what produced the
+        // "chateau__1" bug: a separator is CONSUMED (it is not part of either
+        // neighbour), while a capital or digit boundary is a seam BETWEEN two
+        // characters that are both kept.
+        //
+        // Empty runs — a leading, trailing or doubled separator — contribute no
+        // word at all. That is what keeps "__" out of the joined id no matter
+        // what the file was called, and it is why "___.png" yields an empty id
+        // that CheckRoomId then refuses by name.
         private static List<string> SplitWords(string name)
         {
             var words = new List<string>();
             if (string.IsNullOrEmpty(name)) return words;
 
-            int start = 0;
-            for (int i = 1; i < name.Length; i++)
+            int runStart = 0;
+            for (int i = 0; i <= name.Length; i++)
+            {
+                if (i < name.Length && !IsSeparator(name[i])) continue;
+                AddCasedWords(name, runStart, i, words);
+                runStart = i + 1;
+            }
+            return words;
+        }
+
+        /// <summary>
+        /// Split name[start, end) — a run with no separators in it — at its
+        /// internal capitals and digit runs, appending the words found.
+        /// </summary>
+        private static void AddCasedWords(string name, int start, int end, List<string> words)
+        {
+            if (end <= start) return;   // empty run: a doubled or edge separator
+
+            int wordStart = start;
+            for (int i = start + 1; i < end; i++)
             {
                 // A word starts at an uppercase letter following a non-upper
                 // character, or at the first digit of a run following a letter.
@@ -141,11 +205,10 @@ namespace SorceryForge
                 bool capBoundary = char.IsUpper(name[i]) && !char.IsUpper(name[i - 1]);
                 bool digitBoundary = char.IsDigit(name[i]) && !char.IsDigit(name[i - 1]);
                 if (!capBoundary && !digitBoundary) continue;
-                words.Add(name.Substring(start, i - start));
-                start = i;
+                words.Add(name.Substring(wordStart, i - wordStart));
+                wordStart = i;
             }
-            words.Add(name.Substring(start));
-            return words;
+            words.Add(name.Substring(wordStart, end - wordStart));
         }
 
         // ====================================================================

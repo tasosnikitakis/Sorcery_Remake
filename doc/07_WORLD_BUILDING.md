@@ -192,7 +192,9 @@ That writes all three things step 1–2 below describe by hand: the `#begin` blo
 | `RoomBG_NearChateau.png` | `near_chateau` | `Near Chateau` |
 | `RoomBG_Stonehenge.png` | `stonehenge` | `Stonehenge` |
 
-The rule (`SorceryForge/NewRoomFlow.cs`): strip `RoomBG_` and `.png`, split at each internal capital and at a trailing digit run, then join the words with spaces for the display name and with underscores, lowercased, for the id. **Rename the file to change the room's id** — there is no rename-after-the-fact. A derived id that collides with an existing room or with a reserved test-room id (`room_1` / `room_2`) is listed in the picker but greyed out with the reason.
+The rule (`SorceryForge/NewRoomFlow.cs`): strip `RoomBG_` and `.png`, split into words at each separator (`_` or `-`, which are consumed), at each internal capital and at a trailing digit run, then join the words with spaces for the display name and with underscores, lowercased, for the id. **Rename the file to change the room's id** — there is no rename-after-the-fact. A derived id that collides with an existing room or with a reserved test-room id (`room_1` / `room_2`) is listed in the picker but greyed out with the reason.
+
+A name that is *already* snake_case derives itself: `chateau_1` → `chateau_1`, `near-chateau` → `near_chateau`. That idempotence is what makes the collision check trustworthy — the id being tested has to be the id that would be created. Until PR 5b it did not hold: the separator was counted as a boundary *and* kept, so `chateau_1` derived `chateau__1`, which collides with nothing and so was cheerfully created beside the shipped `chateau_1`. `tools/ImportCheck` section 5a now pins both `derive(derive(x)) == derive(x)` and "no derived id contains `__`".
 
 One shipped room diverges from this rule: `tunnelmouth` would derive as `tunnel_mouth`. Its three multi-word siblings (`near_chateau`, `inside_chateau`, `outside_chateau`) *are* snake_case, so it's the outlier. Nothing re-derives ids for existing rooms, so the divergence is inert — and room ids are persistence keys, so don't "fix" it.
 

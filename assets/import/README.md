@@ -18,11 +18,14 @@ everything:
 | `NearChateau.png` | `Content/RoomBG_NearChateau.png` | `near_chateau` | `Near Chateau` |
 | `Stonehenge.jpeg` | `Content/RoomBG_Stonehenge.png` | `stonehenge` | `Stonehenge` |
 
-**Use PascalCase.** The rule splits words at each internal capital and at a
-trailing run of digits, so `Chateau3` becomes "Chateau 3" and `chateau3`
-becomes "chateau3". The picker shows you the id and display name it derived
-before you click, so you can always check first — and rename the file and
-scan again if you don't like the answer.
+**Use PascalCase.** The rule splits words at each separator (`_` or `-`), at
+each internal capital and at a trailing run of digits, so `Chateau3` becomes
+"Chateau 3" and `chateau3` becomes "chateau3". A name that is already
+snake_case derives itself — `chateau_1` gives the id `chateau_1`, which means
+naming a capture after a room that already exists gets it refused rather than
+quietly turned into a near-duplicate. The picker shows you the id and display
+name it derived before you click, so you can always check first — and rename
+the file and scan again if you don't like the answer.
 
 The name may hold only letters, digits, `_` and `-`. A space, an accent or a
 dot puts the file in the list greyed out, telling you to rename it. Room ids

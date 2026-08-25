@@ -33,6 +33,8 @@
 //   3 resample    point sampling is every-Nth-pixel, with no blending
 //   4 pipeline    a synthesised 640x288 source end to end, toggle both ways
 //   5 naming      the filename rule and the size classifier
+//   5a derivation idempotence and no-doubled-underscore, the properties that
+//                 make the id-collision check trustworthy (PR 5b regression)
 //   6 candidates  a scratch import folder: which files are offered, and the
 //                 exact reason each refused one is refused
 //   7 creation    Create against a scratch tree: collision grid, an
@@ -460,6 +462,124 @@ namespace SorceryRemake.Tools.ImportCheck
                 NewRoomFlow.DeriveRoomId(asset) == "chateau_3", NewRoomFlow.DeriveRoomId(asset));
             Assert("display name derivation matches New Room's",
                 NewRoomFlow.DeriveDisplayName(asset) == "Chateau 3", NewRoomFlow.DeriveDisplayName(asset));
+
+            CheckIdDerivation();
+        }
+
+        // ====================================================================
+        // 5a. ID DERIVATION
+        // ====================================================================
+        // PR 5b, from the owner's live smoke: chateau_1.png derived the id
+        // chateau__1. The split treated the name's own '_' as a word boundary
+        // and then rejoined the words WITH an underscore, so the separator was
+        // counted twice. It mangled the id, and — much worse — it walked
+        // straight past the collision check, because "chateau_1 is taken" is
+        // true and "chateau__1 is taken" is not. A near-duplicate room could be
+        // created beside a shipped one.
+        //
+        // The fix is a property, not a special case, so this section asserts
+        // the property:
+        //
+        //     DeriveRoomId(DeriveRoomId(x)) == DeriveRoomId(x)
+        //     DeriveRoomId(x) never contains "__"
+        //
+        // Idempotence is exactly what the collision check needs to be
+        // trustworthy: the id that gets tested has to be the id that gets
+        // created. Both consumers of the rule — the Import picker and the New
+        // Room picker — call this one function, so fixing it here fixes both.
+        // ====================================================================
+
+        // Names chosen to cover every shape the rule can meet: PascalCase,
+        // trailing digits, already-snake_case, hyphens, acronyms, doubled and
+        // edge separators, digits-only, and the empty string.
+        private static readonly string[] DerivationCorpus =
+        {
+            "Chateau3", "Chateau_1", "chateau_1", "chateau_10", "Chateau",
+            "NearChateau", "near_chateau", "OutsideChateau", "TunnelMouth",
+            "Stonehenge", "stonehenge", "Room-7", "near-chateau", "NEARChateau",
+            "HUD2", "a", "A1", "9", "shot_2_of_3", "a__b", "_leading",
+            "trailing_", "--", "_", "__", "",
+            "RoomBG_Chateau3",                       // the prefixed form
+        };
+
+        private static void CheckIdDerivation()
+        {
+            Section("5a. ID DERIVATION — idempotent, and no doubled underscore");
+
+            // ---- the regression, stated as itself ----
+            // chateau_1.png is the file the owner actually dropped in.
+            string mangled = NewRoomFlow.DeriveRoomId(NewRoomFlow.AssetNameFor("chateau_1"));
+            Assert("chateau_1.png derives chateau_1 (was chateau__1)", mangled == "chateau_1", mangled);
+            Assert("  and is therefore refused as a registry collision",
+                NewRoomFlow.CheckRoomId(mangled, NewRoomFlow.TakenRoomIds(RoomManifest.All)) != null,
+                NewRoomFlow.CheckRoomId(mangled, NewRoomFlow.TakenRoomIds(RoomManifest.All)) ?? "accepted!");
+
+            AssertDerives("Chateau_1", "chateau_1", "Chateau 1");
+            AssertDerives("Chateau3", "chateau_3", "Chateau 3");
+            AssertDerives("NearChateau", "near_chateau", "Near Chateau");
+            AssertDerives("near_chateau", "near_chateau", "near chateau");
+            AssertDerives("near-chateau", "near_chateau", "near chateau");
+            AssertDerives("shot_2_of_3", "shot_2_of_3", "shot 2 of 3");
+            AssertDerives("_leading", "leading", "leading");
+            AssertDerives("a__b", "a_b", "a b");
+            AssertDerives("__", "", "");
+
+            // ---- the properties, over the whole corpus ----
+            bool idempotent = true, noDouble = true;
+            string? idemFail = null, doubleFail = null;
+            foreach (string name in DerivationCorpus)
+            {
+                string once = NewRoomFlow.DeriveRoomId(name);
+                string twice = NewRoomFlow.DeriveRoomId(once);
+                if (once != twice) { idempotent = false; idemFail ??= $"{name} -> {once} -> {twice}"; }
+                if (once.Contains("__", StringComparison.Ordinal))
+                { noDouble = false; doubleFail ??= $"{name} -> {once}"; }
+            }
+            Assert($"derive(derive(x)) == derive(x) for all {DerivationCorpus.Length} corpus names",
+                idempotent, idemFail);
+            Assert("no derived id contains \"__\"", noDouble, doubleFail);
+
+            // A derived id must also survive being used as a base name again —
+            // that is the path a user takes when they rename a rejected file to
+            // the id the picker showed them.
+            bool stableAsBaseName = true;
+            string? stableFail = null;
+            foreach (string name in DerivationCorpus)
+            {
+                string id = NewRoomFlow.DeriveRoomId(name);
+                if (id.Length == 0) continue;
+                string viaAsset = NewRoomFlow.DeriveRoomId(NewRoomFlow.AssetNameFor(id));
+                if (viaAsset != id) { stableAsBaseName = false; stableFail ??= $"{id} -> {viaAsset}"; }
+            }
+            Assert("re-importing under the derived id yields that same id", stableAsBaseName, stableFail);
+
+            // ---- the nine shipped rooms ----
+            // The rule's own comment claims it reproduces every shipped display
+            // name and every shipped id but tunnelmouth's. That claim guards
+            // the live registry against a derivation change, so assert it
+            // rather than leaving it as prose.
+            int idMatches = 0, nameMatches = 0;
+            var idDiverged = new List<string>();
+            foreach (var room in RoomManifest.All)
+            {
+                if (NewRoomFlow.DeriveRoomId(room.BackgroundAsset) == room.RoomId) idMatches++;
+                else idDiverged.Add($"{room.BackgroundAsset} -> {NewRoomFlow.DeriveRoomId(room.BackgroundAsset)} != {room.RoomId}");
+                if (NewRoomFlow.DeriveDisplayName(room.BackgroundAsset) == room.DisplayName) nameMatches++;
+            }
+            Assert("every shipped background re-derives its own display name",
+                nameMatches == RoomManifest.All.Count, $"{nameMatches}/{RoomManifest.All.Count}");
+            Assert("every shipped background re-derives its own id, except tunnelmouth",
+                idDiverged.Count == 1 && idDiverged[0].Contains("tunnel_mouth", StringComparison.Ordinal),
+                idDiverged.Count == 0 ? "none diverged" : string.Join("; ", idDiverged));
+        }
+
+        private static void AssertDerives(string baseName, string expectId, string expectName)
+        {
+            string asset = NewRoomFlow.AssetNameFor(baseName);
+            string id = NewRoomFlow.DeriveRoomId(asset);
+            string name = NewRoomFlow.DeriveDisplayName(asset);
+            Assert($"\"{baseName}\" -> id \"{expectId}\"", id == expectId, id);
+            Assert($"\"{baseName}\" -> name \"{expectName}\"", name == expectName, name);
         }
 
         private static void AssertLegal(string baseName, bool expected) =>
@@ -492,6 +612,10 @@ namespace SorceryRemake.Tools.ImportCheck
             WritePngStub(Path.Combine(importDir, "Odd.png"), 700, 500);
             WritePngStub(Path.Combine(importDir, "Tiny.png"), 100, 50);
             WritePngStub(Path.Combine(importDir, "Ghost.png"), 320, 144);
+            // PR 5b: the file from the owner's live smoke. Before the
+            // derivation fix this one was OFFERED, because it derived
+            // chateau__1 and nothing owns that id — the collision bypass.
+            WritePngStub(Path.Combine(importDir, "chateau_1.png"), 384, 270);
             File.WriteAllText(Path.Combine(importDir, "NotAnImage.png"), "this is not an image");
             File.WriteAllText(Path.Combine(importDir, "notes.txt"), "ignored: wrong extension");
 
@@ -501,7 +625,7 @@ namespace SorceryRemake.Tools.ImportCheck
 
             var found = ImageImport.FindCandidates(importDir, contentDir, RoomManifest.All);
 
-            Assert("only image extensions are listed (notes.txt ignored)", found.Count == 9, $"{found.Count} listed");
+            Assert("only image extensions are listed (notes.txt ignored)", found.Count == 10, $"{found.Count} listed");
 
             var chateau3 = Find(found, "Chateau3.jpg");
             Assert("Chateau3.jpg is importable", chateau3 != null && chateau3.CanCreate,
@@ -529,6 +653,7 @@ namespace SorceryRemake.Tools.ImportCheck
             AssertProblemMentions(found, "Ghost.png", "already exists in Content/");
             AssertProblemMentions(found, "NotAnImage.png", "could not read the image size");
             AssertProblemMentions(found, "Chateau3.png", "already derives");
+            AssertProblemMentions(found, "chateau_1.png", "room id 'chateau_1' already exists");
 
             // Ordering is the filename order the picker shows, so the file that
             // wins a duplicate derivation is predictable rather than whichever
