@@ -40,8 +40,12 @@ is why the character set is narrow and why nothing renames a room afterwards.
   screen back exactly.
 - **Anything else** — selecting it opens a crop step (the picker marks those
   rows `[crop]`): drag the 20:9 selection over the image, wheel to resize,
-  `Enter` to confirm, `Esc` to back out. It opens at the largest size that
-  fits, centred. Nothing is written until you confirm.
+  `Enter` to confirm, `Esc` to back out. Nothing is written until you confirm.
+  Where the box starts is a **preset**, keyed by the source's dimensions: your
+  last confirmed crop of a source that size, else the built-in for a 384×270
+  CPC full frame, else the largest 20:9 box that fits. The header strip names
+  which. A nudged box becomes the new preset — so a folder of identically
+  framed captures is framed once and confirmed thereafter.
 - **Smaller than 320×144** — refused. Cropping could only upscale, and the
   answer to a too-small capture is a better capture.
 

@@ -133,12 +133,45 @@ surprise):
 | `Enter` / **Confirm** | cut the selection to 320×144 and carry on into the import |
 | `Esc` / right-click / **Cancel** | back out; nothing has been written at this point, so there is no trace to clean up |
 
-The selection opens at the largest size that fits, centred, which is one nudge
-away from right for the usual case of one room plus a border. Scaling a crop
-that isn't a near-integer factor loses whole columns and wobbles the spacing by
-a pixel — that is unavoidable and still better than a filter, and the CPC
-quantize cleans up what it leaves. Capture at an exact multiple of 320×144 when
-you can.
+Scaling a crop that isn't a near-integer factor loses whole columns and wobbles
+the spacing by a pixel — that is unavoidable and still better than a filter, and
+the CPC quantize cleans up what it leaves. Capture at an exact multiple of
+320×144 when you can.
+
+#### Crop presets — where the box starts
+
+Every capture from one emulator is framed identically, so the rectangle that was
+right for the first one is right for all of them. The crop step remembers it,
+keyed by the **source's dimensions** and nothing else (not the filename — sizes
+are what actually determine where the playfield sits, and they survive renaming):
+
+| The box opens at | When | Header says |
+|---|---|---|
+| your last confirmed crop of a source this size | you have cropped one before | `preset from last 384×270 crop` |
+| the built-in 384×270 calibration | first 384×270 source, nothing stored | `built-in 384×270 preset (CPC full frame)` |
+| the largest 20:9 box that fits, centred | any other size | `no preset — largest 20:9 box that fits` |
+
+A preset is a **starting position, not a decision**: the overlay still opens,
+still draws the box, still waits for `Enter`. One glance confirms it, a nudge
+fixes it — and the nudged rectangle becomes the new preset, last-used wins.
+
+**The built-in** is `(32, 41, 320, 144)` on a source of exactly 384×270 — the
+CPC's 320×200 Mode 0 screen plus its hardware border, which is what this
+project's captures are. `x = 32` is also exactly `(384 − 320) / 2`, the CPC's own
+horizontal border arithmetic; `y = 41` is measured, because the 144-line room is
+a slice of the 200-line screen and there is no arithmetic to check it against.
+The result is a 1:1 cut — one room, pixel for pixel, no rescale at all. It is a
+default and nothing more: confirm one crop of a 384×270 source and your
+rectangle replaces it from then on.
+
+**Where presets live.** `.sorceryforge/settings.json` at the repo root, and it
+is **gitignored** — this is personal workspace state (which rectangle *your*
+emulator puts the playfield at), not a shared decision about the world the way
+`assets/data` is, and it must never be able to gate someone else's clone.
+Deleting it costs one re-frame. The file is born empty (nothing is written until
+you confirm your first crop), round-trips byte-identically, and preserves
+members it doesn't recognise, because it will grow other settings later. See
+`SorceryForge/EditorSettings.cs`.
 
 **CPC quantize** (default on) snaps every pixel to the nearest of the 27
 Amstrad CPC hardware colours — three levels per RGB channel, taken from

@@ -27,6 +27,18 @@ namespace SorceryForge
         /// </summary>
         public static string RepoImportDir => Path.Combine(RepoRoot, "assets", "import");
 
+        /// <summary>
+        /// Personal workspace state for the editor — crop presets today, more
+        /// later. Gitignored, and deliberately NOT under assets/data.
+        /// </summary>
+        // assets/data is the world: everything in it is a shared decision, and
+        // a merge conflict there is a real conflict about the game. What lives
+        // here is one person's convenience — which rectangle their emulator
+        // happens to put the playfield at — and it must never be able to gate
+        // someone else's clone. Separate folder, separate gitignore line, no
+        // loader in the game reads it. See SorceryForge/EditorSettings.cs.
+        public static string RepoSettingsDir => Path.Combine(RepoRoot, ".sorceryforge");
+
         private static string FindRepoRoot()
         {
             string dir = AppDomain.CurrentDomain.BaseDirectory;

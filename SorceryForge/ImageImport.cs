@@ -347,6 +347,136 @@ namespace SorceryForge
             return ClampCropRect(new Rectangle((srcW - w) / 2, (srcH - h) / 2, w, h), srcW, srcH);
         }
 
+        // ====================================================================
+        // CROP PRESETS
+        // ====================================================================
+        // Every source in a batch of emulator captures is framed identically —
+        // same emulator, same window, same screenshot key — so the rectangle
+        // that was right for the first one is right for all of them. Framing it
+        // seventy-five times by hand is the whole of the tedium the crop step
+        // adds, and it is entirely avoidable: remember the rectangle against
+        // the SOURCE DIMENSIONS it was cut from, and offer it back the next
+        // time a source of that size turns up.
+        //
+        // Keyed by (width, height) and nothing else. Not by filename, not by
+        // folder: dimensions are what actually determine where the playfield
+        // sits inside a capture, and they are the one thing that stays true
+        // across renaming and moving files around.
+        //
+        // A PRESET IS A STARTING POSITION, NOT A DECISION. The crop step still
+        // opens, still draws the box, still waits for Enter. One glance
+        // confirms the frame is right; a nudge fixes it if it isn't, and the
+        // nudged rectangle becomes the new preset. Nothing is ever cut without
+        // the user seeing what is about to be cut.
+        //
+        // WHERE THEY LIVE. .sorceryforge/settings.json at the repo root,
+        // gitignored — personal workspace state, see EditorSettings.cs. The
+        // one exception is the built-in below, which is in the source because
+        // it is a fact about the hardware and this project's captures, not
+        // about one person's machine.
+        // ====================================================================
+
+        /// <summary>Where a pre-placed crop selection came from.</summary>
+        public enum CropPresetOrigin
+        {
+            /// <summary>No preset applied — the selection is DefaultCropRect.</summary>
+            None,
+            /// <summary>The shipped calibration for a full CPC frame.</summary>
+            BuiltIn,
+            /// <summary>The user's last confirmed crop of a source this size.</summary>
+            Stored,
+        }
+
+        // ====================================================================
+        // THE ONE BUILT-IN: A FULL AMSTRAD CPC FRAME
+        // ====================================================================
+        // 384x270 is what the project's own captures are: the 320x200 Mode 0
+        // screen with the hardware border around it. Because the border is part
+        // of the frame the emulator draws, the playfield lands at the same
+        // offset in every single capture — so this one rectangle serves the
+        // whole remaining set of rooms with no crop decision at all.
+        //
+        // PROVENANCE OF THE NUMBERS. The owner framed a real capture by eye in
+        // the crop overlay and read the selection off the header strip:
+        //
+        //   x = 32   also exactly (384 - 320) / 2, the CPC's horizontal border
+        //            arithmetic. Two independent derivations agreeing is the
+        //            reason to trust it.
+        //   y = 41   measured, not derived. The vertical border is not
+        //            symmetric about the playfield — the 320x144 room is a
+        //            slice of the 200-line screen, not the whole of it — so
+        //            there is no arithmetic to check this against. It is what
+        //            the picture actually showed.
+        //   320x144  exactly one room: this crop is a 1:1 copy, not a rescale,
+        //            which is the best case the import has.
+        //
+        // It is a DEFAULT, not a law. The moment the user confirms a crop of a
+        // 384x270 source, their rectangle is stored and takes precedence here
+        // forever after (ResolveCropRect checks stored first). A different
+        // emulator with a different border would be corrected once and then
+        // remembered.
+        // ====================================================================
+
+        public const int CpcFrameWidth = 384;
+        public const int CpcFrameHeight = 270;
+
+        /// <summary>The playfield inside a 384x270 CPC frame capture.</summary>
+        public static readonly Rectangle CpcFrameCrop = new(32, 41, RoomWidth, RoomHeight);
+
+        /// <summary>The shipped preset for a source size, if there is one.</summary>
+        public static bool TryBuiltInCropPreset(int srcW, int srcH, out Rectangle rect)
+        {
+            if (srcW == CpcFrameWidth && srcH == CpcFrameHeight)
+            {
+                rect = CpcFrameCrop;
+                return true;
+            }
+            rect = Rectangle.Empty;
+            return false;
+        }
+
+        /// <summary>
+        /// The selection the crop step should open with: the user's stored
+        /// preset for this size, else the built-in for this size, else the
+        /// largest box that fits.
+        /// </summary>
+        // Every branch returns through ClampCropRect or DefaultCropRect, both
+        // of which enforce the aspect, the floor and the bounds — so a
+        // hand-edited settings file holding nonsense costs a badly placed box
+        // the user can see and move, never an out-of-range region reaching
+        // PointSample.
+        public static Rectangle ResolveCropRect(int srcW, int srcH, Rectangle? stored,
+                                                out CropPresetOrigin origin)
+        {
+            if (stored.HasValue)
+            {
+                origin = CropPresetOrigin.Stored;
+                return ClampCropRect(stored.Value, srcW, srcH);
+            }
+            if (TryBuiltInCropPreset(srcW, srcH, out var builtIn))
+            {
+                origin = CropPresetOrigin.BuiltIn;
+                return ClampCropRect(builtIn, srcW, srcH);
+            }
+            origin = CropPresetOrigin.None;
+            return DefaultCropRect(srcW, srcH);
+        }
+
+        /// <summary>
+        /// True when a source this size opens the crop step already framed —
+        /// which is what makes it eligible for a batch import.
+        /// </summary>
+        public static bool HasCropPreset(int srcW, int srcH, Rectangle? stored) =>
+            stored.HasValue || TryBuiltInCropPreset(srcW, srcH, out _);
+
+        /// <summary>One line naming where the opening selection came from.</summary>
+        public static string DescribeCropPreset(CropPresetOrigin origin, int srcW, int srcH) => origin switch
+        {
+            CropPresetOrigin.Stored  => $"preset from last {srcW}x{srcH} crop",
+            CropPresetOrigin.BuiltIn => $"built-in {srcW}x{srcH} preset (CPC full frame)",
+            _                        => "no preset — largest 20:9 box that fits",
+        };
+
         /// <summary>Smallest width change one wheel notch can make, in source pixels.</summary>
         public const int CropMinStep = 8;
 

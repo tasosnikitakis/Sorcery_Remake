@@ -57,6 +57,7 @@
 
   <ItemGroup>
     <Compile Include="..\..\SorceryForge\EditorPaths.cs" />
+    <Compile Include="..\..\SorceryForge\EditorSettings.cs" />
     <Compile Include="..\..\SorceryForge\ImageImport.cs" />
     <Compile Include="..\..\SorceryForge\NewRoomFlow.cs" />
     <Compile Include="Program.cs" />

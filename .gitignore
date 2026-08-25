@@ -89,3 +89,10 @@ Content/*.autosave.png
 assets/import/*.jpg
 assets/import/*.jpeg
 assets/import/*.png
+
+# SorceryForge personal workspace state (crop presets, and whatever else turns
+# out to be personal). One person's convenience — which rectangle THEIR
+# emulator puts the playfield at — as opposed to assets/data, which is the
+# shared world. Ignored so it can never gate a clone or collide in a merge;
+# deleting it costs one re-frame. See SorceryForge/EditorSettings.cs.
+.sorceryforge/

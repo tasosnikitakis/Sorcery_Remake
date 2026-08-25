@@ -42,6 +42,9 @@
 //   8 headers     PNG and JPEG dimension reading, including a real repo PNG
 //   9 crop        the aspect-locked selection algebra and the fit transform,
 //                 then the pixels an awkward-scale crop actually cuts
+//   10 presets    the built-in 384x270 calibration, stored-beats-built-in
+//                 resolution, .sorceryforge/settings.json's contract, and the
+//                 aspect lock over every reachable selection state
 //
 // HOW TO RUN
 //
@@ -137,6 +140,7 @@ namespace SorceryRemake.Tools.ImportCheck
             string scratchImport = Path.Combine(scratch, "import");
             string scratchContent = Path.Combine(scratch, "Content");
             string scratchData = Path.Combine(scratch, "data");
+            string scratchSettings = Path.Combine(scratch, "settings");
 
             try
             {
@@ -152,6 +156,7 @@ namespace SorceryRemake.Tools.ImportCheck
                 Directory.CreateDirectory(scratchImport);
                 Directory.CreateDirectory(scratchContent);
                 Directory.CreateDirectory(scratchData);
+                Directory.CreateDirectory(scratchSettings);
             }
             catch (Exception ex)
             {
@@ -168,6 +173,7 @@ namespace SorceryRemake.Tools.ImportCheck
             CheckCreation(scratchContent, scratchData);
             CheckImageHeaders(scratch, repoRoot);
             CheckCrop();
+            CheckCropPresets(scratchSettings, repoRoot);
 
             Console.WriteLine();
             Console.WriteLine($"  {_checks} checks, {_failures} failure(s)");
@@ -1010,6 +1016,384 @@ namespace SorceryRemake.Tools.ImportCheck
         }
 
         // ====================================================================
+        // 10. CROP PRESETS
+        // ====================================================================
+        // PR 5b. Every source in a batch of emulator captures is framed
+        // identically, so the rectangle that was right for the first is right
+        // for all of them. Presets are that rectangle, remembered against the
+        // SOURCE DIMENSIONS it was cut from, in .sorceryforge/settings.json.
+        //
+        // Three things are worth proving headlessly and none of them need a
+        // screen: the resolution order (stored beats built-in beats
+        // largest-that-fits), the file's contract (born empty, byte-stable,
+        // unknown members preserved), and — the cheap one that pins the whole
+        // crop mechanism — that no reachable selection can violate the aspect
+        // lock, including the ones a preset introduces.
+        // ====================================================================
+
+        private static void CheckCropPresets(string settingsDir, string repoRoot)
+        {
+            Section("10. CROP PRESETS — the built-in, the file, and the aspect lock");
+
+            CheckBuiltInPreset();
+            CheckPresetResolution();
+            CheckSettingsFile(settingsDir);
+            CheckSettingsAreIgnored(repoRoot);
+            CheckAspectLockHolds();
+        }
+
+        // ---- the shipped 384x270 calibration --------------------------------
+
+        private static void CheckBuiltInPreset()
+        {
+            bool has = ImageImport.TryBuiltInCropPreset(
+                ImageImport.CpcFrameWidth, ImageImport.CpcFrameHeight, out var builtIn);
+            Assert("384x270 has a built-in preset", has);
+            Assert("  and it is (32, 41, 320, 144) — the owner's live calibration",
+                builtIn == new Rectangle(32, 41, ImageImport.RoomWidth, ImageImport.RoomHeight),
+                builtIn.ToString());
+
+            // x is the one number with a second, independent derivation: the
+            // CPC's horizontal border is (384 - 320) / 2 either side. y is
+            // measured only — the room is a 144-line slice of a 200-line
+            // screen, so there is no arithmetic to check it against.
+            Assert("  x is the CPC's own border arithmetic, (384 - 320) / 2",
+                builtIn.X == (ImageImport.CpcFrameWidth - ImageImport.RoomWidth) / 2, builtIn.X.ToString());
+            Assert("  it is a 1:1 cut — exactly one room, no rescale",
+                builtIn.Width == ImageImport.RoomWidth && builtIn.Height == ImageImport.RoomHeight);
+            Assert("  and it lies wholly inside a 384x270 frame",
+                builtIn.Right <= ImageImport.CpcFrameWidth && builtIn.Bottom <= ImageImport.CpcFrameHeight);
+
+            // Exactly one size is built in. A near miss must NOT match: a
+            // 385x270 capture is a different emulator setting and its playfield
+            // is somewhere else.
+            Assert("no other size has one (383x270)", !ImageImport.TryBuiltInCropPreset(383, 270, out _));
+            Assert("no other size has one (384x271)", !ImageImport.TryBuiltInCropPreset(384, 271, out _));
+            Assert("no other size has one (1920x1080)", !ImageImport.TryBuiltInCropPreset(1920, 1080, out _));
+            Assert("384x270 is not an exact multiple, so it does reach the crop step",
+                ImageImport.ExactMultiple(ImageImport.CpcFrameWidth, ImageImport.CpcFrameHeight) == 0);
+            Assert("  and it is big enough to crop",
+                ImageImport.CanCrop(ImageImport.CpcFrameWidth, ImageImport.CpcFrameHeight));
+        }
+
+        // ---- stored beats built-in beats largest-that-fits ------------------
+
+        private static void CheckPresetResolution()
+        {
+            const int w = ImageImport.CpcFrameWidth, h = ImageImport.CpcFrameHeight;
+
+            var fromBuiltIn = ImageImport.ResolveCropRect(w, h, null, out var builtInOrigin);
+            Assert("with nothing stored, a 384x270 source opens on the built-in",
+                builtInOrigin == ImageImport.CropPresetOrigin.BuiltIn
+                && fromBuiltIn == ImageImport.CpcFrameCrop, $"{builtInOrigin} {fromBuiltIn}");
+
+            var mine = new Rectangle(30, 44, 320, 144);
+            var fromStored = ImageImport.ResolveCropRect(w, h, mine, out var storedOrigin);
+            Assert("a stored preset overrides the built-in",
+                storedOrigin == ImageImport.CropPresetOrigin.Stored && fromStored == mine,
+                $"{storedOrigin} {fromStored}");
+
+            var noPreset = ImageImport.ResolveCropRect(700, 500, null, out var noneOrigin);
+            Assert("a size with neither falls back to the largest box that fits",
+                noneOrigin == ImageImport.CropPresetOrigin.None
+                && noPreset == ImageImport.DefaultCropRect(700, 500), $"{noneOrigin} {noPreset}");
+
+            // A hand-edited settings file is the reason ResolveCropRect clamps
+            // rather than trusts. Nonsense must cost a badly placed box the
+            // user can see and move, never an out-of-range region reaching
+            // PointSample.
+            var junk = ImageImport.ResolveCropRect(700, 500, new Rectangle(-900, -900, 99999, 3), out _);
+            Assert("a nonsense stored rect is clamped back into shape",
+                junk == ImageImport.ClampCropRect(junk, 700, 500)
+                && junk.X >= 0 && junk.Y >= 0 && junk.Right <= 700 && junk.Bottom <= 500,
+                junk.ToString());
+            Assert("  including its aspect and its floor",
+                junk.Height == ImageImport.CropHeightFor(junk.Width)
+                && junk.Width >= ImageImport.RoomWidth, junk.ToString());
+
+            // Eligibility for the batch import (section 11) is exactly "opens
+            // already framed", so it is defined off the same two sources.
+            Assert("HasCropPreset: true for 384x270 with nothing stored",
+                ImageImport.HasCropPreset(w, h, null));
+            Assert("HasCropPreset: true for any size with something stored",
+                ImageImport.HasCropPreset(700, 500, mine));
+            Assert("HasCropPreset: false for a size with neither",
+                !ImageImport.HasCropPreset(700, 500, null));
+
+            // The status-bar line names which of the three it was, because
+            // "why is the box here?" is the first question the overlay raises.
+            Assert("the stored line names the source size",
+                ImageImport.DescribeCropPreset(ImageImport.CropPresetOrigin.Stored, w, h)
+                    == "preset from last 384x270 crop",
+                ImageImport.DescribeCropPreset(ImageImport.CropPresetOrigin.Stored, w, h));
+            Assert("the built-in line says so",
+                ImageImport.DescribeCropPreset(ImageImport.CropPresetOrigin.BuiltIn, w, h)
+                    .Contains("built-in", StringComparison.Ordinal));
+            Assert("and the no-preset line does not claim one",
+                !ImageImport.DescribeCropPreset(ImageImport.CropPresetOrigin.None, 700, 500)
+                    .Contains("preset from", StringComparison.Ordinal));
+        }
+
+        // ---- .sorceryforge/settings.json ------------------------------------
+
+        private static void CheckSettingsFile(string dir)
+        {
+            string path = EditorSettings.GetPath(dir);
+
+            // Born empty. A clone whose owner never crops anything must not
+            // gain a file — the same rule content_*.json and worldmap.json live
+            // by, for the same reason.
+            var fresh = new EditorSettings();
+            Assert("nothing stored and no file yet: nothing is written", !fresh.Save(dir));
+            Assert("  so the folder stays clean", !File.Exists(path));
+
+            fresh.SetCropPreset(384, 270, new Rectangle(32, 41, 320, 144));
+            fresh.SetCropPreset(1920, 1080, new Rectangle(96, 32, 960, 432));
+            Assert("a confirmed crop writes the file", fresh.Save(dir));
+            Assert("  and it is there now", File.Exists(path));
+
+            string first = File.ReadAllText(path);
+            var reloaded = EditorSettings.Load(dir, out string? loadError);
+            Assert("it loads back with no error", loadError == null, loadError);
+            Assert("  both presets survived", reloaded.CropPresetCount == 2, reloaded.CropPresetCount.ToString());
+            Assert("  384x270 came back exactly",
+                reloaded.CropPreset(384, 270) == new Rectangle(32, 41, 320, 144),
+                reloaded.CropPreset(384, 270)?.ToString() ?? "missing");
+            Assert("  and a size with no preset returns nothing",
+                reloaded.CropPreset(700, 500) == null);
+
+            reloaded.Save(dir);
+            Assert("load -> save with no change is byte-identical",
+                File.ReadAllText(path) == first);
+
+            // Last-used wins: the preset is a memory of the most recent
+            // decision, not a first-one-sticks rule.
+            reloaded.SetCropPreset(384, 270, new Rectangle(31, 40, 320, 144));
+            reloaded.Save(dir);
+            var again = EditorSettings.Load(dir, out _);
+            Assert("re-cropping a size replaces its preset",
+                again.CropPreset(384, 270) == new Rectangle(31, 40, 320, 144),
+                again.CropPreset(384, 270)?.ToString() ?? "missing");
+            Assert("  and leaves the other size alone",
+                again.CropPreset(1920, 1080) == new Rectangle(96, 32, 960, 432));
+
+            // Unknown members. The file will grow other settings; an older
+            // build must not eat a newer one's.
+            string withFuture =
+                "{" + Environment.NewLine +
+                "  \"cropPresets\": {" + Environment.NewLine +
+                "    \"384x270\": { \"x\": 32, \"y\": 41, \"w\": 320, \"h\": 144 }" + Environment.NewLine +
+                "  }," + Environment.NewLine +
+                "  \"futureThing\": { \"a\": 1, \"b\": [1, 2, 3] }," + Environment.NewLine +
+                "  \"aScalar\": 7" + Environment.NewLine +
+                "}" + Environment.NewLine;
+            File.WriteAllText(path, withFuture);
+
+            var future = EditorSettings.Load(dir, out string? futureError);
+            Assert("a file with unrecognised members loads", futureError == null, futureError);
+            Assert("  its two unknown members are carried", future.UnknownMemberCount == 2,
+                future.UnknownMemberCount.ToString());
+            Assert("  and its preset was still read", future.CropPreset(384, 270) != null);
+
+            future.SetCropPreset(700, 500, new Rectangle(0, 92, 700, 315));
+            future.Save(dir);
+            string rewritten = File.ReadAllText(path);
+            Assert("  saving keeps the unknown object",
+                rewritten.Contains("\"futureThing\"", StringComparison.Ordinal)
+                && rewritten.Contains("[1,2,3]", StringComparison.Ordinal), rewritten);
+            Assert("  and the unknown scalar",
+                rewritten.Contains("\"aScalar\": 7", StringComparison.Ordinal), rewritten);
+            Assert("  and the new preset went in beside them",
+                rewritten.Contains("\"700x500\"", StringComparison.Ordinal), rewritten);
+
+            EditorSettings.Load(dir, out _).Save(dir);
+            Assert("  a file carrying unknown members still round-trips byte-identically",
+                File.ReadAllText(path) == rewritten);
+
+            // A file that EXISTS is written even when there is nothing left to
+            // store — emptying it was a deliberate act. (Not the same rule as
+            // "don't create an empty file"; this is the other half of it.)
+            Assert("an existing file is rewritten even with nothing to store",
+                new EditorSettings().Save(dir));
+            Assert("  and what is left parses as an empty settings object",
+                EditorSettings.Load(dir, out _).CropPresetCount == 0);
+
+            // Malformed input is reported, never fatal, and never partially
+            // applied.
+            File.WriteAllText(path, "{ this is not json");
+            var broken = EditorSettings.Load(dir, out string? brokenError);
+            Assert("a malformed file reports and falls back to defaults",
+                brokenError != null && broken.CropPresetCount == 0 && broken.UnknownMemberCount == 0,
+                brokenError ?? "no error reported");
+
+            File.WriteAllText(path, "[1, 2, 3]" + Environment.NewLine);
+            EditorSettings.Load(dir, out string? arrayError);
+            Assert("a JSON array where an object belongs is reported too",
+                arrayError != null, arrayError ?? "no error reported");
+
+            // One bad entry is skipped; the rest of the file still applies.
+            File.WriteAllText(path,
+                "{ \"cropPresets\": { \"384x270\": { \"x\": 32, \"y\": 41 }, " +
+                "\"700x500\": { \"x\": 0, \"y\": 92, \"w\": 700, \"h\": 315 } } }");
+            var partial = EditorSettings.Load(dir, out string? partialError);
+            Assert("an entry missing w/h is skipped, not guessed at",
+                partialError == null && partial.CropPreset(384, 270) == null,
+                partialError ?? partial.CropPreset(384, 270)?.ToString() ?? "");
+            Assert("  and its well-formed neighbour still loads",
+                partial.CropPreset(700, 500) == new Rectangle(0, 92, 700, 315));
+
+            Assert("deleting the file leaves nothing behind", EditorSettings.Delete(dir));
+            Assert("  and a fresh load is empty and errorless",
+                EditorSettings.Load(dir, out string? goneError).CropPresetCount == 0 && goneError == null);
+        }
+
+        /// <summary>
+        /// The settings file must never be committable. The whole "personal
+        /// state cannot gate collaboration" claim rests on one .gitignore line,
+        /// so assert the line rather than trusting it.
+        /// </summary>
+        private static void CheckSettingsAreIgnored(string repoRoot)
+        {
+            string gitignore = Path.Combine(repoRoot, ".gitignore");
+            string text = File.Exists(gitignore) ? File.ReadAllText(gitignore) : "";
+            Assert($".gitignore covers {EditorSettings.DirName}/",
+                text.Contains(EditorSettings.DirName + "/", StringComparison.Ordinal),
+                File.Exists(gitignore) ? "no matching line" : "no .gitignore");
+
+            // And it really is at the repo root, which is what that line
+            // matches — not beside the editor's bin/ output.
+            string real = Path.GetFullPath(EditorSettings.GetPath(null));
+            string expected = Path.GetFullPath(
+                Path.Combine(repoRoot, EditorSettings.DirName, EditorSettings.FileName));
+            Assert("  and that is where the editor would write it",
+                string.Equals(real, expected, StringComparison.OrdinalIgnoreCase), real);
+        }
+
+        // ---- the aspect lock, over every reachable selection ----------------
+        // "20:9 exactly" is not literally achievable at integer sizes — a
+        // 384-wide box would need to be 172.8 tall — so the property the
+        // mechanism actually guarantees, and the one worth pinning, is:
+        //
+        //   Height == CropHeightFor(Width)     the lock itself, exact: the
+        //                                      height is always DERIVED, never
+        //                                      a stale value carried along
+        //   |W*9 - H*20| <= 10                 which is the same as saying the
+        //                                      height is within half a pixel of
+        //                                      true 20:9 — the rounding
+        //                                      CropHeightFor does and no more
+        //   Width >= 320                       the floor
+        //   inside the source                  the bounds
+        //
+        // Reachable means: whatever the crop overlay can produce. That is the
+        // opening rectangle (all three preset origins), plus any number of
+        // wheel notches, plus any drag, in any order.
+
+        private static bool IsValidSelection(Rectangle r, int srcW, int srcH, out string why)
+        {
+            if (r.Height != ImageImport.CropHeightFor(r.Width))
+            { why = $"{r}: height is not CropHeightFor({r.Width}) = {ImageImport.CropHeightFor(r.Width)}"; return false; }
+            if (Math.Abs(r.Width * 9 - r.Height * 20) > 10)
+            { why = $"{r}: off true 20:9 by more than half a pixel"; return false; }
+            if (r.Width < ImageImport.RoomWidth)
+            { why = $"{r}: narrower than one room"; return false; }
+            if (r.X < 0 || r.Y < 0 || r.Right > srcW || r.Bottom > srcH)
+            { why = $"{r}: outside the {srcW}x{srcH} source"; return false; }
+            why = "";
+            return true;
+        }
+
+        // Sizes a real capture actually arrives at, plus the degenerate ends of
+        // the range. All are croppable (>= one room both ways); a smaller
+        // source never reaches the overlay at all, because RunImport refuses it.
+        private static readonly (int w, int h)[] CroppableSizes =
+        {
+            (384, 270), (320, 144), (321, 145), (700, 500), (768, 540),
+            (1920, 1080), (1024, 768), (2000, 200), (400, 200), (4000, 3000),
+            (320, 2000), (1280, 145),
+        };
+
+        private static void CheckAspectLockHolds()
+        {
+            // Deterministic, seeded: a harness that fails only sometimes is
+            // worse than one that does not test this at all.
+            var rng = new Random(20250825);
+            int states = 0;
+            bool ok = true;
+            string? firstFailure = null;
+
+            foreach (var (srcW, srcH) in CroppableSizes)
+            {
+                var starts = new List<Rectangle>
+                {
+                    ImageImport.DefaultCropRect(srcW, srcH),
+                    ImageImport.ResolveCropRect(srcW, srcH, null, out _),
+                    ImageImport.ResolveCropRect(srcW, srcH, new Rectangle(32, 41, 320, 144), out _),
+                    ImageImport.ResolveCropRect(srcW, srcH, new Rectangle(-9999, -9999, 1, 1), out _),
+                    ImageImport.ResolveCropRect(srcW, srcH, new Rectangle(5, 5, 999999, 999999), out _),
+                    ImageImport.ClampCropRect(new Rectangle(0, 0, 0, 0), srcW, srcH),
+                    ImageImport.ClampCropRect(new Rectangle(srcW, srcH, srcW * 3, srcH * 3), srcW, srcH),
+                };
+
+                foreach (var start in starts)
+                {
+                    var r = start;
+                    if (!IsValidSelection(r, srcW, srcH, out string why))
+                    { ok = false; firstFailure ??= $"{srcW}x{srcH} opening {why}"; }
+                    states++;
+
+                    // 120 mixed gestures: wheel in, wheel out, and drags of
+                    // arbitrary size — the overlay's whole vocabulary, in the
+                    // arbitrary order a user produces it in.
+                    for (int step = 0; step < 120; step++)
+                    {
+                        switch (rng.Next(3))
+                        {
+                            case 0:
+                                r = ImageImport.StepCropWidth(r, +1, srcW, srcH);
+                                break;
+                            case 1:
+                                r = ImageImport.StepCropWidth(r, -1, srcW, srcH);
+                                break;
+                            default:
+                                r = ImageImport.ClampCropRect(
+                                    new Rectangle(r.X + rng.Next(-srcW, srcW + 1),
+                                                  r.Y + rng.Next(-srcH, srcH + 1),
+                                                  r.Width, r.Height),
+                                    srcW, srcH);
+                                break;
+                        }
+
+                        if (!IsValidSelection(r, srcW, srcH, out string stepWhy))
+                        { ok = false; firstFailure ??= $"{srcW}x{srcH} step {step}: {stepWhy}"; }
+                        states++;
+
+                        // And the point of all of it: whatever the selection
+                        // is, sampling it must not throw. This is the clause
+                        // that turns the algebra into a promise about pixels.
+                        if (r.Width <= 0 || r.Height <= 0 || r.Right > srcW || r.Bottom > srcH)
+                        { ok = false; firstFailure ??= $"{srcW}x{srcH} step {step}: unsamplable {r}"; }
+                    }
+                }
+            }
+
+            Assert($"every one of {states} reachable selections holds the aspect lock, floor and bounds",
+                ok, firstFailure);
+
+            // The lock stated the other way round, on the function itself: the
+            // height for a width is the rounded 20:9 height and nothing else.
+            bool derived = true;
+            string? derivedFail = null;
+            for (int w = ImageImport.RoomWidth; w <= 4000; w++)
+            {
+                int h = ImageImport.CropHeightFor(w);
+                if (h != (int)Math.Round(w * 9.0 / 20.0, MidpointRounding.AwayFromZero))
+                { derived = false; derivedFail ??= $"{w} -> {h}"; break; }
+            }
+            Assert("CropHeightFor is the rounded 20:9 height at every width 320..4000",
+                derived, derivedFail);
+        }
+
+        // ====================================================================
         // 8. IMAGE HEADERS
         // ====================================================================
 
@@ -1188,7 +1572,7 @@ namespace SorceryRemake.Tools.ImportCheck
         // The scratch tree this harness builds is import/ + Content/ + data/ +
         // headers/, all of them ours. Anything else means the directory belongs
         // to someone: refuse rather than delete it.
-        private static readonly string[] OwnedSubdirectories = { "import", "Content", "data", "headers" };
+        private static readonly string[] OwnedSubdirectories = { "import", "Content", "data", "headers", "settings" };
 
         private static void CleanScratch(string scratch)
         {

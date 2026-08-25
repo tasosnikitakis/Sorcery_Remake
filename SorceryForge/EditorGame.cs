@@ -221,9 +221,48 @@ namespace SorceryForge
             LoadAndCache("LeftDoorFrames");   // 4-frame strip, frame 0 = closed
             LoadAndCache("RightDoorFrames");
 
+            // Personal workspace state — crop presets today. Read once, here,
+            // rather than on each use: it is a few dozen bytes, and a re-read
+            // per import would let a half-written file break a crop mid-flow.
+            // A load problem is reported, never fatal (EditorSettings says why).
+            _settings = EditorSettings.Load(null, out string? settingsError);
+
             BuildPalette();
             BuildButtons();
             LoadRoom(_state.CurrentRoomIndex);
+
+            // After LoadRoom, which sets its own status line.
+            if (settingsError != null) _state.Status = settingsError;
+        }
+
+        // ====================================================================
+        // EDITOR SETTINGS
+        // ====================================================================
+        // Loaded in LoadContent, written by the acts that change it. See
+        // SorceryForge/EditorSettings.cs for what belongs in here and what
+        // belongs in assets/data instead.
+        // ====================================================================
+
+        private EditorSettings _settings = new();
+
+        /// <summary>
+        /// Persist the settings. Returns a fragment to append to the status
+        /// line, or "" when the write was clean.
+        /// </summary>
+        // Never throws to the caller and never aborts what it was called from:
+        // failing to remember a crop preset must not cost the user the import
+        // they were actually doing.
+        private string SaveEditorSettings()
+        {
+            try
+            {
+                _settings.Save();
+                return "";
+            }
+            catch (Exception ex)
+            {
+                return $" ({EditorSettings.DirName}/{EditorSettings.FileName} not written — {ex.Message})";
+            }
         }
 
         private Texture2D LoadAndCache(string asset)
@@ -1406,13 +1445,23 @@ namespace SorceryForge
         private Point _cropDragStartOrigin;                    // rect top-left at drag start
         private readonly List<(Rectangle bounds, Action action)> _cropButtons = new();
 
+        // Where the box was when the overlay opened. Shown, not enforced —
+        // the moment the user drags or wheels it, the label is stale in the
+        // only way that matters (it still says where they started from).
+        private ImageImport.CropPresetOrigin _cropPresetOrigin;
+
         private void OpenCrop(ImportCandidate candidate, Color[] pixels, int srcW, int srcH)
         {
             _cropCandidate = candidate;
             _cropPixels = pixels;
             _cropSrcW = srcW;
             _cropSrcH = srcH;
-            _cropRect = ImageImport.DefaultCropRect(srcW, srcH);
+            // Pre-placed from the preset for this source size when there is
+            // one, so the common case — a folder of identically framed
+            // captures — is one glance and Enter. Still shown either way:
+            // nothing is cut without the user seeing the box first.
+            _cropRect = ImageImport.ResolveCropRect(
+                srcW, srcH, _settings.CropPreset(srcW, srcH), out _cropPresetOrigin);
             _cropDragging = false;
             _cropButtons.Clear();
 
@@ -1432,8 +1481,9 @@ namespace SorceryForge
             }
 
             _cropOpen = true;
-            _state.Status = $"Crop {candidate.FileName} ({srcW}x{srcH}): drag to move, wheel to resize, " +
-                            "Enter confirms, Esc cancels.";
+            _state.Status = $"Crop {candidate.FileName} ({srcW}x{srcH}) — " +
+                            $"{ImageImport.DescribeCropPreset(_cropPresetOrigin, srcW, srcH)}. " +
+                            "Drag to move, wheel to resize, Enter confirms, Esc cancels.";
         }
 
         private void CloseCrop(string? status)
@@ -1461,13 +1511,22 @@ namespace SorceryForge
             var pixels = ImageImport.BuildRoomBackground(
                 _cropPixels, _cropSrcW, _cropSrcH, _cropRect, _importQuantize);
             var rect = _cropRect;
+            int srcW = _cropSrcW, srcH = _cropSrcH;
+
+            // Remember the framing against the source's dimensions, before
+            // anything can fail: this is the act the preset records, and it is
+            // worth keeping even if the import that follows goes wrong. Last
+            // confirmed crop of a size wins, including over the built-in.
+            _settings.SetCropPreset(srcW, srcH, rect);
+            string settingsNote = SaveEditorSettings();
 
             CloseCrop(null);
             FinishImport(candidate, pixels);
 
             // FinishImport owns the status line; append what was cut, since the
             // crop is the part of this import the user made a decision about.
-            _state.Status += $" Cropped {rect.Width}x{rect.Height} at ({rect.X}, {rect.Y}).";
+            _state.Status += $" Cropped {rect.Width}x{rect.Height} at ({rect.X}, {rect.Y}) — " +
+                             $"remembered for {srcW}x{srcH} sources.{settingsNote}";
         }
 
         /// <summary>Modal input for the crop step.</summary>
@@ -1623,7 +1682,11 @@ namespace SorceryForge
             DrawText(TruncateText(
                     $"selection {_cropRect.Width}x{_cropRect.Height} at ({_cropRect.X}, {_cropRect.Y})  ->  " +
                     $"{ImageImport.RoomWidth}x{ImageImport.RoomHeight} ({scale:0.00}x down)   |   " +
-                    $"CPC quantize {(_importQuantize ? "ON" : "OFF")}",
+                    $"CPC quantize {(_importQuantize ? "ON" : "OFF")}   |   " +
+                    // Where the box STARTED. Left unchanged as the user drags,
+                    // because that is what it is claiming — not "this is the
+                    // preset", but "this is what you were handed".
+                    ImageImport.DescribeCropPreset(_cropPresetOrigin, _cropSrcW, _cropSrcH),
                     header.Width - 28),
                 new Vector2(14, 30), new Color(160, 175, 200));
 
