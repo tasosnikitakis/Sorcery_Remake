@@ -80,17 +80,38 @@ namespace SorceryForge.UI
         // reaches its image THROUGH this dim, and the image is a world surface
         // the router must still hand to EditorGame. What stops clicks reaching
         // the bands underneath is their own NoInputs (MenuBar.Inert), not this.
-        private static void Dim()
+        private static void Dim() =>
+            DimRegions("##sf_modal_dim", 170,
+                new Rectangle(0, 0, EditorLayout.WindowWidth, EditorLayout.WindowHeight));
+
+        /// <summary>
+        /// The crop step's dim: the two SIDE BANDS only, at the crop's own
+        /// alpha.
+        /// </summary>
+        // The crop already dims the whole screen in SpriteBatch, and must —
+        // that pass runs BEFORE the fitted image, so the image sits on top of
+        // it. But SpriteBatch cannot reach an ImGui window, and the palette and
+        // inspector are now ImGui windows painted after every SpriteBatch pass,
+        // so they came out at full brightness beside a darkened room. Dimming
+        // the full screen again here would darken the crop image too; dimming
+        // exactly the two bands the SpriteBatch pass can no longer reach is the
+        // whole of the gap. The top and status bands need nothing — the crop's
+        // own header and footer strips cover them.
+        private static void DimCropBands() =>
+            DimRegions("##sf_crop_dim", 210,
+                EditorLayout.PaletteRect, EditorLayout.InspectorRect);
+
+        private static void DimRegions(string id, int alpha, params Rectangle[] regions)
         {
             var full = new Rectangle(0, 0, EditorLayout.WindowWidth, EditorLayout.WindowHeight);
             ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new NVector2(0f, 0f));
-            if (ChromeTheme.BeginOverlay("##sf_modal_dim", full,
+            if (ChromeTheme.BeginOverlay(id, full,
                     ImGuiWindowFlags.NoInputs | ImGuiWindowFlags.NoBackground))
             {
-                ImGui.GetWindowDrawList().AddRectFilled(
-                    new NVector2(full.X, full.Y),
-                    new NVector2(full.Right, full.Bottom),
-                    ChromeTheme.Packed(0, 0, 0, 170));
+                var dl = ImGui.GetWindowDrawList();
+                uint shade = ChromeTheme.Packed(0, 0, 0, alpha);
+                foreach (var r in regions)
+                    dl.AddRectFilled(new NVector2(r.X, r.Y), new NVector2(r.Right, r.Bottom), shade);
             }
             ChromeTheme.EndPanel();
             ImGui.PopStyleVar();
@@ -347,6 +368,8 @@ namespace SorceryForge.UI
 
         private static void DrawCropChrome(IChromeActions actions, in ChromeView view)
         {
+            DimCropBands();
+
             float scale = view.CropRect.Width / (float)ImageImport.RoomWidth;
 
             // Header strip, over the top bar's band: what is being cropped, and
