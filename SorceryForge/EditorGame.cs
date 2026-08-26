@@ -131,7 +131,6 @@ namespace SorceryForge
                 _graphics.ApplyChanges();
 
                 EditorLayout.Recalculate(w, h);
-                LayoutPalette();
             }
             finally { _resizingGuard = false; }
         }
@@ -185,7 +184,6 @@ namespace SorceryForge
                 }
 
                 _isFullscreen = !_isFullscreen;
-                LayoutPalette();
                 _state.Status = _isFullscreen
                     ? "Borderless fullscreen — F11 to exit."
                     : "Windowed.";
@@ -331,16 +329,9 @@ namespace SorceryForge
         // PALETTE & BUTTONS
         // ====================================================================
 
-        // Section names in display order. Add a section here and every entry
-        // tagged with that name will appear under its header.
-        // META sits last: it holds room-level markers rather than entities, and
-        // appending it leaves every existing section exactly where the muscle
-        // memory of anyone who has authored a room expects to find it.
-        private static readonly string[] SectionOrder =
-            { "WEAPONS", "KEY ITEMS", "ENEMIES", "DOORS", "OTHER", "META" };
-
-        // Computed by LayoutPalette: the rectangle for each section header.
-        private readonly List<(string name, Rectangle bounds)> _sectionHeaders = new();
+        // The palette's SECTION ORDER moved to UI/PalettePanel, which is the
+        // only thing that ever read it. Entries still carry their section name
+        // as a string, so tagging one here is unchanged.
 
         private void BuildPalette()
         {
@@ -417,7 +408,39 @@ namespace SorceryForge
             { IsPlayerSpawn = true };
             _state.Palette.Add(Tag(spawnEntry, "META"));
 
-            LayoutPalette();
+            BindPaletteIcons();
+        }
+
+        /// <summary>
+        /// Give every palette entry an ImGui texture handle and the UV corners
+        /// of its source rect, so the panel can draw real game sprites without
+        /// ever seeing a Texture2D.
+        /// </summary>
+        // One handle per SHEET, not per entry: five weapons share nothing but
+        // the five enemies each have their own strip, and a door's two entries
+        // point at two different files. Registering the same texture twice
+        // would work but would make the id-to-texture map lie about how many
+        // textures there are.
+        private void BindPaletteIcons()
+        {
+            var handles = new Dictionary<Texture2D, IntPtr>();
+
+            foreach (var entry in _state.Palette)
+            {
+                if (!handles.TryGetValue(entry.Texture, out var id))
+                {
+                    id = _imgui.BindTexture(entry.Texture);
+                    handles[entry.Texture] = id;
+                }
+                entry.ImGuiTextureId = id;
+
+                // Corner to corner, so a non-square source (every enemy frame)
+                // stretches into the square icon box exactly as SpriteBatch
+                // stretched it. Deliberate; do not letterbox.
+                float w = entry.Texture.Width, h = entry.Texture.Height;
+                entry.IconUv0 = new NVector2(entry.SourceRect.Left / w, entry.SourceRect.Top / h);
+                entry.IconUv1 = new NVector2(entry.SourceRect.Right / w, entry.SourceRect.Bottom / h);
+            }
         }
 
         private static PaletteEntry Tag(PaletteEntry e, string section) { e.Section = section; return e; }
@@ -433,97 +456,6 @@ namespace SorceryForge
         private PaletteEntry MakeEnemy(string label, EnemyType type, string asset, Rectangle src) =>
             new(label, PlacementKind.Enemy, _textures[asset], src)
             { EnemyType = type };
-
-        // ---- Palette scroll geometry --------------------------------------
-        //
-        // The panel's first PaletteTitleHeight pixels hold the "PALETTE"
-        // title and never move; everything below scrolls. Layout, the scissor
-        // rect, wheel clamping and click hit-testing all measure against
-        // PaletteViewportRect, so they cannot disagree about where a row is —
-        // which is exactly the off-by-the-scroll-offset bug that makes a
-        // scrolled palette hand you the wrong entry.
-        private const int PaletteTitleHeight = 30;
-        private const int PaletteBottomInset = 8;
-
-        // Total laid-out height of headers + entries (set by LayoutPalette).
-        private int _paletteContentHeight;
-
-        private static Rectangle PaletteViewportRect
-        {
-            get
-            {
-                int top = EditorLayout.PaletteY + PaletteTitleHeight;
-                int bottom = EditorLayout.PaletteRect.Bottom - PaletteBottomInset;
-                return new Rectangle(EditorLayout.PaletteX, top,
-                                     EditorLayout.PaletteWidth, Math.Max(0, bottom - top));
-            }
-        }
-
-        /// <summary>Where a laid-out palette row actually sits once scrolled.</summary>
-        private Rectangle PaletteRowRect(Rectangle layoutBounds) =>
-            new(layoutBounds.X, layoutBounds.Y - (int)_state.PaletteScrollY,
-                layoutBounds.Width, layoutBounds.Height);
-
-        /// <summary>True when any part of a scrolled row falls in the viewport.</summary>
-        private static bool PaletteRowVisible(Rectangle scrolled)
-        {
-            var vp = PaletteViewportRect;
-            return scrolled.Bottom > vp.Top && scrolled.Top < vp.Bottom;
-        }
-
-        /// <summary>
-        /// Assign every section header and entry its UNSCROLLED position, and
-        /// record the total content height. The scroll offset is applied at
-        /// draw and hit-test time via PaletteRowRect — baking it in here would
-        /// mean re-running layout on every wheel notch.
-        /// </summary>
-        private void LayoutPalette()
-        {
-            const int entryHeight = 44;
-            const int headerHeight = 22;
-            const int padding = 8;
-            int x = EditorLayout.PaletteX + padding;
-            int y = EditorLayout.PaletteY + PaletteTitleHeight;
-            int w = EditorLayout.PaletteWidth - padding * 2;
-            int contentTop = y;
-
-            _sectionHeaders.Clear();
-
-            foreach (var section in SectionOrder)
-            {
-                // Skip empty sections so headers never appear with no entries.
-                bool any = false;
-                foreach (var p in _state.Palette) if (p.Section == section) { any = true; break; }
-                if (!any) continue;
-
-                _sectionHeaders.Add((section, new Rectangle(x, y, w, headerHeight)));
-                y += headerHeight + 4;
-
-                foreach (var p in _state.Palette)
-                {
-                    if (p.Section != section) continue;
-                    p.ScreenBounds = new Rectangle(x, y, w, entryHeight);
-                    y += entryHeight + 4;
-                }
-
-                y += 6;  // spacer between sections
-            }
-
-            _paletteContentHeight = y - contentTop;
-
-            // Re-clamp here as well as on wheel input: shrinking the window
-            // grows the viewport-vs-content gap, and the scroll must come back
-            // into range immediately, not on the next time the cursor happens
-            // to pass over the palette.
-            ClampPaletteScroll();
-        }
-
-        private void ClampPaletteScroll()
-        {
-            float maxScroll = Math.Max(0, _paletteContentHeight - PaletteViewportRect.Height);
-            if (_state.PaletteScrollY < 0)         _state.PaletteScrollY = 0;
-            if (_state.PaletteScrollY > maxScroll) _state.PaletteScrollY = maxScroll;
-        }
 
         /// <summary>
         /// Enter a cursor mode. The toolbar selects one of the three directly;
@@ -2718,9 +2650,20 @@ namespace SorceryForge
                 && Pressed(Keys.Escape) && ConfirmDiscardUnsavedEdits(includeMap: true)) Exit();
 
             HandleInspectorScroll();
-            // Before HandlePaletteInput below, so a wheel notch and the click
-            // that follows it in the same frame agree on the scroll offset.
-            HandlePaletteScroll();
+
+            // Right-click cancels a palette drag from ANYWHERE — over the
+            // palette, over the inspector, over the canvas margin. UNGATED, for
+            // the same reason the modal pickers' cancels are: the cursor is
+            // most often over a chrome panel when you change your mind, and
+            // ImGui captures the mouse there. Routing it would quietly shrink
+            // "anywhere" to "over the canvas", which is exactly where you are
+            // least likely to be.
+            if (_state.Mode == EditorMode.Place && _state.Dragging != null && RightClicked())
+            {
+                _state.Dragging = null;
+                _state.Status = "Drag cancelled.";
+            }
+
             // Inspector buttons take priority over the canvas: clicking a
             // cycle button shouldn't deselect the entity it's editing.
             if (HandleInspectorClicks()) { /* swallowed */ }
@@ -2728,7 +2671,6 @@ namespace SorceryForge
             {
                 HandleCanvasView();
                 HandleCanvasInput();
-                HandlePaletteInput();
             }
             if (_router.KeyboardReachesEditor) HandleKeyboardShortcuts();
         }
@@ -2791,54 +2733,6 @@ namespace SorceryForge
         }
 
         /// <summary>
-        /// Mouse wheel over the palette pane scrolls its entry list. Same
-        /// shape as HandleInspectorScroll — and the two can't fight, because
-        /// each claims its own screen region, as does the canvas's wheel zoom
-        /// (HandleCanvasView only acts inside CanvasRect).
-        /// </summary>
-        private void HandlePaletteScroll()
-        {
-            if (!EditorLayout.PaletteRect.Contains(_mouseNow.X, _mouseNow.Y)) return;
-
-            int delta = _mouseNow.ScrollWheelValue - _mousePrev.ScrollWheelValue;
-            if (delta != 0)
-            {
-                // SDL/MonoGame reports ~120 per notch; convert to ~30 px.
-                _state.PaletteScrollY -= delta * 0.25f;
-            }
-
-            ClampPaletteScroll();
-        }
-
-        private void HandlePaletteInput()
-        {
-            // Palette is interactive only in Place mode.
-            if (_state.Mode != EditorMode.Place) return;
-            if (!LeftClicked()) return;
-
-            var p = new Point(_mouseNow.X, _mouseNow.Y);
-
-            // Only visible pixels are clickable. The scissor in Draw clips
-            // rows to the viewport, so a row scrolled up under the title or
-            // down past the panel's bottom edge isn't on screen and must not
-            // answer clicks either — hence the viewport test, and hit-testing
-            // the SCROLLED rect rather than the laid-out one.
-            if (!PaletteViewportRect.Contains(p)) return;
-
-            foreach (var entry in _state.Palette)
-            {
-                if (PaletteRowRect(entry.ScreenBounds).Contains(p))
-                {
-                    _state.Dragging = entry;
-                    _state.SelectedPlacement = null;
-                    _state.IsMovingSelection = false;
-                    _state.Status = $"Dragging: {entry.Label}. Click on canvas to drop, right-click to cancel.";
-                    return;
-                }
-            }
-        }
-
-        /// <summary>
         /// Canvas view navigation, active in every mode: mouse-wheel zooms
         /// in/out anchored at the cursor; middle-drag pans while zoomed.
         /// </summary>
@@ -2846,8 +2740,10 @@ namespace SorceryForge
         {
             var pt = new Point(_mouseNow.X, _mouseNow.Y);
 
-            // Wheel zoom (only when the cursor is over the canvas — the
-            // inspector consumes its own wheel events by region).
+            // Wheel zoom. Two things keep this from fighting the panels for a
+            // notch: the canvas containment test below, and — since the panels
+            // became ImGui windows — the router, which never lets this method
+            // run at all on a frame ImGui claimed the mouse.
             if (EditorLayout.IsInsideCanvas(pt))
             {
                 int delta = _mouseNow.ScrollWheelValue - _mousePrev.ScrollWheelValue;
@@ -2901,13 +2797,9 @@ namespace SorceryForge
                 return;
             }
 
-            // Right-click cancels palette drag.
-            if (RightClicked() && _state.Dragging != null)
-            {
-                _state.Dragging = null;
-                _state.Status = "Drag cancelled.";
-                return;
-            }
+            // The right-click drag-cancel used to live here. It moved up into
+            // UpdateEditor, ungated by the router: it has always worked from
+            // anywhere on screen, and anywhere on screen is now mostly ImGui.
 
             if (!EditorLayout.IsInsideCanvas(screenPt))
             {
@@ -3732,7 +3624,19 @@ namespace SorceryForge
             // for one frame — a marker that flickers after a save is exactly
             // the kind of thing nobody can reproduce on demand.
             MenuBar.Draw(this, _state, Snapshot());
+
+            // The board takes the palette's and the inspector's space while it
+            // is up: at seventy-five rooms the scarce thing is width, and
+            // neither panel has anything to say about a world.
+            if (!_mapMode) PalettePanel.Draw(this, _state);
+
             StatusBar.Draw(_state, Snapshot());
+
+            // Last, and into the FOREGROUND list, so the carried entry floats
+            // over every panel. Suppressed while a modal is up or the board is
+            // showing — the room editor is not the live surface then, and a
+            // ghost hovering over a picker reads as a glitch.
+            if (!_mapMode && !_newRoomOpen && !_importOpen && !_cropOpen) DrawDragGhost();
 
             if (ImGuiProbe) DrawRoutingProbe();
         }
@@ -3823,21 +3727,11 @@ namespace SorceryForge
 
         private void DrawRoomMode()
         {
-            // Pass 1: the canvas frame (and, until PR 7a's palette commit, the
-            // palette's non-scrolling chrome).
+            // Pass 1: the canvas frame. The panels around it are ImGui windows
+            // now, painted after every SpriteBatch pass.
             _spriteBatch.Begin(samplerState: SamplerState.PointClamp);
-            DrawPaletteChrome();
             FillRect(EditorLayout.CanvasRect, Color.Black);
             DrawRectOutline(InflateRect(EditorLayout.CanvasRect, 2), new Color(120, 130, 160));
-            _spriteBatch.End();
-
-            // Pass 1b: the palette's scrollable body, scissored to its
-            // viewport. Culling alone isn't enough — a 44 px row straddling
-            // the viewport's top edge would otherwise paint up over the
-            // "PALETTE" title and into the top bar.
-            GraphicsDevice.ScissorRectangle = PaletteViewportRect;
-            _spriteBatch.Begin(samplerState: SamplerState.PointClamp, rasterizerState: ScissorOn);
-            DrawPaletteEntries();
             _spriteBatch.End();
 
             // Pass 2: canvas content, scissor-clipped to the canvas rect so
@@ -3861,96 +3755,7 @@ namespace SorceryForge
             _spriteBatch.Begin(samplerState: SamplerState.PointClamp);
             DrawDoorLabels();
             DrawInspector();
-            DrawDragGhost();
             _spriteBatch.End();
-        }
-
-        // -- Palette panel: icon + label per entry --------------------------
-
-        /// <summary>
-        /// The parts of the palette panel that don't scroll: the panel itself,
-        /// its title, and the scrollbar hint. Drawn unscissored in pass 1.
-        /// </summary>
-        private void DrawPaletteChrome()
-        {
-            FillRect(EditorLayout.PaletteRect, new Color(28, 30, 38));
-            DrawRectOutline(EditorLayout.PaletteRect, new Color(60, 64, 78));
-
-            string header = _state.Mode switch
-            {
-                EditorMode.Paint => "PALETTE (paint mode)",
-                EditorMode.Erase => "PALETTE (erase mode)",
-                _ => "PALETTE",
-            };
-            DrawText(header, new Vector2(EditorLayout.PaletteX + 8, EditorLayout.PaletteY + 8), new Color(180, 180, 200));
-
-            // Right-edge scrollbar hint when the entries overflow, matching
-            // the inspector's. It sits in the 6 px gutter outside the entry
-            // column, so drawing it here (before the entries) can't hide it.
-            var vp = PaletteViewportRect;
-            if (_paletteContentHeight > vp.Height && vp.Height > 0)
-            {
-                int trackX = EditorLayout.PaletteRect.Right - 6;
-                FillRect(new Rectangle(trackX, vp.Top, 4, vp.Height), new Color(40, 44, 56));
-                float ratio = (float)vp.Height / _paletteContentHeight;
-                int thumbH = Math.Max(20, (int)(vp.Height * ratio));
-                int thumbY = vp.Top + (int)((vp.Height - thumbH) *
-                    (_state.PaletteScrollY / Math.Max(1, _paletteContentHeight - vp.Height)));
-                FillRect(new Rectangle(trackX, thumbY, 4, thumbH), new Color(120, 130, 160));
-            }
-        }
-
-        /// <summary>
-        /// The scrolling body: section headers and entries. Drawn inside the
-        /// scissored pass, so partially-visible rows are cut at the viewport
-        /// edge rather than popping in and out whole.
-        /// </summary>
-        private void DrawPaletteEntries()
-        {
-            // Section headers — drawn before entries so entries can paint
-            // their hover/selected backgrounds on top.
-            foreach (var (name, bounds) in _sectionHeaders)
-            {
-                var rect = PaletteRowRect(bounds);
-                if (!PaletteRowVisible(rect)) continue;
-                FillRect(rect, new Color(45, 50, 65));
-                DrawRectOutline(rect, new Color(80, 90, 120));
-                DrawText(name, new Vector2(rect.X + 8, rect.Y + 4), new Color(255, 220, 110));
-            }
-
-            // Outside Place mode, the entity palette is non-interactive —
-            // render its entries dimmed so it's visually obvious why clicks
-            // are ignored. Sprites are drawn through a tinted alpha overlay.
-            bool dim = _state.Mode != EditorMode.Place;
-            var viewport = PaletteViewportRect;
-
-            foreach (var entry in _state.Palette)
-            {
-                var rect = PaletteRowRect(entry.ScreenBounds);
-                if (!PaletteRowVisible(rect)) continue;
-
-                // Hover uses the same two tests HandlePaletteInput uses, so
-                // the highlight always marks the entry a click would pick up.
-                bool isHover = !dim
-                    && rect.Contains(_mouseNow.X, _mouseNow.Y)
-                    && viewport.Contains(_mouseNow.X, _mouseNow.Y);
-                bool isActive = ReferenceEquals(_state.Dragging, entry);
-
-                Color bg = isActive ? new Color(80, 90, 130)
-                       : isHover    ? new Color(50, 55, 70)
-                                    : new Color(38, 42, 52);
-                FillRect(rect, bg);
-                DrawRectOutline(rect, new Color(70, 74, 88));
-
-                Color iconTint = dim ? new Color(255, 255, 255, 90) : Color.White;
-                var iconRect = new Rectangle(rect.X + 6, rect.Y + 6, 32, 32);
-                _spriteBatch.Draw(entry.Texture, iconRect, entry.SourceRect, iconTint);
-
-                Color labelColor = dim ? new Color(140, 140, 150) : Color.White;
-                DrawText(entry.Label,
-                    new Vector2(rect.X + 46, rect.Y + 14),
-                    labelColor);
-            }
         }
 
         // -- Canvas: background → collision overlay → placements → selection.
@@ -4210,17 +4015,37 @@ namespace SorceryForge
             DrawRectOutline(InflateRect(dest, 2), new Color(255, 220, 60));
         }
 
+        /// <summary>
+        /// The cursor's "carried" entry during a palette drag, drawn into
+        /// ImGui's FOREGROUND draw list so it stays on top of every panel.
+        /// </summary>
+        // It used to be the last SpriteBatch draw of the frame, which put it
+        // over the hand-rolled panels. ImGui now paints after every SpriteBatch
+        // pass, so a SpriteBatch ghost would slide UNDER the palette — the one
+        // panel you are guaranteed to be dragging away from. The foreground
+        // draw list is above even that, and above the modal pickers, which is
+        // right: the ghost is cursor feedback, not content.
+        //
+        // Built from the palette entry's ImGui handle and precomputed UVs, so
+        // the door ghost shows the same deliberately-mismatched texture the
+        // canvas will render.
         private void DrawDragGhost()
         {
             if (_state.Dragging == null) return;
+
             var screen = new Point(_mouseNow.X, _mouseNow.Y);
             // Over the canvas the ghost matches the drop size at the current
             // zoom; elsewhere it stays at base scale so a 16x-zoomed ghost
             // doesn't blanket the palette and inspector panels.
             int scale = EditorLayout.IsInsideCanvas(screen) ? EditorLayout.EffScale : EditorLayout.CanvasScale;
             int size = 24 * scale;
-            var dest = new Rectangle(screen.X - size / 2, screen.Y - size / 2, size, size);
-            _spriteBatch.Draw(_state.Dragging.Texture, dest, _state.Dragging.SourceRect, new Color(255, 255, 255, 180));
+
+            var min = new NVector2(screen.X - size / 2f, screen.Y - size / 2f);
+            var max = new NVector2(min.X + size, min.Y + size);
+            ImGui.GetForegroundDrawList().AddImage(
+                _state.Dragging.ImGuiTextureId, min, max,
+                _state.Dragging.IconUv0, _state.Dragging.IconUv1,
+                ChromeTheme.Packed(255, 255, 255, 180));
         }
 
         // -- Door inspector -------------------------------------------------
@@ -4653,6 +4478,20 @@ namespace SorceryForge
         void IChromeActions.ValidateReachability() => ValidateReachability();
         void IChromeActions.ValidateDoors() => ValidateDoors();
         void IChromeActions.AnalyzePuzzle() => AnalyzePuzzle();
+
+        /// <summary>Palette click: the cursor picks the entry up.</summary>
+        // Exactly the four writes HandlePaletteInput made, and no others. In
+        // particular it does NOT clear SpawnSelected or IsMovingSpawn (a
+        // selected spawn keeps its outline while you carry an entry), and it
+        // does NOT disarm the discard guard — picking something up is not an
+        // edit. Picking up a second entry simply replaces the first.
+        void IChromeActions.BeginPaletteDrag(PaletteEntry entry)
+        {
+            _state.Dragging = entry;
+            _state.SelectedPlacement = null;
+            _state.IsMovingSelection = false;
+            _state.Status = $"Dragging: {entry.Label}. Click on canvas to drop, right-click to cancel.";
+        }
 
         void IChromeActions.OpenNewRoomPicker() => OpenNewRoomPicker();
         void IChromeActions.OpenImportPicker() => OpenImportPicker();

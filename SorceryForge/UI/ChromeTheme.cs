@@ -102,6 +102,74 @@ namespace SorceryForge.UI
             ImGui.SetCursorPosX(Math.Max(ImGui.GetCursorPosX(), x));
         }
 
+        /// <summary>
+        /// Pack a colour the way ImGui's draw lists want it: IM_COL32, R in the
+        /// low byte. The same order MonoGame's Color.PackedValue uses, which is
+        /// why the renderer can hand ImGui's vertex buffer straight to a
+        /// MonoGame VertexElementFormat.Color without transcoding.
+        /// </summary>
+        public static uint Packed(int r, int g, int b, int a = 255) =>
+            (uint)((a << 24) | (b << 16) | (g << 8) | r);
+
+        /// <summary>
+        /// Install the editor's look: no rounding anywhere, a 1-px border, and
+        /// the panel/field colours the hand-rolled chrome used. Called once.
+        /// </summary>
+        // Set on the style rather than pushed per window: these are what the
+        // editor looks like, not a local override, and a push/pop per panel is
+        // a pair that eventually gets unbalanced.
+        public static void Install()
+        {
+            var style = ImGui.GetStyle();
+
+            // Square everything. The old chrome drew rectangles with a 1x1
+            // texture and had no rounding to offer; matching it keeps the
+            // canvas overlays and the panels looking like one program.
+            style.WindowRounding = 0f;
+            style.ChildRounding = 0f;
+            style.FrameRounding = 0f;
+            style.PopupRounding = 0f;
+            style.ScrollbarRounding = 0f;
+            style.GrabRounding = 0f;
+            style.TabRounding = 0f;
+
+            style.WindowBorderSize = 1f;
+            style.ChildBorderSize = 0f;
+            style.FrameBorderSize = 1f;
+            style.ScrollbarSize = 10f;
+
+            Set(ImGuiCol.WindowBg, 28, 30, 38);
+            Set(ImGuiCol.ChildBg, 28, 30, 38);
+            Set(ImGuiCol.PopupBg, 30, 33, 42);
+            Set(ImGuiCol.Border, 60, 64, 78);
+            Set(ImGuiCol.MenuBarBg, 24, 26, 32);      // the old top bar's fill
+            Set(ImGuiCol.Text, 230, 230, 240);
+            Set(ImGuiCol.TextDisabled, 120, 125, 140); // the old inert-button label
+
+            // Buttons and fields reuse the value-box colours from the
+            // inspector's rows, so a menu, a toolbar button and an inspector
+            // field are recognisably the same control.
+            Set(ImGuiCol.Button, 50, 55, 70);
+            Set(ImGuiCol.ButtonHovered, 70, 78, 100);
+            Set(ImGuiCol.ButtonActive, 80, 90, 130);
+            Set(ImGuiCol.FrameBg, 40, 46, 60);
+            Set(ImGuiCol.FrameBgHovered, 60, 75, 110);
+            Set(ImGuiCol.FrameBgActive, 70, 85, 120);
+            Set(ImGuiCol.Header, 70, 90, 130);         // the selected inspector header
+            Set(ImGuiCol.HeaderHovered, 60, 75, 110);
+            Set(ImGuiCol.HeaderActive, 80, 90, 130);
+            Set(ImGuiCol.ScrollbarBg, 40, 44, 56);
+            Set(ImGuiCol.ScrollbarGrab, 120, 130, 160);
+            Set(ImGuiCol.ScrollbarGrabHovered, 140, 150, 180);
+            Set(ImGuiCol.ScrollbarGrabActive, 160, 170, 200);
+            Set(ImGuiCol.CheckMark, 120, 230, 140);    // the import toggle's tick
+            Set(ImGuiCol.Separator, 60, 64, 78);
+            Set(ImGuiCol.ModalWindowDimBg, 0, 0, 0, 170);  // the pickers' dim, exactly
+        }
+
+        private static void Set(ImGuiCol idx, int r, int g, int b, int a = 255) =>
+            ImGui.GetStyle().Colors[(int)idx] = new NVector4(r / 255f, g / 255f, b / 255f, a / 255f);
+
         private static NVector4 Rgb(int r, int g, int b) =>
             new(r / 255f, g / 255f, b / 255f, 1f);
     }

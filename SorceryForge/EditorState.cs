@@ -105,11 +105,11 @@ namespace SorceryForge
         public void Expand(string placementId) =>
             CollapsedPlacementIds.Remove(placementId);
 
-        // Left-side palette panel. Same scroll model as the inspector above:
-        // a pixel offset subtracted from each row's laid-out Y. Zero until the
-        // entry list outgrows the panel, which it will once Phase 5C's full
-        // item set lands.
-        public float PaletteScrollY = 0f;
+        // The palette's scroll offset used to live here beside the inspector's.
+        // It is gone: Dear ImGui owns panel scrolling now, which is what makes
+        // one wheel notch reach exactly one consumer without three copies of a
+        // rectangle agreeing about where a row is.
+
         // Available rooms (from RoomMeta.All) and which one is currently loaded.
         public int CurrentRoomIndex = 0;
         public RoomMeta CurrentRoom => RoomMeta.All[CurrentRoomIndex];

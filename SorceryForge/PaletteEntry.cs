@@ -2,6 +2,7 @@ using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using SorceryRemake.Core;
 using SorceryRemake.Doors;
+using System;
 
 namespace SorceryForge
 {
@@ -49,11 +50,26 @@ namespace SorceryForge
         // taken from EditorGame.SectionOrder.
         public string Section = "OTHER";
 
-        // Where this entry sits in the palette panel, filled by
-        // EditorGame.LayoutPalette. This is the UNSCROLLED position — add the
-        // palette scroll offset before drawing or hit-testing, which
-        // EditorGame.PaletteRowRect does for both.
-        public Rectangle ScreenBounds;
+        // --- ImGui presentation, filled by EditorGame.BuildPalette ----------
+        //
+        // The palette panel draws real game sprites, and ImGui refers to a
+        // texture by an opaque handle rather than by an object. These three
+        // fields are that handle plus the sub-rect expressed as UV corners,
+        // computed once at build time.
+        //
+        // Precomputed rather than derived in the panel for one reason: it keeps
+        // every file under SorceryForge/UI/ free of Texture2D, which is what
+        // lets tools/ChromeCheck compile the panels and drive them with no
+        // GraphicsDevice. Reading Texture.Width in the panel would need a live
+        // texture there, and there isn't one.
+        //
+        // The UV pair is a straight corner-to-corner map of SourceRect, so the
+        // 32x32 icon box STRETCHES a non-square source (every enemy strip
+        // frame) exactly as the SpriteBatch chrome did. That distortion is
+        // deliberate and long-standing; do not letterbox it.
+        public IntPtr ImGuiTextureId;
+        public System.Numerics.Vector2 IconUv0;
+        public System.Numerics.Vector2 IconUv1;
 
         public PaletteEntry(string label, PlacementKind kind, Texture2D tex, Rectangle src)
         {

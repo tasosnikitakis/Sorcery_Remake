@@ -49,6 +49,8 @@
 //                 '*' means which unsaved thing
 //   8 status      every fragment of the status line's right-hand group, in
 //                 order, including the three unsaved markers
+//   9 palette     the real PalettePanel, driven with synthetic clicks: the row
+//                 you click is the row you saw, scrolled or not
 //
 // HOW TO RUN
 //
@@ -67,6 +69,7 @@ using ImGuiNET;
 using SorceryForge;
 using SorceryForge.UI;
 using System;
+using System.Collections.Generic;
 using NVector2 = System.Numerics.Vector2;
 
 namespace SorceryRemake.Tools.ChromeCheck
@@ -110,6 +113,7 @@ namespace SorceryRemake.Tools.ChromeCheck
             CheckMenuEnablement();
             CheckTitles();
             CheckStatusLine();
+            CheckPalette(harness);
 
             Console.WriteLine();
             Console.WriteLine($"  {_checks} checks, {_failures} failure(s)");
@@ -567,6 +571,179 @@ namespace SorceryRemake.Tools.ChromeCheck
                 "Map 25% | N: new | I: import | Tab/Esc: room");
         }
 
+        // ====================================================================
+        // 9. PALETTE — what you click is what you saw
+        // ====================================================================
+        // The hand-rolled palette kept its row rectangles in one place, its
+        // scroll offset in another, and its viewport rectangle in four. The
+        // failure mode was those copies disagreeing: a scrolled palette that
+        // hands you the entry above the one you clicked. Here the panel is
+        // driven for real, with a synthetic entry set, and the click is
+        // followed all the way to the IChromeActions verb it produces.
+        // ====================================================================
+
+        private static void CheckPalette(Harness h)
+        {
+            Section("9. PALETTE — the row you click is the row you get");
+
+            h.Resize(1280, 720);
+            var state = BuildPaletteState();
+            var actions = new RecordingActions();
+            h.DrivePalette(actions, state);
+
+            // Row geometry, from PalettePanel's own constants. Asserting
+            // against them is the point: they are the contract the old layout
+            // arithmetic implemented four times.
+            const float titleH = 30f, headerH = 22f, rowH = 44f, rowGap = 4f, sectionGap = 6f;
+            float listTop = EditorLayout.PaletteRect.Y + titleH;
+            float firstRow = listTop + headerH + rowGap;
+
+            // Entry 0 of section 1.
+            h.ClickAt(new NVector2(140f, firstRow + rowH / 2f));
+            AssertPicked("first row picks the first entry", actions, "Sword");
+
+            // Entry 1 of section 1: one row plus one gap further down.
+            actions.Reset();
+            h.ClickAt(new NVector2(140f, firstRow + rowH + rowGap + rowH / 2f));
+            AssertPicked("second row picks the second entry", actions, "Ball & Chain");
+
+            // The section header between two sections is not a row and is not
+            // clickable — it never was, and it must not become a
+            // CollapsingHeader on the way through ImGui.
+            actions.Reset();
+            float section2Header = firstRow + 3f * (rowH + rowGap) + sectionGap;
+            h.ClickAt(new NVector2(140f, section2Header + headerH / 2f));
+            Assert("a section header is not clickable", actions.Picked == null,
+                actions.Picked ?? "");
+
+            // The first entry of the SECOND section, immediately below it.
+            actions.Reset();
+            h.ClickAt(new NVector2(140f, section2Header + headerH + rowGap + rowH / 2f));
+            AssertPicked("  and the row below it is the next section's first entry",
+                actions, "Guard");
+
+            // The 30 px title strip is outside the list. It used to scroll the
+            // list; it never picked an entry, and it still must not.
+            actions.Reset();
+            h.ClickAt(new NVector2(140f, EditorLayout.PaletteRect.Y + titleH / 2f));
+            Assert("the PALETTE title strip picks nothing", actions.Picked == null,
+                actions.Picked ?? "");
+
+            // Scrolled to the bottom, the last entry is at the bottom of the
+            // list and a click there gets it. THIS is the assertion the old
+            // chrome could not make: drawing and hit-testing are now the same
+            // call, so they cannot disagree by a scroll offset.
+            actions.Reset();
+            h.ScrollPaletteToBottom(actions, state);
+            float listBottom = EditorLayout.PaletteRect.Bottom - 8f;
+            h.ClickAt(new NVector2(140f, listBottom - rowH / 2f));
+            AssertPicked("scrolled to the bottom, the bottom row is the last entry",
+                actions, "Player Spawn");
+
+            // Same click position, unscrolled, is a different entry — i.e. the
+            // scroll really moved the rows under the cursor rather than moving
+            // only the paint.
+            actions.Reset();
+            h.ResetPaletteScroll(actions, state);
+            h.ClickAt(new NVector2(140f, listBottom - rowH / 2f));
+            Assert("  and unscrolled that same point is NOT the last entry",
+                actions.Picked != "Player Spawn", actions.Picked ?? "(nothing)");
+
+            // Outside Place mode the palette dims and ignores clicks — the
+            // dimming is what advertises the gate, so the gate has to be real.
+            foreach (var mode in new[] { EditorMode.Paint, EditorMode.Erase })
+            {
+                actions.Reset();
+                state.Mode = mode;
+                h.DrivePalette(actions, state);
+                h.ClickAt(new NVector2(140f, firstRow + rowH / 2f));
+                Assert($"{mode} mode: the palette ignores clicks", actions.Picked == null,
+                    actions.Picked ?? "");
+                AssertText($"  and says so in its title", PalettePanel.Title(mode),
+                    mode == EditorMode.Paint ? "PALETTE (paint mode)" : "PALETTE (erase mode)");
+            }
+
+            state.Mode = EditorMode.Place;
+            AssertText("Place mode title", PalettePanel.Title(EditorMode.Place), "PALETTE");
+        }
+
+        /// <summary>
+        /// A synthetic palette with the real shape: sections in SectionOrder,
+        /// entries in insertion order, and the META spawn entry last. No
+        /// textures — the panel draws through ImGui handles, so it never
+        /// touches a Texture2D, which is the whole reason this runs here.
+        /// </summary>
+        // Deliberately LONGER than the panel. The palette overflowing is the
+        // condition the whole scroll machinery exists for, and the state the
+        // hand-rolled version's rectangles disagreed in. It is also where the
+        // real palette is heading: EDITOR_REVIEW item 5's full item set is
+        // already extracted in Content/.
+        private static EditorState BuildPaletteState()
+        {
+            var state = new EditorState { Mode = EditorMode.Place };
+            void Add(string label, string section) =>
+                state.Palette.Add(new PaletteEntry(label, PlacementKind.Item, null!, default)
+                { Section = section });
+
+            // The '&' is not incidental: "Ball & Chain" is a real entry label,
+            // and a widget system that treated '&' as a mnemonic escape would
+            // silently render it as "Ball  Chain".
+            Add("Sword", "WEAPONS");
+            Add("Ball & Chain", "WEAPONS");
+            Add("Axe", "WEAPONS");
+
+            Add("Guard", "ENEMIES");
+            for (int i = 1; i < 16; i++) Add($"Enemy {i}", "ENEMIES");
+
+            state.Palette.Add(new PaletteEntry("Player Spawn", PlacementKind.Item, null!, default)
+            { Section = "META", IsPlayerSpawn = true });
+            return state;
+        }
+
+        private static void AssertPicked(string label, RecordingActions actions, string expected)
+        {
+            _checks++;
+            bool ok = actions.Picked == expected;
+            if (!ok) _failures++;
+            Console.WriteLine($"    {(ok ? "ok  " : "FAIL")} {label}");
+            if (!ok) Console.WriteLine($"           expected '{expected}', got '{actions.Picked ?? "(nothing)"}'");
+        }
+
+        /// <summary>
+        /// Records which verb the chrome invoked. Every method is a no-op that
+        /// remembers it was called — which is exactly what an IChromeActions
+        /// implementation is allowed to be, and the reason the interface exists.
+        /// </summary>
+        private sealed class RecordingActions : IChromeActions
+        {
+            public string? Picked;
+            public readonly List<string> Calls = new();
+
+            public void Reset() { Picked = null; Calls.Clear(); }
+
+            public void BeginPaletteDrag(PaletteEntry entry)
+            {
+                Picked = entry.Label;
+                Calls.Add("BeginPaletteDrag");
+            }
+
+            public void CyclePrevRoom() => Calls.Add(nameof(CyclePrevRoom));
+            public void CycleNextRoom() => Calls.Add(nameof(CycleNextRoom));
+            public void SaveCurrentRoom() => Calls.Add(nameof(SaveCurrentRoom));
+            public void SaveWorldMap() => Calls.Add(nameof(SaveWorldMap));
+            public void ExitEditor() => Calls.Add(nameof(ExitEditor));
+            public void SetMode(EditorMode mode) => Calls.Add(nameof(SetMode));
+            public void ToggleSnap() => Calls.Add(nameof(ToggleSnap));
+            public void ToggleAutoPunch() => Calls.Add(nameof(ToggleAutoPunch));
+            public void ToggleFullscreen() => Calls.Add(nameof(ToggleFullscreen));
+            public void ToggleMapMode() => Calls.Add(nameof(ToggleMapMode));
+            public void ValidateReachability() => Calls.Add(nameof(ValidateReachability));
+            public void ValidateDoors() => Calls.Add(nameof(ValidateDoors));
+            public void AnalyzePuzzle() => Calls.Add(nameof(AnalyzePuzzle));
+            public void OpenNewRoomPicker() => Calls.Add(nameof(OpenNewRoomPicker));
+            public void OpenImportPicker() => Calls.Add(nameof(OpenImportPicker));
+        }
+
         private static void AssertText(string label, string actual, string expected)
         {
             _checks++;
@@ -672,17 +849,72 @@ namespace SorceryRemake.Tools.ChromeCheck
                 ImGuiWindowFlags.NoMove | ImGuiWindowFlags.NoCollapse |
                 ImGuiWindowFlags.NoSavedSettings | ImGuiWindowFlags.NoBringToFrontOnFocus;
 
+            // When these are set, the frame builds the EDITOR'S OWN palette
+            // panel instead of the stand-in. Sections 1-5 want a stand-in they
+            // can make overflow on demand; section 9 wants the real thing.
+            private IChromeActions? _paletteActions;
+            private EditorState? _paletteState;
+
+            /// <summary>Switch the palette band to the real PalettePanel.</summary>
+            public void DrivePalette(IChromeActions actions, EditorState state)
+            {
+                _paletteActions = actions;
+                _paletteState = state;
+                Settle();
+            }
+
+            /// <summary>
+            /// A full click at a point: hover, settle, press, release. ImGui's
+            /// buttons fire on RELEASE while still hovered, so a press alone
+            /// proves nothing.
+            /// </summary>
+            public void ClickAt(NVector2 p)
+            {
+                MoveTo(p);
+                Settle();
+                SetLeft(true);
+                Frame();
+                SetLeft(false);
+                Frame();
+            }
+
+            /// <summary>Wheel the palette list as far down as it goes.</summary>
+            public void ScrollPaletteToBottom(IChromeActions actions, EditorState state)
+            {
+                DrivePalette(actions, state);
+                MoveTo(new NVector2(140f, EditorLayout.PaletteRect.Y + 200f));
+                Settle();
+                for (int i = 0; i < 40; i++) { Wheel(-1f); Frame(); }
+                Settle();
+            }
+
+            public void ResetPaletteScroll(IChromeActions actions, EditorState state)
+            {
+                DrivePalette(actions, state);
+                MoveTo(new NVector2(140f, EditorLayout.PaletteRect.Y + 200f));
+                Settle();
+                for (int i = 0; i < 40; i++) { Wheel(1f); Frame(); }
+                Settle();
+            }
+
             private void BuildChrome()
             {
                 Panel("##topbar", EditorLayout.TopBarRect, () => ImGui.TextUnformatted("menu"));
 
-                Panel("##palette", EditorLayout.PaletteRect, () =>
+                if (_paletteActions != null && _paletteState != null)
                 {
-                    // Deliberately taller than the panel: the wheel section
-                    // needs something that can actually scroll.
-                    for (int i = 0; i < 60; i++) ImGui.TextUnformatted($"entry {i}");
-                    PaletteScroll = ImGui.GetScrollY();
-                });
+                    PalettePanel.Draw(_paletteActions, _paletteState);
+                }
+                else
+                {
+                    Panel("##palette", EditorLayout.PaletteRect, () =>
+                    {
+                        // Deliberately taller than the panel: the wheel section
+                        // needs something that can actually scroll.
+                        for (int i = 0; i < 60; i++) ImGui.TextUnformatted($"entry {i}");
+                        PaletteScroll = ImGui.GetScrollY();
+                    });
+                }
 
                 Panel("##inspector", EditorLayout.InspectorRect, () => ImGui.TextUnformatted("inspector"));
                 Panel("##status", EditorLayout.StatusBarRect, () => ImGui.TextUnformatted("status"));

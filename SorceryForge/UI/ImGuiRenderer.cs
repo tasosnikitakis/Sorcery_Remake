@@ -156,6 +156,10 @@ namespace SorceryForge.UI
             // already gitignored.
             unsafe { io.NativePtr->IniFilename = null; }
 
+            // The editor's own look: square corners, a 1-px border, and the
+            // panel colours the hand-rolled chrome painted with a 1x1 texture.
+            ChromeTheme.Install();
+
             // Character input for any future text field. Wired now rather than
             // later because the alternative is a text box that silently eats
             // nothing and a puzzled half hour finding out why.

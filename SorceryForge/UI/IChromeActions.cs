@@ -61,6 +61,17 @@ namespace SorceryForge.UI
         void ValidateDoors();
         void AnalyzePuzzle();
 
+        // ---- Palette --------------------------------------------------------
+
+        /// <summary>
+        /// Pick an entry up. The cursor then carries it until a click on the
+        /// canvas drops it or a right-click anywhere cancels.
+        /// </summary>
+        // Not "set Dragging": picking up also clears the placement selection
+        // and says so in the status line, and those three writes belong
+        // together on the logic side rather than in a click handler.
+        void BeginPaletteDrag(PaletteEntry entry);
+
         // ---- Modal pickers -------------------------------------------------
 
         void OpenNewRoomPicker();
