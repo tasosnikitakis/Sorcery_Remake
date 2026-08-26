@@ -22,7 +22,7 @@ namespace SorceryForge
     /// assets/data/content_&lt;roomId&gt;.json which the main game picks up
     /// next time it loads the room.
     /// </summary>
-    public class EditorGame : Game
+    public class EditorGame : Game, IChromeActions
     {
         private readonly GraphicsDeviceManager _graphics;
         private SpriteBatch _spriteBatch = null!;
@@ -47,7 +47,6 @@ namespace SorceryForge
 
         // Editor model and palette descriptors for each placeable kind.
         private readonly EditorState _state = new();
-        private readonly List<UiButton> _buttons = new();
 
         // ---- CHROME (Dear ImGui) -------------------------------------------
         // Every menu, panel, overlay and status line the editor draws. The
@@ -133,7 +132,6 @@ namespace SorceryForge
 
                 EditorLayout.Recalculate(w, h);
                 LayoutPalette();
-                RelayoutButtons();
             }
             finally { _resizingGuard = false; }
         }
@@ -188,7 +186,6 @@ namespace SorceryForge
 
                 _isFullscreen = !_isFullscreen;
                 LayoutPalette();
-                RelayoutButtons();
                 _state.Status = _isFullscreen
                     ? "Borderless fullscreen — F11 to exit."
                     : "Windowed.";
@@ -250,7 +247,6 @@ namespace SorceryForge
             _settings = EditorSettings.Load(null, out string? settingsError);
 
             BuildPalette();
-            BuildButtons();
             LoadRoom(_state.CurrentRoomIndex);
 
             // After LoadRoom, which sets its own status line.
@@ -529,102 +525,19 @@ namespace SorceryForge
             if (_state.PaletteScrollY > maxScroll) _state.PaletteScrollY = maxScroll;
         }
 
-        // Indices into _buttons for the labels we update at runtime, and for
-        // the ones RelayoutButtons places outside their list order.
-        private int _btnSnapIdx, _btnModeIdx, _btnPunchIdx, _btnNewRoomIdx, _btnImportIdx;
-
-        // Where the "left bank" of buttons ends and the "right bank" begins,
-        // in screen X. Recomputed each RelayoutButtons() — used to center
-        // the room title between them.
-        private int _leftBankRight, _rightBankLeft;
-
-        private void BuildButtons()
-        {
-            // Use placeholder bounds; RelayoutButtons sets actual coords.
-            _buttons.Add(new UiButton("< Prev", default, CyclePrevRoom));
-            _buttons.Add(new UiButton("Next >", default, CycleNextRoom));
-
-            _btnModeIdx = _buttons.Count;
-            _buttons.Add(new UiButton("Mode: Place", default, ToggleMode));
-
-            _buttons.Add(new UiButton("Validate", default, ValidateReachability));
-            _buttons.Add(new UiButton("Doors", default, ValidateDoors));
-            _buttons.Add(new UiButton("Puzzle", default, AnalyzePuzzle));
-
-            _btnSnapIdx = _buttons.Count;
-            _buttons.Add(new UiButton("Snap: OFF", default, ToggleSnap));
-
-            _buttons.Add(new UiButton("Save", default, SaveCurrentRoom));
-
-            _buttons.Add(new UiButton("Full (F11)", default, ToggleFullscreen));
-
-            // Appended last so the hardcoded indices above keep their meaning;
-            // RelayoutButtons decides where it actually sits on screen.
-            _btnPunchIdx = _buttons.Count;
-            _buttons.Add(new UiButton("Punch: OFF", default, ToggleAutoPunch));
-
-            _btnNewRoomIdx = _buttons.Count;
-            _buttons.Add(new UiButton("New Room", default, OpenNewRoomPicker));
-
-            _btnImportIdx = _buttons.Count;
-            _buttons.Add(new UiButton("Import", default, OpenImportPicker));
-
-            RelayoutButtons();
-        }
-
         /// <summary>
-        /// Position buttons against the current window width. Left-anchored
-        /// buttons start from x=8; right-anchored buttons stack inward from
-        /// the right edge. Called from BuildButtons (initial), resize, and
-        /// fullscreen toggle.
+        /// Enter a cursor mode. The toolbar selects one of the three directly;
+        /// nothing cycles them any more.
         /// </summary>
-        private void RelayoutButtons()
+        // Was ToggleMode, which cycled Place -> Paint -> Erase and rewrote its
+        // own button's label in the same breath. The label is gone with the
+        // button; what is left is the part that was always logic — cancelling
+        // whatever the outgoing mode had in flight, and saying what the new one
+        // does. Setting the mode you are already in is allowed and re-states
+        // the status line, which is harmless and occasionally useful.
+        private void SetMode(EditorMode mode)
         {
-            int by = 12;
-            int bh = EditorLayout.TopBarHeight - 24;
-            int W = EditorLayout.WindowWidth;
-
-            // Left bank: Prev | Next | New Room | Import | Mode
-            // New Room and Import sit with the room-navigation buttons rather
-            // than in the right-hand tool bank — they are how you get to a
-            // room, not tools you use inside one. Import sits beside New Room
-            // because it is the same act with one more step: it produces the
-            // background PNG that New Room would otherwise need you to have.
-            _buttons[0].Bounds = new Rectangle(8,   by,  80, bh);
-            _buttons[1].Bounds = new Rectangle(96,  by,  80, bh);
-            _buttons[_btnNewRoomIdx].Bounds = new Rectangle(186, by, 110, bh);
-            _buttons[_btnImportIdx].Bounds  = new Rectangle(302, by,  86, bh);
-            _buttons[2].Bounds = new Rectangle(394, by, 130, bh);
-            _leftBankRight = 394 + 130;
-
-            // Right bank (right-to-left):
-            // Save | Snap | Punch | Puzzle | Doors | Validate | Fullscreen
-            //
-            // The Fullscreen button carries the short "Full (F11)" label: the
-            // bank grew by a button and the room title only draws when it fits
-            // in the gap left over between the two banks, so 50 px of slack
-            // matters more here than the longer word does.
-            int rx = W - 8;
-            int saveW = 90, snapW = 110, punchW = 100, puzzW = 80, doorsW = 80, valW = 110, fsW = 100;
-            _buttons[7].Bounds            = new Rectangle(rx - saveW,  by, saveW,  bh);   rx -= saveW  + 6;
-            _buttons[6].Bounds            = new Rectangle(rx - snapW,  by, snapW,  bh);   rx -= snapW  + 6;
-            _buttons[_btnPunchIdx].Bounds = new Rectangle(rx - punchW, by, punchW, bh);   rx -= punchW + 6;
-            _buttons[5].Bounds            = new Rectangle(rx - puzzW,  by, puzzW,  bh);   rx -= puzzW  + 6;
-            _buttons[4].Bounds            = new Rectangle(rx - doorsW, by, doorsW, bh);   rx -= doorsW + 6;
-            _buttons[3].Bounds            = new Rectangle(rx - valW,   by, valW,   bh);   rx -= valW   + 6;
-            _buttons[8].Bounds            = new Rectangle(rx - fsW,    by, fsW,    bh);   rx -= fsW    + 6;
-            _rightBankLeft = rx;
-        }
-
-        private void ToggleMode()
-        {
-            _state.Mode = _state.Mode switch
-            {
-                EditorMode.Place => EditorMode.Paint,
-                EditorMode.Paint => EditorMode.Erase,
-                _                => EditorMode.Place,
-            };
-            _buttons[_btnModeIdx].Label = $"Mode: {_state.Mode}";
+            _state.Mode = mode;
 
             // Switching out of Place mode cancels in-progress drag/move;
             // switching out of Erase mode closes any open brush stroke.
@@ -2453,19 +2366,15 @@ namespace SorceryForge
         {
             _mapView.Viewport = MapBoardRect;
 
-            _spriteBatch.Begin(samplerState: SamplerState.PointClamp);
-            DrawTopBar();
-            _spriteBatch.End();
-
-            // Scissored, so a box panned half off the board is cut at the edge
-            // instead of painting over the top bar.
+            // The board and nothing else. The menu bar above it and the status
+            // bar below it are ImGui windows now, painted after every
+            // SpriteBatch pass — so the scissor here does the same job it
+            // always did (cut a box panned half off the board at the band's
+            // edge) and the bands themselves are no longer this method's
+            // business.
             GraphicsDevice.ScissorRectangle = MapBoardRect;
             _spriteBatch.Begin(samplerState: SamplerState.PointClamp, rasterizerState: ScissorOn);
             DrawMapBoard();
-            _spriteBatch.End();
-
-            _spriteBatch.Begin(samplerState: SamplerState.PointClamp);
-            DrawStatusBar();
             _spriteBatch.End();
         }
 
@@ -2663,7 +2572,6 @@ namespace SorceryForge
         private void ToggleSnap()
         {
             _state.SnapEnabled = !_state.SnapEnabled;
-            _buttons[_btnSnapIdx].Label = _state.SnapEnabled ? "Snap: 8px" : "Snap: OFF";
         }
 
         /// <summary>
@@ -2675,7 +2583,6 @@ namespace SorceryForge
         private void ToggleAutoPunch()
         {
             _state.AutoPunch = !_state.AutoPunch;
-            _buttons[_btnPunchIdx].Label = _state.AutoPunch ? "Punch: ON" : "Punch: OFF";
             _state.Status = _state.AutoPunch
                 ? "Auto-punch ON: drops and moves clear the background under the placement."
                 : "Auto-punch OFF: use P (or the inspector row) to punch explicitly.";
@@ -2810,7 +2717,6 @@ namespace SorceryForge
             if (_router.KeyboardReachesEditor
                 && Pressed(Keys.Escape) && ConfirmDiscardUnsavedEdits(includeMap: true)) Exit();
 
-            HandleButtons();
             HandleInspectorScroll();
             // Before HandlePaletteInput below, so a wheel notch and the click
             // that follows it in the same frame agree on the scroll offset.
@@ -2840,20 +2746,6 @@ namespace SorceryForge
         private bool LeftReleased() =>
             _mouseNow.LeftButton == ButtonState.Released &&
             _mousePrev.LeftButton == ButtonState.Pressed;
-
-        private void HandleButtons()
-        {
-            if (!LeftClicked()) return;
-            var p = new Point(_mouseNow.X, _mouseNow.Y);
-            foreach (var b in _buttons)
-            {
-                if (b.Bounds.Contains(p))
-                {
-                    b.OnClick();
-                    return;
-                }
-            }
-        }
 
         /// <summary>
         /// Mouse wheel over the inspector pane scrolls its content. The
@@ -3833,8 +3725,37 @@ namespace SorceryForge
 
         private void BuildChrome()
         {
+            // Rebuilt between panels rather than once for the frame: a menu
+            // item's callback runs DURING MenuBar.Draw and can load a room,
+            // leave map mode or clear a dirty flag. Handing the status bar a
+            // snapshot taken before that would show the previous room's state
+            // for one frame — a marker that flickers after a save is exactly
+            // the kind of thing nobody can reproduce on demand.
+            MenuBar.Draw(this, _state, Snapshot());
+            StatusBar.Draw(_state, Snapshot());
+
             if (ImGuiProbe) DrawRoutingProbe();
         }
+
+        /// <summary>
+        /// The read-only view state the chrome renders from. Everything here
+        /// lives on EditorGame rather than EditorState; the panels get it by
+        /// value and cannot write it back.
+        /// </summary>
+        private ChromeView Snapshot() => new()
+        {
+            MapMode = _mapMode,
+            IsFullscreen = _isFullscreen,
+            RoomDisplayName = _state.CurrentRoom.DisplayName,
+            RoomId = _state.CurrentRoom.RoomId,
+            // The same three flags ConfirmDiscardUnsavedEdits consults, and
+            // deliberately not MapDirty — see EditorState's comment on why the
+            // board's unsaved state is not the room's.
+            RoomDirty = _state.PlacementsDirty || _state.CollisionDirty || _state.BackgroundDirty,
+            Zoom = EditorLayout.Zoom,
+            MapRoomCount = _mapRooms.Count,
+            MapZoomPercent = _mapView.ZoomPercent,
+        };
 
         /// <summary>
         /// --imgui-probe: a small window reporting the frame's routing verdict.
@@ -3902,9 +3823,9 @@ namespace SorceryForge
 
         private void DrawRoomMode()
         {
-            // Pass 1: UI chrome and the canvas frame.
+            // Pass 1: the canvas frame (and, until PR 7a's palette commit, the
+            // palette's non-scrolling chrome).
             _spriteBatch.Begin(samplerState: SamplerState.PointClamp);
-            DrawTopBar();
             DrawPaletteChrome();
             FillRect(EditorLayout.CanvasRect, Color.Black);
             DrawRectOutline(InflateRect(EditorLayout.CanvasRect, 2), new Color(120, 130, 160));
@@ -3940,77 +3861,8 @@ namespace SorceryForge
             _spriteBatch.Begin(samplerState: SamplerState.PointClamp);
             DrawDoorLabels();
             DrawInspector();
-            DrawStatusBar();
             DrawDragGhost();
             _spriteBatch.End();
-        }
-
-        // -- Top bar with room cycle, room name, save, snap toggle ----------
-
-        private void DrawTopBar()
-        {
-            FillRect(EditorLayout.TopBarRect, new Color(24, 26, 32));
-            DrawRectOutline(EditorLayout.TopBarRect, new Color(60, 64, 78));
-
-            foreach (var b in _buttons) DrawButton(b);
-
-            // Map mode suspends every one of those buttons — they all act on
-            // the room being edited, and none of them means anything against a
-            // board. DrawButton greys them; here the centre says what mode this
-            // is and how to leave, in place of the room title.
-            if (_mapMode)
-            {
-                // Same "*" language the room title uses for unsaved work — here
-                // it means the board has been arranged and not yet written.
-                string mapTitle = $"WORLD MAP{(_state.MapDirty ? " *" : "")} — {_mapRooms.Count} rooms" +
-                                  $"   |   Tab or Esc: back to {_state.CurrentRoom.RoomId}";
-                var mapSize = MeasureText(mapTitle);
-                int mapGap = _rightBankLeft - _leftBankRight;
-                if (mapGap >= mapSize.X + 16)
-                    DrawText(mapTitle,
-                        new Vector2(_leftBankRight + (mapGap - mapSize.X) / 2f,
-                                    (EditorLayout.TopBarHeight - mapSize.Y) / 2f),
-                        new Color(255, 220, 110));
-                return;
-            }
-
-            // Centre the room title in the empty stretch between the left and
-            // right button banks (computed in RelayoutButtons), and draw the
-            // longest form that fits in it.
-            //
-            // Trailing "*" whenever ANY edit is unsaved (placements, collision
-            // grid, or background pixels) — the same condition that makes
-            // ConfirmDiscardUnsavedEdits block a room switch or exit.
-            //
-            // The shorter forms exist because that "*" is the only always-on
-            // sign of unsaved work, and the gap is not guaranteed: the top bar
-            // gained the Import button, which pushed the left bank right by
-            // ~90 px, and the full title stops fitting a little under the
-            // default 1280 px window. Degrading to the bare room id and then to
-            // the marker alone keeps the warning visible where an all-or-
-            // nothing title would silently drop it. (Narrower still, the two
-            // banks themselves overlap — that is a pre-existing limit of the
-            // fixed top bar, now reached at ~1244 px rather than ~1152.)
-            bool dirty = _state.PlacementsDirty || _state.CollisionDirty || _state.BackgroundDirty;
-            string mark = dirty ? " *" : "";
-            string[] forms =
-            {
-                $"Room: {_state.CurrentRoom.DisplayName}  ({_state.CurrentRoom.RoomId}){mark}",
-                _state.CurrentRoom.RoomId + mark,
-                dirty ? "*" : "",
-            };
-
-            int gap = _rightBankLeft - _leftBankRight;
-            foreach (string title in forms)
-            {
-                if (title.Length == 0) continue;
-                var size = MeasureText(title);
-                if (gap < size.X + 16) continue;
-                float tx = _leftBankRight + (gap - size.X) / 2f;
-                float ty = (EditorLayout.TopBarHeight - size.Y) / 2f;
-                DrawText(title, new Vector2(tx, ty), Color.White);
-                break;
-            }
         }
 
         // -- Palette panel: icon + label per entry --------------------------
@@ -4706,49 +4558,6 @@ namespace SorceryForge
             return ids[(idx + 1) % ids.Count];
         }
 
-        // -- Status bar -----------------------------------------------------
-
-        private void DrawStatusBar()
-        {
-            FillRect(EditorLayout.StatusBarRect, new Color(20, 22, 28));
-            DrawRectOutline(EditorLayout.StatusBarRect, new Color(60, 64, 78));
-
-            // Right-aligned view info and the mode keybind. The keybind is the
-            // whole discoverability story for map mode: the top bar is full, so
-            // Tab is advertised here instead of on a button.
-            string view;
-            if (_mapMode)
-            {
-                view = $"Map {_mapView.ZoomPercent}%";
-                if (_state.MapDirty) view += " | map*";
-                // Persistent hints belong here rather than in the transient
-                // left-hand status text, which any drag or zoom overwrites.
-                view += " | N: new | I: import | Tab/Esc: room";
-            }
-            else
-            {
-                view = $"Zoom {EditorLayout.Zoom}x";
-                if (_state.Mode == EditorMode.Erase) view += $" | Brush {_state.BrushSize}px";
-                if (_state.BackgroundDirty) view += " | PNG*";
-                // Shown from ROOM mode too: an unsaved arrangement is a thing
-                // the user has that quitting would lose, and the room title's
-                // "*" means this room's edits — it would be a lie to fold the
-                // map's state into it.
-                if (_state.MapDirty) view += " | map*";
-                view += " | Tab: map";
-            }
-            var viewSize = MeasureText(view);
-            float viewX = EditorLayout.WindowWidth - viewSize.X - 8;
-            DrawText(view, new Vector2(viewX, EditorLayout.StatusBarY + 10), new Color(150, 170, 200));
-
-            // Truncate status text if it would run into the view info.
-            string status = _state.Status ?? "";
-            float maxX = viewX - 16;
-            while (status.Length > 0 && 8 + MeasureText(status).X > maxX)
-                status = status[..^1];
-            DrawText(status, new Vector2(8, EditorLayout.StatusBarY + 10), new Color(200, 200, 220));
-        }
-
         // ====================================================================
         // HELPERS — drawing, text
         // ====================================================================
@@ -4805,49 +4614,47 @@ namespace SorceryForge
         private Vector2 MeasureText(string text) =>
             _font != null ? _font.MeasureString(text) : Vector2.Zero;
 
-        private void DrawButton(UiButton b)
+        // ====================================================================
+        // ICHROMEACTIONS — the complete list of what the chrome may do
+        // ====================================================================
+        // Implemented EXPLICITLY, so none of it widens EditorGame's own
+        // surface: these members are callable only through the interface, and
+        // the interface is the only thing the panels under UI/ can see. The
+        // block is deliberately mechanical — every line is a forward to a
+        // method that already existed and is already commented where it lives.
+        //
+        // That is the whole guarantee. A panel cannot set a dirty flag, cannot
+        // touch EditorState, cannot reach the canvas. If a new chrome control
+        // needs a new effect, a verb has to appear here and in
+        // UI/IChromeActions.cs, which is a diff a reviewer sees.
+        // ====================================================================
+
+        void IChromeActions.CyclePrevRoom() => CyclePrevRoom();
+        void IChromeActions.CycleNextRoom() => CycleNextRoom();
+        void IChromeActions.SaveCurrentRoom() => SaveCurrentRoom();
+        void IChromeActions.SaveWorldMap() => SaveWorldMap();
+
+        /// <summary>File &gt; Exit. Identical to Escape in room view.</summary>
+        // Not Exit() directly: the guard is the point. The first invocation on
+        // a dirty room arms it and warns in the status bar; the second gets
+        // through. includeMap because quitting is the one action that loses an
+        // unsaved board arrangement.
+        void IChromeActions.ExitEditor()
         {
-            // In map mode every top-bar button is inert (HandleButtons never
-            // runs), so it is drawn inert: no hover response, dimmed label. A
-            // button that looks live and does nothing is worse than no button.
-            if (_mapMode)
-            {
-                FillRect(b.Bounds, new Color(38, 41, 50));
-                DrawRectOutline(b.Bounds, new Color(70, 76, 92));
-                var dimSize = MeasureText(b.Label);
-                DrawText(b.Label,
-                    new Vector2(b.Bounds.X + (b.Bounds.Width - dimSize.X) / 2,
-                                b.Bounds.Y + (b.Bounds.Height - dimSize.Y) / 2),
-                    new Color(120, 125, 140));
-                return;
-            }
-
-            bool hover = b.Bounds.Contains(_mouseNow.X, _mouseNow.Y);
-            FillRect(b.Bounds, hover ? new Color(70, 78, 100) : new Color(50, 55, 70));
-            DrawRectOutline(b.Bounds, new Color(110, 120, 150));
-            var sz = MeasureText(b.Label);
-            DrawText(b.Label,
-                new Vector2(b.Bounds.X + (b.Bounds.Width - sz.X) / 2,
-                            b.Bounds.Y + (b.Bounds.Height - sz.Y) / 2),
-                Color.White);
+            if (ConfirmDiscardUnsavedEdits(includeMap: true)) Exit();
         }
-    }
 
-    // ------------------------------------------------------------------------
-    // TINY UI BUTTON
-    // ------------------------------------------------------------------------
+        void IChromeActions.SetMode(EditorMode mode) => SetMode(mode);
+        void IChromeActions.ToggleSnap() => ToggleSnap();
+        void IChromeActions.ToggleAutoPunch() => ToggleAutoPunch();
+        void IChromeActions.ToggleFullscreen() => ToggleFullscreen();
+        void IChromeActions.ToggleMapMode() => ToggleMapMode();
 
-    public class UiButton
-    {
-        public string Label;
-        public Rectangle Bounds;
-        public Action OnClick;
+        void IChromeActions.ValidateReachability() => ValidateReachability();
+        void IChromeActions.ValidateDoors() => ValidateDoors();
+        void IChromeActions.AnalyzePuzzle() => AnalyzePuzzle();
 
-        public UiButton(string label, Rectangle bounds, Action onClick)
-        {
-            Label = label;
-            Bounds = bounds;
-            OnClick = onClick;
-        }
+        void IChromeActions.OpenNewRoomPicker() => OpenNewRoomPicker();
+        void IChromeActions.OpenImportPicker() => OpenImportPicker();
     }
 }

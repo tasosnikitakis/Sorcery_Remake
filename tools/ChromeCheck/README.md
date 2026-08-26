@@ -69,6 +69,16 @@ Both failures look like a working editor in a screenshot.
 | 3 | ownership | A gesture begun on a panel does **not** leak onto the canvas; and right-click over chrome *is* captured, which is why the modal pickers' cancel bypasses the router |
 | 4 | wheel | One notch reaches exactly one consumer, decided by ImGui's own hover |
 | 5 | keyboard | Merely hovering chrome never costs the editor a keypress |
+| 6 | menus | What the board disables, and the four documented exceptions — the items whose keyboard path already worked from the map |
+| 7 | titles | The room title and the board title, verbatim, and which `*` means which unsaved thing |
+| 8 | status | Every fragment of the status line's right-hand group, in order, including the three unsaved markers |
+
+Sections 6–8 work because those parts of the chrome are **pure functions of
+state** — `MenuBar.TitleText`, `StatusBar.ViewInfo` and the `MenuBar.Can*`
+enablement predicates take a snapshot and return a string or a bool, with no
+ImGui call in them. That is a deliberate shape: the strings the editor shows
+about what is unsaved are the ones you least want to discover are wrong by
+looking at a screenshot.
 
 ## What it cannot cover
 

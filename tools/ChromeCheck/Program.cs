@@ -44,6 +44,11 @@
 //   3 ownership   a gesture that began on a panel does NOT leak to the canvas
 //   4 wheel       the notch goes to exactly one consumer, decided by region
 //   5 keyboard    editor keybinds keep firing; no chrome text field steals them
+//   6 menus       what the board disables, and the four documented exceptions
+//   7 titles      the room title and the board title, verbatim, and which
+//                 '*' means which unsaved thing
+//   8 status      every fragment of the status line's right-hand group, in
+//                 order, including the three unsaved markers
 //
 // HOW TO RUN
 //
@@ -102,14 +107,18 @@ namespace SorceryRemake.Tools.ChromeCheck
             CheckChromeOwnership(harness);
             CheckWheel(harness);
             CheckKeyboard(harness);
+            CheckMenuEnablement();
+            CheckTitles();
+            CheckStatusLine();
 
             Console.WriteLine();
             Console.WriteLine($"  {_checks} checks, {_failures} failure(s)");
             Console.WriteLine();
             Console.WriteLine(_failures == 0
-                ? "  ROUTING HOLDS: ImGui has first refusal, the canvas keeps what it started,\n" +
-                  "  and one wheel notch reaches exactly one consumer."
-                : "  ROUTING BROKEN — see the FAIL lines above.");
+                ? "  CHROME HOLDS: ImGui has first refusal, the canvas keeps what it started,\n" +
+                  "  one wheel notch reaches exactly one consumer, and every menu item, title\n" +
+                  "  and status fragment says what it always said."
+                : "  CHROME BROKEN — see the FAIL lines above.");
 
             return _failures == 0 ? 0 : 1;
         }
@@ -404,6 +413,171 @@ namespace SorceryRemake.Tools.ChromeCheck
             h.Frame();
             h.Settle();
             Assert("after releasing, keys reach the editor again", h.Router.KeyboardReachesEditor);
+        }
+
+        // ====================================================================
+        // 6. MENU ENABLEMENT — the map-mode rule, item by item
+        // ====================================================================
+        // Every one of the twelve top-bar buttons was inert while the board was
+        // up, because Update returns before HandleButtons runs and DrawButton
+        // greyed them to say so. The menus preserve that item for item, with
+        // exactly four departures, each written down here so a later PR cannot
+        // widen the set by accident.
+        // ====================================================================
+
+        private static void CheckMenuEnablement()
+        {
+            Section("6. MENUS — what the board disables, and the four exceptions");
+
+            var room = new ChromeView { MapMode = false };
+            var map = new ChromeView { MapMode = true };
+
+            // The rule.
+            Assert("room actions are live in room view", MenuBar.CanActOnRoom(room));
+            Assert("room actions are dead on the board", !MenuBar.CanActOnRoom(map));
+            Assert("Save Room is live in room view", MenuBar.CanSaveRoom(room));
+            Assert("Save Room is dead on the board", !MenuBar.CanSaveRoom(map));
+            Assert("Exit is live in room view", MenuBar.CanExit(room));
+            Assert("Exit is dead on the board (Esc returns to the room there)",
+                !MenuBar.CanExit(map));
+            Assert("Fullscreen is live in room view", MenuBar.CanToggleFullscreen(room));
+            Assert("Fullscreen is dead on the board (F11 is not read there)",
+                !MenuBar.CanToggleFullscreen(map));
+
+            // The exceptions, each justified by a keyboard path that already
+            // works from the board.
+            Assert("EXCEPTION Save Map Arrangement is live ONLY on the board",
+                MenuBar.CanSaveMap(map) && !MenuBar.CanSaveMap(room));
+            Assert("EXCEPTION New Room / Import are live in BOTH (N and I already are)",
+                MenuBar.CanOpenPickers(room) && MenuBar.CanOpenPickers(map));
+            Assert("EXCEPTION World Map is live in BOTH (Tab already is)",
+                MenuBar.CanToggleMap(room) && MenuBar.CanToggleMap(map));
+        }
+
+        // ====================================================================
+        // 7. TITLES — the room title and the board title, verbatim
+        // ====================================================================
+
+        private static void CheckTitles()
+        {
+            Section("7. TITLES — exact strings, and which '*' means what");
+
+            var state = new EditorState();
+            var view = new ChromeView
+            {
+                MapMode = false,
+                RoomDisplayName = "Chateau Entrance",
+                RoomId = "chateau_0",
+                MapRoomCount = 12,
+            };
+
+            // Two spaces before the parenthesis, carried over from the old
+            // form[0]. The unsaved marker is NOT baked into this string: it is
+            // drawn as its own glyph in its own colour, so that "unsaved" is
+            // something the eye finds rather than punctuation.
+            AssertText("room title", MenuBar.TitleText(state, view),
+                "Room: Chateau Entrance  (chateau_0)");
+
+            state.PlacementsDirty = true;
+            AssertText("room title is unchanged by a dirty room",
+                MenuBar.TitleText(state, view),
+                "Room: Chateau Entrance  (chateau_0)");
+            state.PlacementsDirty = false;
+
+            view.MapMode = true;
+            AssertText("board title", MenuBar.TitleText(state, view),
+                "WORLD MAP — 12 rooms   |   Tab or Esc: back to chateau_0");
+
+            // The board's "*" is MapDirty alone. A dirty ROOM must not mark the
+            // board, and a dirty board must not mark the room — three dirty
+            // readouts, three different rules, and conflating any two of them
+            // is the mistake this asserts against.
+            state.MapDirty = true;
+            AssertText("board title marks an unsaved arrangement",
+                MenuBar.TitleText(state, view),
+                "WORLD MAP * — 12 rooms   |   Tab or Esc: back to chateau_0");
+
+            state.MapDirty = false;
+            state.PlacementsDirty = true;
+            state.CollisionDirty = true;
+            state.BackgroundDirty = true;
+            AssertText("a dirty ROOM does not mark the board title",
+                MenuBar.TitleText(state, view),
+                "WORLD MAP — 12 rooms   |   Tab or Esc: back to chateau_0");
+        }
+
+        // ====================================================================
+        // 8. STATUS LINE — every fragment, in order
+        // ====================================================================
+        // The one always-visible readout of what is unsaved. Its fragments are
+        // conditional on exactly one piece of state each, in a fixed order, so
+        // a missing fragment means a specific thing — which is only true if
+        // nothing ever reorders them.
+        // ====================================================================
+
+        private static void CheckStatusLine()
+        {
+            Section("8. STATUS LINE — fragments, order, and the three markers");
+
+            var state = new EditorState();
+            var room = new ChromeView { MapMode = false, Zoom = 1 };
+
+            AssertText("clean room, Place mode", StatusBar.ViewInfo(state, room),
+                "Zoom 1x | Tab: map");
+
+            room.Zoom = 4;
+            state.Mode = EditorMode.Erase;
+            state.BrushSize = 12;
+            AssertText("Brush appears in Erase mode only", StatusBar.ViewInfo(state, room),
+                "Zoom 4x | Brush 12px | Tab: map");
+
+            state.Mode = EditorMode.Paint;
+            AssertText("  and not in Paint mode", StatusBar.ViewInfo(state, room),
+                "Zoom 4x | Tab: map");
+            state.Mode = EditorMode.Place;
+
+            // room* is the marker that closes the saturation problem: the old
+            // chrome's only always-on sign of unsaved work was a "*" drawn in
+            // the top bar ONLY IF it fitted a gap between two button banks —
+            // 36 px at a default 1280 px window.
+            room.RoomDirty = true;
+            AssertText("room* marks any of the three room flags",
+                StatusBar.ViewInfo(state, room), "Zoom 4x | room* | Tab: map");
+
+            state.BackgroundDirty = true;
+            AssertText("PNG* joins it for background pixels specifically",
+                StatusBar.ViewInfo(state, room), "Zoom 4x | room* | PNG* | Tab: map");
+
+            state.MapDirty = true;
+            AssertText("map* is shown from ROOM mode too",
+                StatusBar.ViewInfo(state, room),
+                "Zoom 4x | room* | PNG* | map* | Tab: map");
+
+            // Map mode: the board's own zoom, the markers, then the persistent
+            // hints — which live here precisely because the transient message
+            // on the left is overwritten by every drag and every zoom.
+            var map = new ChromeView { MapMode = true, MapZoomPercent = 25, RoomDirty = true };
+            AssertText("board, everything unsaved", StatusBar.ViewInfo(state, map),
+                "Map 25% | room* | PNG* | map* | N: new | I: import | Tab/Esc: room");
+
+            state.BackgroundDirty = false;
+            state.MapDirty = false;
+            map.RoomDirty = false;
+            AssertText("board, nothing unsaved", StatusBar.ViewInfo(state, map),
+                "Map 25% | N: new | I: import | Tab/Esc: room");
+        }
+
+        private static void AssertText(string label, string actual, string expected)
+        {
+            _checks++;
+            bool ok = actual == expected;
+            if (!ok) _failures++;
+            Console.WriteLine($"    {(ok ? "ok  " : "FAIL")} {label}");
+            if (!ok)
+            {
+                Console.WriteLine($"           expected: {expected}");
+                Console.WriteLine($"           actual  : {actual}");
+            }
         }
 
         // ====================================================================
