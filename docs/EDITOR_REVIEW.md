@@ -274,13 +274,32 @@ coloured by door status, unreachable rooms greyed, click-to-open. At 75
 rooms this becomes the primary navigation surface; Prev/Next cycling stops
 scaling around 15.
 
-### 17. Consider ImGui.NET for the chrome
+### 17. Consider ImGui.NET for the chrome — DONE (PR 7a)
 The hand-rolled UI is well done, but every new widget (text input for
 renaming IDs, dropdowns, checkboxes) costs real code. `MonoGame.ImGuiNet`
 would give text fields, combos, and docking for free while keeping the
 canvas rendering exactly as-is. Decision point: adopt it before building the
 list-picker overlays in item 10, or commit to hand-rolled and accept the
 cost. Either is defensible; mixing both later is the worst outcome.
+
+**Decided: adopted.** PR 7a moved every menu, panel, overlay and status line
+to Dear ImGui and deleted the hand-rolled chrome in the same PR, so the
+"mixing both later" outcome is closed rather than deferred. The binding is
+`ImGui.NET` pinned at `1.91.6.1` plus a ~450-line renderer in
+`SorceryForge/UI/ImGuiRenderer.cs`; the MonoGame wrapper packages were
+surveyed and all rejected (see that file's header). The canvas, the map board
+and the crop image are untouched SpriteBatch.
+
+Consequences for the items below:
+- **Item 10 (better pickers)** is now a small PR: a list overlay is
+  `BeginChild` + `Selectable`, and the cycle-buttons it replaces are already
+  isolated behind named verbs in `UI/IChromeActions.cs`.
+- **Item 18 (split EditorGame.cs)** is partly done: the chrome left, taking
+  it from 4,709 to ~3,900 lines. The remaining seams — `EditorGame.Input.cs`,
+  `BackgroundEraser.cs`, `Validators.cs` — are unchanged and still worth doing.
+- A fourth harness, `tools/ChromeCheck`, guards the chrome and the input
+  routing headlessly. Keep files under `SorceryForge/UI/` free of `Texture2D`
+  and `GraphicsDevice` (except `ImGuiRenderer.cs`) or it stops being possible.
 
 ### 18. Split EditorGame.cs
 At 2,192 lines it's approaching the Game1 problem the main project just
@@ -305,8 +324,11 @@ refactored away. Natural seams, as partial classes or separate types:
    quantize option.
 6. **PR 6 (world map):** item D — needs PR 4 (add-room flow) and benefits
    from PR 5 (importing screenshots directly from the map).
-7. **PR 7 (pickers + undo):** items 10, 11 — decide on item 17 (ImGui) first.
-8. **PR 8 (playtest loop):** items 12, 13, 14.
+7. **PR 7a (ImGui chrome):** item 17 — DONE. The chrome migration, with no
+   user-visible change, so that items 10 and 11 are built once rather than
+   twice.
+8. **PR 7 (pickers + undo):** items 10, 11 — now unblocked, and cheaper.
+9. **PR 8 (playtest loop):** items 12, 13, 14.
 
 Dependency chain for the new features: PR 4 → PR 5 → PR 6. PR 2 (punch-out)
 has no dependencies and can land any time after PR 1.
