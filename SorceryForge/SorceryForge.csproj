@@ -16,6 +16,11 @@
     <Nullable>enable</Nullable>
     <RootNamespace>SorceryForge</RootNamespace>
     <AssemblyName>SorceryForge</AssemblyName>
+    <!-- ONE pointer write needs this: ImGui's io.IniFilename is a raw char*
+         with no managed setter, and we set it to null so the editor never
+         drops an imgui.ini beside the source tree. See UI/ImGuiRenderer.cs.
+         Nothing else in this project is unsafe, and nothing else should be. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <!-- The editor lives in its own bin/ tree but reads/writes JSON in the
          repo's assets/data/. The auto-detection in EditorPaths walks up
          from the executable until it finds the repo root. -->
@@ -28,6 +33,29 @@
   <ItemGroup>
     <PackageReference Include="MonoGame.Framework.DesktopGL" Version="3.8.1.303" />
     <PackageReference Include="MonoGame.Content.Builder.Task" Version="3.8.1.303" />
+  </ItemGroup>
+
+  <!-- ========================================
+       DEAR IMGUI — EDITOR CHROME ONLY
+       The repo's one non-MonoGame dependency, and it is deliberately scoped
+       to this project: the GAME must never gain it. See the dependency
+       policy note in .claude/CLAUDE.md.
+
+       ImGui.NET is the raw binding (cimgui + a generated C# surface), NOT a
+       MonoGame integration package. The MonoGame wrappers on NuGet were all
+       surveyed and all rejected — see the header of UI/ImGuiRenderer.cs for
+       which ones and why. What they would have supplied, the ~450 lines of
+       UI/ImGuiRenderer.cs supplies instead, against a version that actually
+       ships a net8.0 target.
+
+       PINNED EXACTLY. ImGui's C# surface is generated from cimgui and moves
+       with it; a float-range change to a widget signature between minor
+       versions is normal. A floating version would let a `dotnet restore`
+       months from now break a build nobody touched.
+       ======================================== -->
+
+  <ItemGroup>
+    <PackageReference Include="ImGui.NET" Version="1.91.6.1" />
   </ItemGroup>
 
   <!-- ========================================

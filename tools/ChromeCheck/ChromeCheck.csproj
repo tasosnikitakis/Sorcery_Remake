@@ -1,0 +1,86 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- ========================================
+       CHROMECHECK — EDITOR CHROME / INPUT-ROUTING HARNESS
+       Fourth of the headless harnesses, same shape as tools/RoundTrip,
+       tools/ImportCheck and tools/MapCheck: compile the editor's OWN sources
+       and drive them, rather than testing a reimplementation.
+
+       What makes this one possible is that Dear ImGui is pure CPU. It builds
+       its font atlas, lays out its windows, decides what the mouse is over and
+       records its draw lists without ever touching a GPU — a renderer only
+       paints what it produced. So the whole of the chrome's LAYOUT and
+       HIT-TESTING can be driven here with synthetic input, against the real
+       cimgui, with no desktop session at all.
+
+       That matters more here than anywhere else in the editor. "Who gets this
+       frame's mouse" is the question a chrome migration is most likely to get
+       wrong, and it is invisible in a screenshot: everything looks right until
+       the wheel zooms the canvas while you meant to scroll the palette, or a
+       drag released over a panel leaves an entity stuck to the cursor.
+
+       MonoGame is referenced for the value types the shared sources use
+       (Rectangle, Vector2). No GraphicsDevice is ever created.
+       ======================================== -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RollForward>Major</RollForward>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <RootNamespace>SorceryRemake.Tools.ChromeCheck</RootNamespace>
+    <AssemblyName>ChromeCheck</AssemblyName>
+    <!-- The default glob would sweep up bin/obj leftovers from a previous
+         run; we list every source explicitly below instead. -->
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="MonoGame.Framework.DesktopGL" Version="3.8.1.303" />
+    <!-- Same pin as SorceryForge.csproj. If one moves and the other does not,
+         this harness stops testing the editor's ImGui and starts testing a
+         different one. -->
+    <PackageReference Include="ImGui.NET" Version="1.91.6.1" />
+  </ItemGroup>
+
+  <!-- ========================================
+       SHARED GAME SOURCE
+       Mirrors SorceryForge.csproj's globs, as the other three harnesses do.
+       The chrome names EditorState, Placement and RoomMeta, which reach into
+       Rooms/ and Core/.
+       ======================================== -->
+
+  <ItemGroup>
+    <Compile Include="..\..\Core\**\*.cs" Exclude="..\..\Core\PlayerController.cs" />
+    <Compile Include="..\..\Graphics\**\*.cs" />
+    <Compile Include="..\..\Tiles\**\*.cs" />
+    <Compile Include="..\..\Rooms\**\*.cs" />
+    <Compile Include="..\..\Doors\**\*.cs" />
+    <Compile Include="..\..\Physics\**\*.cs" />
+  </ItemGroup>
+
+  <!-- ========================================
+       EDITOR CHROME (no GraphicsDevice)
+       Every UI/ file EXCEPT ImGuiRenderer.cs, which is the one piece that
+       genuinely needs a device. That exclusion is the design rule this harness
+       enforces: chrome that decides anything must be device-free, so it can be
+       driven here. EditorLayout supplies the window rectangles the panels are
+       pinned to, and is the same static the canvas measures itself against.
+       ======================================== -->
+
+  <ItemGroup>
+    <Compile Include="..\..\SorceryForge\EditorPaths.cs" />
+    <Compile Include="..\..\SorceryForge\EditorLayout.cs" />
+    <Compile Include="..\..\SorceryForge\EditorState.cs" />
+    <Compile Include="..\..\SorceryForge\PaletteEntry.cs" />
+    <Compile Include="..\..\SorceryForge\Placement.cs" />
+    <!-- EditorState names PuzzleReport; RoundTrip pulls it in for the same
+         reason. Neither harness runs the analyzer. -->
+    <Compile Include="..\..\SorceryForge\PuzzleAnalyzer.cs" />
+    <Compile Include="..\..\SorceryForge\RoomMeta.cs" />
+    <Compile Include="..\..\SorceryForge\UI\ChromeInputRouter.cs" />
+    <Compile Include="Program.cs" />
+  </ItemGroup>
+
+</Project>

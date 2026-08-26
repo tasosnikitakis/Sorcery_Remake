@@ -1,6 +1,8 @@
+using ImGuiNET;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using Microsoft.Xna.Framework.Input;
+using SorceryForge.UI;
 using SorceryRemake.Core;
 using SorceryRemake.Doors;
 using SorceryRemake.Graphics;
@@ -9,6 +11,7 @@ using SorceryRemake.Tiles;
 using System;
 using System.Collections.Generic;
 using System.IO;
+using NVector2 = System.Numerics.Vector2;
 
 namespace SorceryForge
 {
@@ -45,6 +48,22 @@ namespace SorceryForge
         // Editor model and palette descriptors for each placeable kind.
         private readonly EditorState _state = new();
         private readonly List<UiButton> _buttons = new();
+
+        // ---- CHROME (Dear ImGui) -------------------------------------------
+        // Every menu, panel, overlay and status line the editor draws. The
+        // canvas, the map board and the crop image stay SpriteBatch — they are
+        // pixel-space tools and ImGui has nothing to offer them. See the UI
+        // architecture section of .claude/CLAUDE.md for where the line runs.
+        private ImGuiRenderer _imgui = null!;
+        private readonly ChromeInputRouter _router = new();
+
+        /// <summary>
+        /// Debug flag (--imgui-probe on the command line): draws a small window
+        /// reporting the routing decision for the current frame. Off by
+        /// default; it exists so the input-capture behaviour can be watched on
+        /// a real desktop, which is the one thing tools/ChromeCheck cannot do.
+        /// </summary>
+        public static bool ImGuiProbe;
 
         // Per-room cached background and collision overlay (cleared on switch).
         private Texture2D? _currentBackground;
@@ -184,6 +203,9 @@ namespace SorceryForge
         protected override void LoadContent()
         {
             _spriteBatch = new SpriteBatch(GraphicsDevice);
+
+            // Before anything that might want to register a texture with it.
+            _imgui = new ImGuiRenderer(this);
 
             _pixel = new Texture2D(GraphicsDevice, 1, 1);
             _pixel.SetData(new[] { Color.White });
@@ -1740,8 +1762,15 @@ namespace SorceryForge
                 return;
             }
 
+            // The fitted image is a world surface: it answers the wheel and the
+            // drag only when ImGui has declined them, so the header and footer
+            // strips drawn over it cannot also resize or move the selection.
+            // Escape / Enter / right-click above stay ungated — they are the
+            // modal's cancel and confirm, and must work over its own chrome.
+            bool worldMouse = _router.MouseReachesWorld;
+
             int wheel = _mouseNow.ScrollWheelValue - _mousePrev.ScrollWheelValue;
-            if (wheel != 0)
+            if (wheel != 0 && worldMouse)
             {
                 _cropRect = ImageImport.StepCropWidth(_cropRect, Math.Sign(wheel), _cropSrcW, _cropSrcH);
                 _state.Status = CropSelectionSummary();
@@ -1763,7 +1792,7 @@ namespace SorceryForge
                     }
                 }
 
-                if (fit.Contains(mouse))
+                if (worldMouse && fit.Contains(mouse))
                 {
                     _cropDragging = true;
                     _cropDragStartMouse = mouse;
@@ -2171,30 +2200,38 @@ namespace SorceryForge
             // other than the boxes.
             _mapView.Viewport = MapBoardRect;
 
+            bool keys = _router.KeyboardReachesEditor;
+
             // Esc returns to the room view. It deliberately does NOT exit the
             // editor here — the exit-with-autosave path lives in room view,
             // where the unsaved work it protects actually is.
-            if (Pressed(Keys.Escape)) { LeaveMapMode(); return; }
+            if (keys && Pressed(Keys.Escape)) { LeaveMapMode(); return; }
 
             // Ctrl+S in map mode saves the ARRANGEMENT. Room Ctrl+S is
             // untouched and still saves the room: two modes, two things to
             // save, one key that means "persist what is in front of you".
             bool ctrl = _keysNow.IsKeyDown(Keys.LeftControl) || _keysNow.IsKeyDown(Keys.RightControl);
-            if (ctrl && Pressed(Keys.S)) { SaveWorldMap(); return; }
+            if (keys && ctrl && Pressed(Keys.S)) { SaveWorldMap(); return; }
 
             // N and I open the New Room and Import pickers — the SAME overlays
-            // the top bar opens, invoked from here because the map is where
-            // "the world is missing a room" is a thing you notice. Keys rather
-            // than buttons for the same reason Tab is: the bar is full.
+            // the File menu opens, invoked from here because the map is where
+            // "the world is missing a room" is a thing you notice. They remain
+            // MAP-MODE-ONLY keys, exactly as before this PR: room mode reaches
+            // both through the menu and never had these bindings.
             //
             // Their discard guards are untouched and still concern the CURRENT
             // ROOM's unsaved edits, which exist just as much while the map is
             // up — creating a room loads it, and loading replaces them.
-            if (!ctrl && Pressed(Keys.N)) { OpenNewRoomPicker(); return; }
-            if (!ctrl && Pressed(Keys.I)) { OpenImportPicker(); return; }
+            if (keys && !ctrl && Pressed(Keys.N)) { OpenNewRoomPicker(); return; }
+            if (keys && !ctrl && Pressed(Keys.I)) { OpenImportPicker(); return; }
 
             var mouse = new Point(_mouseNow.X, _mouseNow.Y);
-            bool overBoard = MapBoardRect.Contains(mouse);
+
+            // The board is a world surface, so it answers the mouse only when
+            // ImGui has declined it — the board runs under the menu bar and the
+            // status bar, and a click on either must not also grab a room.
+            // A drag already under way overrides that; see ChromeInputRouter.
+            bool overBoard = MapBoardRect.Contains(mouse) && _router.MouseReachesWorld;
 
             int wheel = _mouseNow.ScrollWheelValue - _mousePrev.ScrollWheelValue;
             if (wheel != 0 && overBoard)
@@ -2207,10 +2244,10 @@ namespace SorceryForge
             // One room-width per press, so it moves by something meaningful at
             // any zoom rather than by a screen pixel.
             int nudge = WorldMap.RoomWidth / 2;
-            if (Pressed(Keys.Left))  PanMap(-nudge, 0);
-            if (Pressed(Keys.Right)) PanMap(nudge, 0);
-            if (Pressed(Keys.Up))    PanMap(0, -nudge);
-            if (Pressed(Keys.Down))  PanMap(0, nudge);
+            if (keys && Pressed(Keys.Left))  PanMap(-nudge, 0);
+            if (keys && Pressed(Keys.Right)) PanMap(nudge, 0);
+            if (keys && Pressed(Keys.Up))    PanMap(0, -nudge);
+            if (keys && Pressed(Keys.Down))  PanMap(0, nudge);
 
             HandleMapDrag(mouse, overBoard);
             PumpMapThumbnails();
@@ -2597,6 +2634,18 @@ namespace SorceryForge
             base.OnExiting(sender, args);
         }
 
+        /// <summary>
+        /// Free what the chrome owns. The ImGui renderer holds a font texture,
+        /// two dynamic GPU buffers and an event handler on the window; the
+        /// window outlives this call on some platforms, so the handler in
+        /// particular has to come off deliberately.
+        /// </summary>
+        protected override void UnloadContent()
+        {
+            _imgui?.Dispose();
+            base.UnloadContent();
+        }
+
         private void CyclePrevRoom()
         {
             if (!ConfirmDiscardUnsavedEdits()) return;
@@ -2643,6 +2692,51 @@ namespace SorceryForge
             _mousePrev = _mouseNow;
             _mouseNow = Mouse.GetState();
 
+            // ---- the ImGui frame opens here ---------------------------------
+            // The chrome is built inside Update, not Draw, so that every editor
+            // state mutation still happens in one place. A menu item's callback
+            // IS a mutation — it loads rooms, arms the discard guard, writes
+            // files — and half the editor's writes drifting into the render
+            // pass is exactly the kind of split this PR exists to prevent.
+            // ImGuiRenderer's header spells out the frame shape.
+            _imgui.BeginFrame(gameTime);
+
+            // Read the capture verdict immediately: it is computed during
+            // NewFrame and is what decides, below, whether the canvas and the
+            // map board see this frame's mouse at all.
+            var io = ImGui.GetIO();
+            _router.WorldGestureInProgress = WorldGestureInProgress();
+            _router.Sample(io.WantCaptureMouse, io.WantCaptureKeyboard);
+
+            UpdateEditor();
+
+            // After the editor's own handling, so the chrome renders the state
+            // this frame just produced — the status line especially.
+            BuildChrome();
+            _imgui.EndFrame();
+
+            base.Update(gameTime);
+        }
+
+        /// <summary>
+        /// True while a gesture that STARTED on a world surface (room canvas,
+        /// map board, crop image) is still running. Such a gesture keeps the
+        /// mouse until it ends, wherever the cursor wanders — see the header of
+        /// UI/ChromeInputRouter.cs for why that override is not optional.
+        /// </summary>
+        private bool WorldGestureInProgress()
+        {
+            if (_cropOpen) return _cropDragging;
+            if (_mapMode) return _mapLeftDown || _mapMidDown;
+            return _state.IsMovingSelection || _state.IsMovingSpawn || _panning || _strokeActive;
+        }
+
+        /// <summary>Everything Update did before the chrome moved to ImGui.</summary>
+        // Split out so the early returns below end the EDITOR's frame without
+        // also skipping the chrome: a modal picker still has to be drawn, and
+        // the status bar still has to say what just happened.
+        private void UpdateEditor()
+        {
             // The New Room and Import pickers are modal: while one is open it
             // consumes every input, so a click meant for a candidate row can't
             // fall through to the canvas behind it and Escape closes the picker
@@ -2651,24 +2745,29 @@ namespace SorceryForge
             // A running batch outranks everything, pickers included: it is
             // writing files, and one file's worth of work happens per frame.
             // Its own handler owns Escape (stop after the current file).
+            //
+            // NONE of the three modal handlers is gated on the ImGui router.
+            // They were already defined as consuming every input, and their
+            // cancel gestures (Escape, right-click) have to keep working over
+            // the panel itself — which is the one place the cursor is bound to
+            // be. ImGui capture cannot be allowed to change what "every input"
+            // means; the router gates the WORLD surfaces (canvas, map board,
+            // crop image), and nothing else.
             if (_batchRunning)
             {
                 StepBatchImport();
-                base.Update(gameTime);
                 return;
             }
 
             if (_newRoomOpen)
             {
                 HandleNewRoomPicker();
-                base.Update(gameTime);
                 return;
             }
 
             if (_importOpen)
             {
                 HandleImportPicker();
-                base.Update(gameTime);
                 return;
             }
 
@@ -2678,20 +2777,16 @@ namespace SorceryForge
             if (_cropOpen)
             {
                 HandleCropOverlay();
-                base.Update(gameTime);
                 return;
             }
 
             // Tab flips between the room editor and the world map, from either
             // side. Handled before both, and returning immediately, so the
             // press that changed mode is not also read by the mode it landed
-            // in. Tab rather than a button because the top bar is full — its
-            // restructure is a later PR, and until then the map is a keybind
-            // advertised in the status line.
-            if (Pressed(Keys.Tab))
+            // in.
+            if (_router.KeyboardReachesEditor && Pressed(Keys.Tab))
             {
                 ToggleMapMode();
-                base.Update(gameTime);
                 return;
             }
 
@@ -2701,7 +2796,6 @@ namespace SorceryForge
             if (_mapMode)
             {
                 HandleMapInput();
-                base.Update(gameTime);
                 return;
             }
 
@@ -2713,7 +2807,8 @@ namespace SorceryForge
             //
             // includeMap: quitting is the one action that loses an unsaved
             // board arrangement, so it is the one that has to ask about it.
-            if (Pressed(Keys.Escape) && ConfirmDiscardUnsavedEdits(includeMap: true)) Exit();
+            if (_router.KeyboardReachesEditor
+                && Pressed(Keys.Escape) && ConfirmDiscardUnsavedEdits(includeMap: true)) Exit();
 
             HandleButtons();
             HandleInspectorScroll();
@@ -2723,15 +2818,13 @@ namespace SorceryForge
             // Inspector buttons take priority over the canvas: clicking a
             // cycle button shouldn't deselect the entity it's editing.
             if (HandleInspectorClicks()) { /* swallowed */ }
-            else
+            else if (_router.MouseReachesWorld)
             {
                 HandleCanvasView();
                 HandleCanvasInput();
                 HandlePaletteInput();
             }
-            HandleKeyboardShortcuts();
-
-            base.Update(gameTime);
+            if (_router.KeyboardReachesEditor) HandleKeyboardShortcuts();
         }
 
         private bool LeftClicked() =>
@@ -3728,6 +3821,49 @@ namespace SorceryForge
         }
 
         // ====================================================================
+        // CHROME
+        // ====================================================================
+        // The single hook where every ImGui window is built. Called from
+        // Update, after the editor's own input handling, so the chrome always
+        // renders the state this frame just produced.
+        //
+        // Everything in here may only CALL the editor's logic methods — the
+        // same ones the hand-rolled buttons called. Nothing decides anything.
+        // ====================================================================
+
+        private void BuildChrome()
+        {
+            if (ImGuiProbe) DrawRoutingProbe();
+        }
+
+        /// <summary>
+        /// --imgui-probe: a small window reporting the frame's routing verdict.
+        /// </summary>
+        // tools/ChromeCheck proves the routing rules headlessly against the
+        // real ImGui, which is the important half. This is the other half: the
+        // one thing a headless harness cannot do is tell you that the window
+        // you are hovering is the window ImGui thinks you are hovering, on a
+        // real driver, at a real DPI.
+        private void DrawRoutingProbe()
+        {
+            var io = ImGui.GetIO();
+            ImGui.SetNextWindowPos(new NVector2(EditorLayout.WindowWidth - 300f, 80f), ImGuiCond.FirstUseEver);
+            ImGui.SetNextWindowSize(new NVector2(290f, 150f), ImGuiCond.FirstUseEver);
+            if (ImGui.Begin("Input routing probe"))
+            {
+                ImGui.TextUnformatted($"WantCaptureMouse    {io.WantCaptureMouse}");
+                ImGui.TextUnformatted($"WantCaptureKeyboard {io.WantCaptureKeyboard}");
+                ImGui.Separator();
+                ImGui.TextUnformatted($"world gesture       {_router.WorldGestureInProgress}");
+                ImGui.TextUnformatted($"mouse -> world      {_router.MouseReachesWorld}");
+                ImGui.TextUnformatted($"keys  -> editor     {_router.KeyboardReachesEditor}");
+                ImGui.Separator();
+                ImGui.TextUnformatted($"mouse {io.MousePos.X:0}, {io.MousePos.Y:0}");
+            }
+            ImGui.End();
+        }
+
+        // ====================================================================
         // DRAW
         // ====================================================================
 
@@ -3752,6 +3888,14 @@ namespace SorceryForge
             // unrecognisable), its chrome wants the PointClamp everything else
             // uses. No-op unless the crop step is open.
             DrawCropOverlay();
+
+            // LAST, over every SpriteBatch pass. The chrome sits on top of the
+            // canvas, the map board and the crop image — which is the same
+            // stacking the hand-rolled panels had, since they were drawn after
+            // the canvas too. ImGuiRenderer saves and restores every device
+            // state it touches, so the next frame's first SpriteBatch.Begin
+            // finds the device exactly as it left it.
+            _imgui.RenderDrawData();
 
             base.Draw(gameTime);
         }
