@@ -83,7 +83,7 @@ Three routes, in the order you will actually reach for them:
 | Route | Start from | Section |
 |-------|-----------|---------|
 | **Import** | a screenshot of the original game | [Importing a screenshot room](#importing-a-screenshot-room) |
-| **New Room** | a 320×144 PNG already in `Content/` | [The short way](#the-short-way-sorceryforges-new-room-button) |
+| **New Room** | a 320×144 PNG already in `Content/` | [The short way](#the-short-way-sorceryforges-new-room-menu-item) |
 | By hand | nothing | [The long way](#the-long-way-by-hand) |
 
 Import is New Room with one step in front of it: it produces the
@@ -98,7 +98,8 @@ this is the normal way a room is born.
 1. Drop the capture into **`assets/import/`** as `<Name>.jpg`, `.jpeg` or
    `.png`. (Its images are gitignored — they are inputs, not repository
    content. See [`assets/import/README.md`](../assets/import/README.md).)
-2. In SorceryForge, click **Import**. The picker lists every image in the
+2. In SorceryForge, choose **File → Import Screenshot…** (or press **I** on the
+   world map). The picker lists every image in the
    folder with its size and the room it would become.
 3. Leave **CPC quantize** on unless the source isn't a capture of the original
    game.
@@ -217,7 +218,7 @@ real flats. Turn it off for art that isn't a capture of the original.
 > an unquantized import of one real screenshot before doing the other 74.
 
 **What it writes.** `Content/RoomBG_<Name>.png` (atomically: encode to `.tmp`,
-then move), and then everything [New Room](#the-short-way-sorceryforges-new-room-button)
+then move), and then everything [New Room](#the-short-way-sorceryforges-new-room-menu-item)
 writes — the `#begin` block, `collision_<id>.json`, the `rooms.json` row. The
 game needs a content rebuild (`dotnet build SorceryRemake.csproj`) before it
 can see the background; the editor reads the raw PNG immediately.
@@ -236,10 +237,10 @@ headlessly by [`tools/ImportCheck`](../tools/ImportCheck/README.md). That is
 only possible because `SorceryForge/ImageImport.cs` and `NewRoomFlow.cs` hold
 no `Texture2D` and no `GraphicsDevice`; keep it that way.
 
-### The short way: SorceryForge's **New Room** button
+### The short way: SorceryForge's **New Room** menu item
 
 1. Put a 320×144 PNG in `Content/`, named `RoomBG_<Name>.png`.
-2. In SorceryForge, click **New Room**. The picker lists every `RoomBG_*.png` that no room in `rooms.json` has claimed.
+2. In SorceryForge, choose **File > New Room…** (or press **N** on the world map). The picker lists every `RoomBG_*.png` that no room in `rooms.json` has claimed.
 3. Pick it. The room is created and opened.
 
 That writes all three things step 1–2 below describe by hand: the `#begin` block in `Content/Content.mgcb`, an all-empty `collision_<id>.json`, and the appended `rooms.json` entry. It does **not** create `content_<id>.json` or `layout_<id>.json` — those appear the first time you save something real into the room (see [Per-Room JSON Files](#per-room-json-files--when-they-exist)).
@@ -351,9 +352,9 @@ registry room as a box carrying its own background, door links as arrows
 between them. At nine rooms Prev/Next cycling is fine; at the target
 seventy-five it is not, and the map is what replaces it.
 
-Tab rather than a button because the top bar is full — its restructure is a
-later PR. The keybind is shown at the right-hand end of the status bar in both
-modes, which is the whole discoverability story until then.
+Tab is the primary way in and out; **View → World Map** does the same thing and
+displays the shortcut, and the keybind is also shown at the right-hand end of
+the status bar in both modes.
 
 | In map mode | |
 |---|---|
@@ -364,10 +365,10 @@ modes, which is the whole discoverability story until then.
 | **click a room** | open it in the room editor |
 | **drag a room** | move it; its position persists (see below) |
 | **Ctrl+S** | save the arrangement to `assets/data/worldmap.json` |
-| **N** | open the [New Room](#the-short-way-sorceryforges-new-room-button) picker |
-| **I** | open the [Import](#importing-a-screenshot-room) picker |
+| **N** | open the [New Room](#the-short-way-sorceryforges-new-room-menu-item) picker (map mode only; room mode uses **File > New Room…**) |
+| **I** | open the [Import](#importing-a-screenshot-room) picker (map mode only; room mode uses **File > Import Screenshot…**) |
 
-**N** and **I** open the same overlays the top-bar buttons do, with the same
+**N** and **I** open the same overlays the File menu does, with the same
 discard guards — those concern the *current room's* unsaved edits, which exist
 just as much while the map is up, because creating a room loads it. Creating a
 room lands you **in it, in the room editor**: the point of making a room is to
@@ -375,9 +376,12 @@ author it. It joins the board on the next Tab, auto-placed like any unwired
 room, and adding it moves nothing that was already there. Cancelling either
 picker returns you to the map exactly as you left it.
 
-Map mode suspends room editing completely: no palette, no canvas, no paint or
-punch, and every top-bar button is drawn inert because none of them means
-anything against a board. The room you were editing stays loaded behind it,
+Map mode suspends room editing completely: no palette, no inspector, no canvas,
+no paint or punch, and every menu item that acts on a room is disabled because
+none of them means anything against a board. Four stay live — the ones whose
+keyboard path already worked from the board: **New Room**, **Import
+Screenshot**, **World Map** itself, and **Save Map Arrangement**, which is what
+Ctrl+S writes here. The room you were editing stays loaded behind it,
 untouched — which is why *entering* the map needs no discard guard and why
 *clicking a room* gets the same one Prev/Next uses. Unsaved edits warn on the
 first click and go through on the second; they are never discarded silently.

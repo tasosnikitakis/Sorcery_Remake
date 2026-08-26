@@ -87,7 +87,7 @@ namespace SorceryForge.UI
         private static readonly uint IconTint = ChromeTheme.Packed(255, 255, 255);
         private static readonly uint IconTintDim = ChromeTheme.Packed(255, 255, 255, 90);
 
-        public static void Draw(IChromeActions actions, EditorState state)
+        public static void Draw(IChromeActions actions, EditorState state, in ChromeView view)
         {
             // Zero padding, because every offset below is the absolute one the
             // old layout used and adding ImGui's default 8 to each would move
@@ -95,7 +95,8 @@ namespace SorceryForge.UI
             ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new NVector2(0f, 0f));
 
             if (ChromeTheme.BeginPanel("##sf_palette", EditorLayout.PaletteRect,
-                                       ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse))
+                                       ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse
+                                       | MenuBar.Inert(view)))
             {
                 ImGui.SetCursorPos(new NVector2(Padding, Padding));
                 ImGui.TextColored(ChromeTheme.Muted, Title(state.Mode));
@@ -109,8 +110,14 @@ namespace SorceryForge.UI
                 // EndChild without a BeginChild at a punishingly small window.
                 if (listHeight > 0f)
                 {
+                    // The inert flag has to be repeated on the CHILD.
+                    // NoInputs does not propagate: a child is its own ImGui
+                    // window, and the rows live in it — so a palette whose
+                    // frame was inert but whose list was not stayed clickable
+                    // behind a modal picker.
                     if (ImGui.BeginChild("##sf_palette_list",
-                            new NVector2(EditorLayout.PaletteWidth, listHeight)))
+                            new NVector2(EditorLayout.PaletteWidth, listHeight),
+                            ImGuiChildFlags.None, MenuBar.Inert(view)))
                     {
                         DrawEntries(actions, state);
                     }
@@ -214,8 +221,14 @@ namespace SorceryForge.UI
                 // as pure display text, the same rule DoorOpeningSide exists to
                 // enforce for door sides.
                 ImGui.PushID(index);
-                if (ImGui.InvisibleButton("##row", size)) actions.BeginPaletteDrag(entry);
+                ImGui.InvisibleButton("##row", size);
                 hovered = ImGui.IsItemHovered();
+                // IsItemClicked, not InvisibleButton's return value: ImGui's
+                // buttons fire on RELEASE-inside, and every widget in the
+                // chrome this replaces fired on the PRESS edge. It matters
+                // here more than anywhere: picking an entry up starts a drag,
+                // and a drag that only begins when you let go is not a drag.
+                if (ImGui.IsItemClicked()) actions.BeginPaletteDrag(entry);
                 ImGui.PopID();
             }
 

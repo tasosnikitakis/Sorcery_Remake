@@ -83,12 +83,13 @@ namespace SorceryForge.UI
         private static readonly uint ValueBgReadOnly = ChromeTheme.Packed(34, 38, 50);
         private static readonly uint ValueText = ChromeTheme.Packed(255, 255, 255);
 
-        public static void Draw(IChromeActions actions, EditorState state)
+        public static void Draw(IChromeActions actions, EditorState state, in ChromeView view)
         {
             ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new NVector2(0f, 0f));
 
             if (ChromeTheme.BeginPanel("##sf_inspector", EditorLayout.InspectorRect,
-                                       ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse))
+                                       ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse
+                                       | MenuBar.Inert(view)))
             {
                 ImGui.SetCursorPos(new NVector2(Padding, Padding));
                 ImGui.TextColored(ChromeTheme.Muted, "INSPECTOR");
@@ -108,8 +109,11 @@ namespace SorceryForge.UI
                 // matching note in PalettePanel.
                 if (bodyHeight > 0f)
                 {
+                    // The inert flag repeated on the CHILD — NoInputs does not
+                    // propagate; see the matching note in PalettePanel.
                     if (ImGui.BeginChild("##sf_inspector_list",
-                            new NVector2(EditorLayout.InspectorWidth, bodyHeight)))
+                            new NVector2(EditorLayout.InspectorWidth, bodyHeight),
+                            ImGuiChildFlags.None, MenuBar.Inert(view)))
                     {
                         DrawSections(actions, state);
                     }
@@ -178,8 +182,9 @@ namespace SorceryForge.UI
 
             // The caller has already pushed the entity id, so "##header" is
             // unique across the panel.
-            if (ImGui.InvisibleButton("##header", new NVector2(width, HeaderHeight)))
-                actions.SelectAndToggleSection(p);
+            ImGui.InvisibleButton("##header", new NVector2(width, HeaderHeight));
+            // Press semantics, as the old click zones had — see PalettePanel.
+            if (ImGui.IsItemClicked()) actions.SelectAndToggleSection(p);
 
             // No hover state. Selected or not, and nothing in between: the
             // header's colour means "the canvas outline is on this one", and a
@@ -294,8 +299,9 @@ namespace SorceryForge.UI
                 // placement's id around the whole section, so the pair is
                 // unique across the panel.
                 ImGui.PushID(label);
-                if (ImGui.InvisibleButton("##value", new NVector2(width, ValueH))) onClick();
+                ImGui.InvisibleButton("##value", new NVector2(width, ValueH));
                 hovered = ImGui.IsItemHovered();
+                if (ImGui.IsItemClicked()) onClick();
                 ImGui.PopID();
             }
             else

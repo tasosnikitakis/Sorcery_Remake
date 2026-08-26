@@ -37,7 +37,8 @@
 // internals of a third-party immediate-mode library is a promise with a version
 // number attached. tools/ChromeCheck drives the real ImGui and asserts both.
 //
-// KEYBOARD. With keyboard navigation deliberately off (see ImGuiRenderer) and
+// KEYBOARD. Two things hold it, not one: WantCaptureKeyboard, and an open
+// popup. With keyboard navigation deliberately off (see ImGuiRenderer) and
 // no text field anywhere in the chrome, WantCaptureKeyboard is false except
 // while an ImGui widget is actively held. Every editor keybind therefore keeps
 // firing exactly as it did. The gate is implemented properly regardless — the
@@ -55,6 +56,19 @@ namespace SorceryForge.UI
         public bool ImGuiWantsMouse { get; private set; }
         public bool ImGuiWantsKeyboard { get; private set; }
 
+        /// <summary>True while an ImGui popup — in practice, a menu — is open.</summary>
+        // A THIRD input, because WantCaptureKeyboard does not cover it and the
+        // gap is dangerous. ImGui raises that flag for an active widget or a
+        // modal window; an open MENU is neither, and with keyboard navigation
+        // deliberately off (see ImGuiRenderer) ImGui's own Escape-closes-a-popup
+        // path never runs either. So without this, "open the File menu, change
+        // your mind, press Escape" reaches the editor's Escape — which arms the
+        // discard guard, and on a clean room quits outright.
+        //
+        // Measured rather than assumed: tools/ChromeCheck section 5 opens a real
+        // menu and reports WantCaptureKeyboard false with the popup still up.
+        public bool ImGuiPopupOpen { get; private set; }
+
         /// <summary>
         /// True while a canvas/map gesture that began on the world surface is
         /// still running: a placement or spawn move, a middle-drag pan, an
@@ -66,10 +80,11 @@ namespace SorceryForge.UI
         public bool WorldGestureInProgress { get; set; }
 
         /// <summary>Record this frame's ImGui verdict. Call right after NewFrame.</summary>
-        public void Sample(bool wantsMouse, bool wantsKeyboard)
+        public void Sample(bool wantsMouse, bool wantsKeyboard, bool popupOpen = false)
         {
             ImGuiWantsMouse = wantsMouse;
             ImGuiWantsKeyboard = wantsKeyboard;
+            ImGuiPopupOpen = popupOpen;
         }
 
         /// <summary>
@@ -80,6 +95,6 @@ namespace SorceryForge.UI
         /// <summary>
         /// True when the editor's own keybinds may read this frame's keyboard.
         /// </summary>
-        public bool KeyboardReachesEditor => !ImGuiWantsKeyboard;
+        public bool KeyboardReachesEditor => !ImGuiWantsKeyboard && !ImGuiPopupOpen;
     }
 }

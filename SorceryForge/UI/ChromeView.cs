@@ -62,6 +62,22 @@ namespace SorceryForge.UI
         // that modality is decided in EditorGame, not here. What these carry is
         // only what the panel must SHOW.
 
+        /// <summary>
+        /// True while ANY modal owns the editor: either picker, the crop step,
+        /// or a running batch import.
+        /// </summary>
+        // The bands consult this and go NoInputs. Without it they stay live
+        // behind a picker — ImGui windows do not stop hit-testing because
+        // another window is drawn over part of the screen, and the palette and
+        // inspector are nowhere near the centred panel that covers the canvas.
+        // The old chrome got this for free, by returning from Update before any
+        // widget handler ran; here it has to be said out loud.
+        //
+        // A RUNNING BATCH counts, and draws no overlay of its own — it is
+        // writing files one per frame, and a click that loaded a different room
+        // underneath it would be genuinely destructive.
+        public bool ModalOpen;
+
         public bool NewRoomOpen;
         public IReadOnlyList<RoomCandidate> NewRoomCandidates;
 

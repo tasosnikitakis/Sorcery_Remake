@@ -43,7 +43,9 @@
 //   2 override    a gesture that began on the canvas survives crossing a panel
 //   3 ownership   a gesture that began on a panel does NOT leak to the canvas
 //   4 wheel       the notch goes to exactly one consumer, decided by region
-//   5 keyboard    editor keybinds keep firing; no chrome text field steals them
+//   5 keyboard    editor keybinds keep firing over every band and under a held
+//                 widget; an OPEN MENU holds them, so Escape closes the menu
+//                 instead of quitting the editor
 //   6 menus       what the board disables, and the four documented exceptions
 //   7 titles      the room title and the board title, verbatim, and which
 //                 '*' means which unsaved thing
@@ -55,6 +57,7 @@
 //                 a collapsed section registers nothing
 //  11 pickers     candidate rows, the quantize toggle, and the crop step's two
 //                 buttons - including that the crop IMAGE is left to the canvas
+//  12 modality    with a modal up, nothing behind it answers a click
 //
 // HOW TO RUN
 //
@@ -122,6 +125,7 @@ namespace SorceryRemake.Tools.ChromeCheck
             CheckPalette(harness);
             CheckInspector(harness);
             CheckPickers(harness);
+            CheckModality(harness);
 
             Console.WriteLine();
             Console.WriteLine($"  {_checks} checks, {_failures} failure(s)");
@@ -416,15 +420,51 @@ namespace SorceryRemake.Tools.ChromeCheck
             // never costs the editor a keypress, which is the case above.
             h.MoveTo(Centre(EditorLayout.PaletteRect));
             h.Settle();
+            // A REAL widget held down, not the stand-in panel's text: an
+            // InvisibleButton takes ImGui's ActiveId, and ActiveId is one of the
+            // two things that raises WantCaptureKeyboard.
+            var actions = new RecordingActions();
+            var state = BuildPaletteState();
+            h.SetBandsModal(false);
+            h.DrivePalette(actions, state);
+            h.MoveTo(new NVector2(140f, EditorLayout.PaletteRect.Y + 30f + 22f + 4f + 22f));
+            h.Settle();
             h.SetLeft(true);
             h.Frame();
-            Console.WriteLine("      (holding a chrome widget: WantCaptureKeyboard=" +
-                              $"{h.Router.ImGuiWantsKeyboard} — keys " +
-                              (h.Router.KeyboardReachesEditor ? "still reach the editor" : "are held by the chrome") + ")");
+            Assert("holding a palette row does NOT cost the editor its keys",
+                h.Router.KeyboardReachesEditor,
+                $"WantCaptureKeyboard={h.Router.ImGuiWantsKeyboard}");
             h.SetLeft(false);
             h.Frame();
             h.Settle();
             Assert("after releasing, keys reach the editor again", h.Router.KeyboardReachesEditor);
+
+            // AN OPEN MENU IS THE DANGEROUS CASE. Escape in room view arms the
+            // discard guard, and on a clean room it quits outright — so if a
+            // popup swallowed neither the key nor the click, "open the File
+            // menu, change your mind, press Escape" would close the editor.
+            // Keyboard navigation is deliberately off, so ImGui's own
+            // Escape-closes-a-popup path cannot be assumed. Measured, not
+            // assumed:
+            h.DriveMenuBar(actions, state, new ChromeView { RoomId = "chateau_0", RoomDisplayName = "X" });
+            h.ClickAt(new NVector2(22f, EditorLayout.TopBarRect.Y + 10f));
+            bool opened = Harness.AnyPopupOpen;
+            Assert("clicking File opens a menu popup", opened);
+
+            if (opened)
+            {
+                Assert("an open menu holds the keyboard, so Escape cannot reach Exit",
+                    !h.Router.KeyboardReachesEditor,
+                    $"WantCaptureKeyboard={h.Router.ImGuiWantsKeyboard}");
+
+                h.TapKey(ImGuiKey.Escape);
+                h.Settle();
+                Console.WriteLine($"      (after Escape, a popup is {(Harness.AnyPopupOpen ? "still open" : "closed")})");
+            }
+
+            // Click away to leave the menus in a known state for later sections.
+            h.ClickAt(Centre(EditorLayout.CanvasRect));
+            h.Settle();
         }
 
         // ====================================================================
@@ -565,12 +605,23 @@ namespace SorceryRemake.Tools.ChromeCheck
                 StatusBar.ViewInfo(state, room),
                 "Zoom 4x | room* | PNG* | map* | Tab: map");
 
-            // Map mode: the board's own zoom, the markers, then the persistent
+            // Map mode: the board's own zoom, map* ALONE, then the persistent
             // hints — which live here precisely because the transient message
             // on the left is overwritten by every drag and every zoom.
+            //
+            // room* and PNG* must NOT appear on the board. They are about a
+            // room you are not looking at and cannot save from there (Ctrl+S
+            // means the arrangement in that mode), and this is exactly how the
+            // line read before the migration.
             var map = new ChromeView { MapMode = true, MapZoomPercent = 25, RoomDirty = true };
-            AssertText("board, everything unsaved", StatusBar.ViewInfo(state, map),
-                "Map 25% | room* | PNG* | map* | N: new | I: import | Tab/Esc: room");
+            AssertText("board, everything unsaved: map* alone", StatusBar.ViewInfo(state, map),
+                "Map 25% | map* | N: new | I: import | Tab/Esc: room");
+
+            state.MapDirty = false;
+            AssertText("  a dirty ROOM alone leaves the board's line unmarked",
+                StatusBar.ViewInfo(state, map),
+                "Map 25% | N: new | I: import | Tab/Esc: room");
+            state.MapDirty = true;
 
             state.BackgroundDirty = false;
             state.MapDirty = false;
@@ -942,6 +993,75 @@ namespace SorceryRemake.Tools.ChromeCheck
         // CanCreate is derived from Problem, not settable — which is the right
         // shape and worth noticing: a candidate cannot claim to be usable
         // without also saying why it is not.
+        // ====================================================================
+        // 12. MODALITY — the bands go inert while a modal owns the editor
+        // ====================================================================
+        // The old chrome got this for free: Update returned before HandleButtons,
+        // HandlePaletteInput or HandleInspectorClicks ever ran, so with a picker
+        // up the whole chrome was dead. An ImGui window does NOT stop
+        // hit-testing because another window is drawn over part of the screen —
+        // and the centred picker covers the canvas, not the palette at x 0..280.
+        // Without an explicit NoInputs the palette stayed live behind the dim,
+        // and a click on it would dirty a room the user could not see.
+        //
+        // A running batch import counts too, and shows no overlay of its own.
+        // ====================================================================
+
+        private static void CheckModality(Harness h)
+        {
+            Section("12. MODALITY — nothing behind a modal answers a click");
+
+            h.Resize(1280, 720);
+            var actions = new RecordingActions();
+            var state = BuildPaletteState();
+
+            const float titleH = 30f, headerH = 22f, rowH = 44f, rowGap = 4f;
+            float firstRow = EditorLayout.PaletteRect.Y + titleH + headerH + rowGap;
+            var paletteRow = new NVector2(140f, firstRow + rowH / 2f);
+
+            // Baseline: with no modal, the palette answers.
+            h.SetBandsModal(false);
+            h.DrivePalette(actions, state);
+            h.ClickAt(paletteRow);
+            AssertPicked("no modal: the palette answers", actions, "Sword");
+
+            // With one, it does not — and ImGui does not even consider itself
+            // hovered there, which is what lets the crop step reach its image
+            // through the same dim.
+            actions.Reset();
+            h.SetBandsModal(true);
+            h.DrivePalette(actions, state);
+            h.ClickAt(paletteRow);
+            Assert("modal up: the palette answers nothing", actions.Calls.Count == 0,
+                actions.Only);
+
+            // Same for the inspector.
+            actions.Reset();
+            var inspectorState = new EditorState();
+            inspectorState.Placements.Add(
+                new Placement("chateau_0_door_1", PlacementKind.Door, new Vector2(0, 40)));
+            h.DriveInspector(actions, inspectorState);
+            h.ClickAt(new NVector2(EditorLayout.InspectorRect.X + 40f,
+                                   EditorLayout.InspectorRect.Y + 32f + 20f));
+            Assert("modal up: the inspector answers nothing", actions.Calls.Count == 0,
+                actions.Only);
+
+            // And the menu bar — File > Save Room from behind a "modal" would
+            // write the room the picker is about to replace.
+            actions.Reset();
+            h.ClickAt(new NVector2(24f, EditorLayout.TopBarRect.Y + 10f));
+            h.ClickAt(new NVector2(24f, EditorLayout.TopBarRect.Y + 40f));
+            Assert("modal up: the menu bar answers nothing", actions.Calls.Count == 0,
+                actions.Only);
+
+            // Released again.
+            actions.Reset();
+            h.SetBandsModal(false);
+            h.DrivePalette(actions, state);
+            h.ClickAt(paletteRow);
+            AssertPicked("modal closed: the palette answers again", actions, "Sword");
+        }
+
         private static RoomCandidate Candidate(string asset, string roomId, string display, bool ok) =>
             new()
             {
@@ -1085,6 +1205,7 @@ namespace SorceryRemake.Tools.ChromeCheck
             private NVector2 _mouse;
             private bool _left, _right, _middle;
             private float _wheel;
+            private readonly Dictionary<ImGuiKey, bool> _keys = new();
 
             public float PaletteScroll { get; private set; }
 
@@ -1124,6 +1245,22 @@ namespace SorceryRemake.Tools.ChromeCheck
 
             public void SetLeft(bool down) => _left = down;
 
+            /// <summary>Hold or release a key, as the editor's own pump would.</summary>
+            public void SetKey(ImGuiKey key, bool down) => _keys[key] = down;
+
+            /// <summary>A press and release of one key, one frame each.</summary>
+            public void TapKey(ImGuiKey key)
+            {
+                SetKey(key, true);
+                Frame();
+                SetKey(key, false);
+                Frame();
+            }
+
+            /// <summary>True while ImGui has any popup — a menu, chiefly — open.</summary>
+            public static bool AnyPopupOpen =>
+                ImGui.IsPopupOpen("", ImGuiPopupFlags.AnyPopupId | ImGuiPopupFlags.AnyPopupLevel);
+
             public void SetRight(bool down) => _right = down;
 
             public void SetMiddle(bool down) => _middle = down;
@@ -1150,9 +1287,10 @@ namespace SorceryRemake.Tools.ChromeCheck
                 io.AddMouseButtonEvent(1, _right);
                 io.AddMouseButtonEvent(2, _middle);
                 if (_wheel != 0f) { io.AddMouseWheelEvent(0f, _wheel); _wheel = 0f; }
+                foreach (var pair in _keys) io.AddKeyEvent(pair.Key, pair.Value);
 
                 ImGui.NewFrame();
-                Router.Sample(io.WantCaptureMouse, io.WantCaptureKeyboard);
+                Router.Sample(io.WantCaptureMouse, io.WantCaptureKeyboard, AnyPopupOpen);
 
                 BuildChrome();
 
@@ -1175,6 +1313,28 @@ namespace SorceryRemake.Tools.ChromeCheck
             private IChromeActions? _pickerActions;
             private ChromeView _pickerView;
             private bool _pickersOn;
+
+            /// <summary>What the BANDS are told each frame — chiefly ModalOpen.</summary>
+            private ChromeView _bandView;
+            private IChromeActions? _menuActions;
+            private EditorState? _menuState;
+            private ChromeView _menuView;
+
+            /// <summary>Switch the top band to the real MenuBar.</summary>
+            public void DriveMenuBar(IChromeActions actions, EditorState state, ChromeView view)
+            {
+                _menuActions = actions;
+                _menuState = state;
+                _menuView = view;
+                Settle();
+            }
+
+            /// <summary>Put the bands into (or out of) their modal-inert state.</summary>
+            public void SetBandsModal(bool modal)
+            {
+                _bandView = new ChromeView { ModalOpen = modal };
+                Settle();
+            }
 
             /// <summary>Switch the palette band to the real PalettePanel.</summary>
             public void DrivePalette(IChromeActions actions, EditorState state)
@@ -1237,11 +1397,14 @@ namespace SorceryRemake.Tools.ChromeCheck
 
             private void BuildChrome()
             {
-                Panel("##topbar", EditorLayout.TopBarRect, () => ImGui.TextUnformatted("menu"));
+                if (_menuActions != null && _menuState != null)
+                    MenuBar.Draw(_menuActions, _menuState, _menuView);
+                else
+                    Panel("##topbar", EditorLayout.TopBarRect, () => ImGui.TextUnformatted("menu"));
 
                 if (_paletteActions != null && _paletteState != null)
                 {
-                    PalettePanel.Draw(_paletteActions, _paletteState);
+                    PalettePanel.Draw(_paletteActions, _paletteState, _bandView);
                 }
                 else
                 {
@@ -1256,7 +1419,7 @@ namespace SorceryRemake.Tools.ChromeCheck
 
                 if (_inspectorActions != null && _inspectorState != null)
                 {
-                    InspectorPanel.Draw(_inspectorActions, _inspectorState);
+                    InspectorPanel.Draw(_inspectorActions, _inspectorState, _bandView);
                 }
                 else
                 {

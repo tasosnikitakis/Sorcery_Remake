@@ -87,9 +87,23 @@ namespace SorceryForge.UI
         /// <summary>F11 is read in HandleKeyboardShortcuts, which the board never reaches.</summary>
         internal static bool CanToggleFullscreen(in ChromeView v) => !v.MapMode;
 
+        /// <summary>
+        /// NoInputs while any modal owns the editor. Not BeginDisabled: that
+        /// would grey the widgets on top of the overlay's own dim, and the old
+        /// chrome greyed nothing - it simply stopped being reached.
+        /// </summary>
+        internal static ImGuiWindowFlags Inert(in ChromeView view) =>
+            view.ModalOpen ? ImGuiWindowFlags.NoInputs : ImGuiWindowFlags.None;
+
         public static void Draw(IChromeActions actions, EditorState state, in ChromeView view)
         {
-            if (ChromeTheme.BeginPanel("##sf_topbar", EditorLayout.TopBarRect, ImGuiWindowFlags.MenuBar))
+            // NoInputs while a modal owns the editor: the menus are drawn,
+            // dimmed by the overlay, and answer nothing. The old top bar was
+            // inert then for a structural reason - Update returned before
+            // HandleButtons ran - and an ImGui window does not stop hit-testing
+            // just because something is drawn over the middle of the screen.
+            if (ChromeTheme.BeginPanel("##sf_topbar", EditorLayout.TopBarRect,
+                    ImGuiWindowFlags.MenuBar | Inert(view)))
             {
                 if (ImGui.BeginMenuBar())
                 {
@@ -109,9 +123,29 @@ namespace SorceryForge.UI
         // MENUS
         // ====================================================================
 
+        /// <summary>
+        /// Escape closes an open menu. Call as the first thing inside every
+        /// BeginMenu body.
+        /// </summary>
+        // ImGui does this itself only with keyboard navigation on, and
+        // navigation is deliberately off here — it would claim the arrow keys
+        // (the canvas pan), Enter (the crop confirm) and Escape (the discard
+        // guard), all documented keybinds of this editor. So the one piece of
+        // it that a mouse-driven menu still needs is done by hand.
+        //
+        // The router swallows this same Escape, so it closes the menu and does
+        // NOT also reach the editor's exit path. Both halves are required:
+        // without the router's gate, Escape would close the menu AND quit; and
+        // without this, Escape over an open menu would do nothing at all.
+        private static void CloseOnEscape()
+        {
+            if (ImGui.IsKeyPressed(ImGuiKey.Escape)) ImGui.CloseCurrentPopup();
+        }
+
         private static void FileMenu(IChromeActions actions, in ChromeView view)
         {
             if (!ImGui.BeginMenu("File")) return;
+            CloseOnEscape();
 
             // Two save items, not one with a changing label. Ctrl+S has always
             // meant "persist what is in front of you", and in map mode that is
@@ -148,6 +182,7 @@ namespace SorceryForge.UI
         private static void EditMenu(IChromeActions actions, EditorState state, in ChromeView view)
         {
             if (!ImGui.BeginMenu("Edit")) return;
+            CloseOnEscape();
 
             // Checkmarked rather than labelled with their state ("Snap: OFF").
             // The toolbar below still carries both as always-visible toggles,
@@ -163,6 +198,7 @@ namespace SorceryForge.UI
         private static void ViewMenu(IChromeActions actions, in ChromeView view)
         {
             if (!ImGui.BeginMenu("View")) return;
+            CloseOnEscape();
 
             // Enabled in both modes because Tab is. This is the first CLICK
             // path the map has ever had; the key is unchanged.
@@ -189,6 +225,7 @@ namespace SorceryForge.UI
         private static void ValidateMenu(IChromeActions actions, in ChromeView view)
         {
             if (!ImGui.BeginMenu("Validate")) return;
+            CloseOnEscape();
 
             // All three act on the room being edited (the door and puzzle
             // passes read the whole world, but they overlay THIS room's canvas

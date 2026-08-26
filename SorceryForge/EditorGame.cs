@@ -2149,7 +2149,8 @@ namespace SorceryForge
             // map board see this frame's mouse at all.
             var io = ImGui.GetIO();
             _router.WorldGestureInProgress = WorldGestureInProgress();
-            _router.Sample(io.WantCaptureMouse, io.WantCaptureKeyboard);
+            _router.Sample(io.WantCaptureMouse, io.WantCaptureKeyboard,
+                ImGui.IsPopupOpen("", ImGuiPopupFlags.AnyPopupId | ImGuiPopupFlags.AnyPopupLevel));
 
             UpdateEditor();
 
@@ -3194,8 +3195,8 @@ namespace SorceryForge
             // neither panel has anything to say about a world.
             if (!_mapMode)
             {
-                PalettePanel.Draw(this, _state);
-                InspectorPanel.Draw(this, _state);
+                PalettePanel.Draw(this, _state, Snapshot());
+                InspectorPanel.Draw(this, _state, Snapshot());
             }
 
             StatusBar.Draw(_state, Snapshot());
@@ -3232,6 +3233,12 @@ namespace SorceryForge
             Zoom = EditorLayout.Zoom,
             MapRoomCount = _mapRooms.Count,
             MapZoomPercent = _mapView.ZoomPercent,
+
+            // Any modal owning the editor makes the three bands NoInputs. A
+            // running batch counts and shows no overlay of its own: it is
+            // writing files one per frame, and a click that loaded a different
+            // room underneath it would be genuinely destructive.
+            ModalOpen = _batchRunning || _newRoomOpen || _importOpen || _cropOpen,
 
             NewRoomOpen = _newRoomOpen,
             NewRoomCandidates = _newRoomCandidates,

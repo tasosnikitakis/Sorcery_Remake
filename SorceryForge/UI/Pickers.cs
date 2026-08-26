@@ -70,15 +70,30 @@ namespace SorceryForge.UI
         /// Dim everything behind a modal so it reads as blocking input, which
         /// it does.
         /// </summary>
-        // Into the BACKGROUND draw list: that renders above every SpriteBatch
-        // pass and below every ImGui window, which is the exact layer the old
-        // full-screen FillRect occupied between the canvas and the panel.
+        // In its OWN full-screen window, not in the background draw list. The
+        // background list renders BELOW every ImGui window, so a dim drawn
+        // there would slide under the palette and the inspector and leave them
+        // at full brightness — where the old chrome's full-screen FillRect was
+        // drawn after them and covered them.
+        //
+        // NoInputs, so the window itself hit-tests nothing: the crop step
+        // reaches its image THROUGH this dim, and the image is a world surface
+        // the router must still hand to EditorGame. What stops clicks reaching
+        // the bands underneath is their own NoInputs (MenuBar.Inert), not this.
         private static void Dim()
         {
-            ImGui.GetBackgroundDrawList().AddRectFilled(
-                NVector2.Zero,
-                new NVector2(EditorLayout.WindowWidth, EditorLayout.WindowHeight),
-                ChromeTheme.Packed(0, 0, 0, 170));
+            var full = new Rectangle(0, 0, EditorLayout.WindowWidth, EditorLayout.WindowHeight);
+            ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new NVector2(0f, 0f));
+            if (ChromeTheme.BeginOverlay("##sf_modal_dim", full,
+                    ImGuiWindowFlags.NoInputs | ImGuiWindowFlags.NoBackground))
+            {
+                ImGui.GetWindowDrawList().AddRectFilled(
+                    new NVector2(full.X, full.Y),
+                    new NVector2(full.Right, full.Bottom),
+                    ChromeTheme.Packed(0, 0, 0, 170));
+            }
+            ChromeTheme.EndPanel();
+            ImGui.PopStyleVar();
         }
 
         private static Rectangle Centred(int maxW, int maxH)
@@ -230,9 +245,9 @@ namespace SorceryForge.UI
             float width = ImGui.GetContentRegionAvail().X;
             var p0 = ImGui.GetCursorScreenPos();
 
-            if (ImGui.InvisibleButton("##sf_quantize", new NVector2(width, 28f)))
-                actions.ToggleImportQuantize();
+            ImGui.InvisibleButton("##sf_quantize", new NVector2(width, 28f));
             bool hovered = ImGui.IsItemHovered();
+            if (ImGui.IsItemClicked()) actions.ToggleImportQuantize();
 
             var p1 = new NVector2(p0.X + width, p0.Y + 28f);
             var dl = ImGui.GetWindowDrawList();
@@ -280,8 +295,10 @@ namespace SorceryForge.UI
             ImGui.PushID(index);
             if (usable)
             {
-                clicked = ImGui.InvisibleButton("##row", new NVector2(width, RowHeight));
+                ImGui.InvisibleButton("##row", new NVector2(width, RowHeight));
                 hovered = ImGui.IsItemHovered();
+                // Press semantics, as every old click zone had — see PalettePanel.
+                clicked = ImGui.IsItemClicked();
             }
             else
             {

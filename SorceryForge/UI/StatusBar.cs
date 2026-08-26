@@ -8,7 +8,7 @@
 // The message is a sentence about the last thing you did and can be re-read by
 // doing it again; the group is state you cannot recover by any other means.
 //
-// THE MARKER GROUP now carries three markers rather than two:
+// THE MARKER GROUP carries three markers in room mode rather than two:
 //
 //   room*   any of PlacementsDirty / CollisionDirty / BackgroundDirty — the
 //           exact condition that makes the discard guard block a room switch,
@@ -25,10 +25,14 @@
 // by measuring itself against the window's right edge and nothing competes
 // with it for room.
 //
-// The three deliberately overlap rather than partition. PNG* implies room*,
-// and that is not redundancy: they name different saves. Ctrl+S writes both,
-// but only the PNG needs `dotnet build` afterwards, and only the map needs you
-// to be looking at the map.
+// room* and PNG* deliberately overlap rather than partition. PNG* implies
+// room*, and that is not redundancy: they name different saves. Ctrl+S writes
+// both, but only the PNG needs `dotnet build` afterwards.
+//
+// ON THE BOARD it is map* ALONE, exactly as before. The room's two markers are
+// about a room you are not looking at and cannot save from there — Ctrl+S means
+// the arrangement in that mode — and a marker you cannot act on is a marker you
+// learn to ignore. The WORLD MAP title carries the same map* in its own "*".
 // ============================================================================
 
 using ImGuiNET;
@@ -83,7 +87,11 @@ namespace SorceryForge.UI
             if (view.MapMode)
             {
                 s.Append("Map ").Append(view.MapZoomPercent).Append('%');
-                AppendMarkers(s, state, view);
+                // map* ALONE on the board, as before. room* and PNG* are about
+                // a room you are not looking at and cannot save from here —
+                // Ctrl+S writes the arrangement in this mode — and a marker you
+                // cannot act on is a marker you learn to ignore.
+                if (state.MapDirty) s.Append(" | map*");
                 // Persistent hints belong here rather than in the transient
                 // message on the left, which any drag or zoom overwrites.
                 s.Append(" | N: new | I: import | Tab/Esc: room");
@@ -98,10 +106,11 @@ namespace SorceryForge.UI
             return s.ToString();
         }
 
-        // Shown from BOTH modes, all three of them. An unsaved room is a thing
-        // quitting would lose whether or not you are looking at it, and the
-        // same goes for the board — which is exactly why the exit guard is the
-        // one caller that passes includeMap.
+        // ROOM MODE ONLY. map* appears here as well as on the board, because an
+        // unsaved arrangement is a thing quitting would lose and quitting is
+        // only reachable from room view — which is exactly why the exit guard
+        // is the one caller that passes includeMap. The reverse does not hold:
+        // the board shows map* alone.
         private static void AppendMarkers(StringBuilder s, EditorState state, in ChromeView view)
         {
             if (view.RoomDirty) s.Append(" | room*");
