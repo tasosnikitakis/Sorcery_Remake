@@ -105,26 +105,31 @@ namespace SorceryForge.UI
                     "Content/RoomBG_*.png not already claimed by a room in rooms.json");
                 ImGui.Dummy(new NVector2(1f, 6f));
 
+                // EndChild pairs with the CALL, not the return value — see the
+                // matching note in PalettePanel.
                 float listHeight = ImGui.GetContentRegionAvail().Y - ImGui.GetFrameHeight() - 12f;
-                if (listHeight > 0f && ImGui.BeginChild("##sf_newroom_list", new NVector2(0f, listHeight)))
+                if (listHeight > 0f)
                 {
-                    if (view.NewRoomCandidates.Count == 0) NewRoomEmptyText();
-
-                    foreach (var candidate in view.NewRoomCandidates)
+                    if (ImGui.BeginChild("##sf_newroom_list", new NVector2(0f, listHeight)))
                     {
-                        // Captured for the click, exactly as the old lambda did:
-                        // the row outlives this iteration of the loop.
-                        var captured = candidate;
-                        string sub = captured.CanCreate
-                            ? $"-> {captured.RoomId}   \"{captured.DisplayName}\""
-                            : $"unavailable: {captured.Problem}";
+                        if (view.NewRoomCandidates.Count == 0) NewRoomEmptyText();
 
-                        if (CandidateRow(captured.BackgroundAsset + ".png", sub, captured.CanCreate,
-                                         captured.BackgroundAsset))
-                            actions.CreateRoom(captured);
+                        for (int i = 0; i < view.NewRoomCandidates.Count; i++)
+                        {
+                            // Captured for the click, exactly as the old lambda
+                            // did: the row outlives this iteration of the loop.
+                            var captured = view.NewRoomCandidates[i];
+                            string sub = captured.CanCreate
+                                ? $"-> {captured.RoomId}   \"{captured.DisplayName}\""
+                                : $"unavailable: {captured.Problem}";
+
+                            if (CandidateRow(captured.BackgroundAsset + ".png", sub,
+                                             captured.CanCreate, i))
+                                actions.CreateRoom(captured);
+                        }
                     }
+                    ImGui.EndChild();
                 }
-                ImGui.EndChild();
 
                 Footer("Esc / right-click cancels", "Cancel", actions.CancelNewRoomPicker);
             }
@@ -164,28 +169,33 @@ namespace SorceryForge.UI
                 QuantizeToggle(actions, view);
                 ImGui.Dummy(new NVector2(1f, 6f));
 
+                // EndChild pairs with the CALL, not the return value — see the
+                // matching note in PalettePanel.
                 float listHeight = ImGui.GetContentRegionAvail().Y - ImGui.GetFrameHeight() - 12f;
-                if (listHeight > 0f && ImGui.BeginChild("##sf_import_list", new NVector2(0f, listHeight)))
+                if (listHeight > 0f)
                 {
-                    if (view.ImportCandidates.Count == 0) ImportEmptyText();
-
-                    foreach (var candidate in view.ImportCandidates)
+                    if (ImGui.BeginChild("##sf_import_list", new NVector2(0f, listHeight)))
                     {
-                        var captured = candidate;
-                        // "[crop]" marks the sources that open the crop step
-                        // instead of importing on the click, so that is never a
-                        // surprise.
-                        string sub = captured.CanCreate
-                            ? (captured.NeedsCrop ? "[crop] " : "") +
-                              $"-> {captured.BackgroundAsset}.png   ->   {captured.RoomId}   \"{captured.DisplayName}\""
-                            : $"unavailable: {captured.Problem}";
+                        if (view.ImportCandidates.Count == 0) ImportEmptyText();
 
-                        if (CandidateRow($"{captured.FileName}   {captured.SizeLabel}", sub,
-                                         captured.CanCreate, captured.FileName))
-                            actions.RunImport(captured);
+                        for (int i = 0; i < view.ImportCandidates.Count; i++)
+                        {
+                            var captured = view.ImportCandidates[i];
+                            // "[crop]" marks the sources that open the crop step
+                            // instead of importing on the click, so that is
+                            // never a surprise.
+                            string sub = captured.CanCreate
+                                ? (captured.NeedsCrop ? "[crop] " : "") +
+                                  $"-> {captured.BackgroundAsset}.png   ->   {captured.RoomId}   \"{captured.DisplayName}\""
+                                : $"unavailable: {captured.Problem}";
+
+                            if (CandidateRow($"{captured.FileName}   {captured.SizeLabel}", sub,
+                                             captured.CanCreate, i))
+                                actions.RunImport(captured);
+                        }
                     }
+                    ImGui.EndChild();
                 }
-                ImGui.EndChild();
 
                 // The batch hint appears only when a batch is actually
                 // available, so the key can never look broken — the same reason
@@ -257,13 +267,17 @@ namespace SorceryForge.UI
         // An unusable row is drawn but has no hit region at all, so it cannot
         // be hovered or clicked — the same rule the palette's dimmed rows
         // follow, and the reason the red tint is trustworthy.
-        private static bool CandidateRow(string title, string sub, bool usable, string id)
+        private static bool CandidateRow(string title, string sub, bool usable, int index)
         {
             float width = ImGui.GetContentRegionAvail().X;
             var p0 = ImGui.GetCursorScreenPos();
             bool clicked = false, hovered = false;
 
-            ImGui.PushID(id);
+            // Scoped by INDEX rather than by name: two files in assets/import/
+            // can derive the same room id — that is precisely the collision the
+            // candidate's Problem field reports — and two rows sharing an ImGui
+            // id would fuse into one widget.
+            ImGui.PushID(index);
             if (usable)
             {
                 clicked = ImGui.InvisibleButton("##row", new NVector2(width, RowHeight));

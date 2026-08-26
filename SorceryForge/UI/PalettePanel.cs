@@ -102,12 +102,20 @@ namespace SorceryForge.UI
 
                 ImGui.SetCursorPos(new NVector2(0f, TitleHeight));
                 float listHeight = EditorLayout.PaletteRect.Height - TitleHeight - BottomInset;
-                if (listHeight > 0f && ImGui.BeginChild("##sf_palette_list",
-                        new NVector2(EditorLayout.PaletteWidth, listHeight)))
+
+                // EndChild is paired with the BeginChild CALL, not with its
+                // return value — ImGui asserts on an unmatched End. Writing the
+                // height guard as a short-circuit inside the if would call
+                // EndChild without a BeginChild at a punishingly small window.
+                if (listHeight > 0f)
                 {
-                    DrawEntries(actions, state);
+                    if (ImGui.BeginChild("##sf_palette_list",
+                            new NVector2(EditorLayout.PaletteWidth, listHeight)))
+                    {
+                        DrawEntries(actions, state);
+                    }
+                    ImGui.EndChild();
                 }
-                ImGui.EndChild();
             }
             ChromeTheme.EndPanel();
 
@@ -149,10 +157,11 @@ namespace SorceryForge.UI
 
                 // Insertion order within a section is palette order; the loop
                 // above decides the order of the sections themselves.
-                foreach (var entry in state.Palette)
+                for (int i = 0; i < state.Palette.Count; i++)
                 {
+                    var entry = state.Palette[i];
                     if (entry.Section != section) continue;
-                    Row(actions, state, entry, rowWidth, dim);
+                    Row(actions, state, entry, rowWidth, dim, i);
                     Gap(RowGap);
                 }
 
@@ -182,7 +191,7 @@ namespace SorceryForge.UI
         }
 
         private static void Row(IChromeActions actions, EditorState state,
-                                PaletteEntry entry, float width, bool dim)
+                                PaletteEntry entry, float width, bool dim, int index)
         {
             ImGui.SetCursorPosX(Padding);
             var p0 = ImGui.GetCursorScreenPos();
@@ -198,12 +207,13 @@ namespace SorceryForge.UI
             }
             else
             {
-                // PushID on the object, not the label: two palette entries may
+                // PushID on the entry's INDEX, not its label. Two entries may
                 // legitimately share a display name, and an ImGui id collision
-                // would make one of them unclickable. It also means labels stay
-                // pure display text — the same rule DoorOpeningSide exists to
+                // would fuse them into one widget — hover and click state
+                // shared, so one of them stops answering. It also keeps labels
+                // as pure display text, the same rule DoorOpeningSide exists to
                 // enforce for door sides.
-                ImGui.PushID(entry.Label);
+                ImGui.PushID(index);
                 if (ImGui.InvisibleButton("##row", size)) actions.BeginPaletteDrag(entry);
                 hovered = ImGui.IsItemHovered();
                 ImGui.PopID();

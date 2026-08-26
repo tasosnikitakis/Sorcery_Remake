@@ -103,12 +103,18 @@ namespace SorceryForge.UI
 
                 ImGui.SetCursorPos(new NVector2(0f, TitleHeight));
                 float bodyHeight = EditorLayout.InspectorRect.Height - TitleHeight - BottomInset;
-                if (bodyHeight > 0f && ImGui.BeginChild("##sf_inspector_list",
-                        new NVector2(EditorLayout.InspectorWidth, bodyHeight)))
+
+                // EndChild pairs with the CALL, not the return value — see the
+                // matching note in PalettePanel.
+                if (bodyHeight > 0f)
                 {
-                    DrawSections(actions, state);
+                    if (ImGui.BeginChild("##sf_inspector_list",
+                            new NVector2(EditorLayout.InspectorWidth, bodyHeight)))
+                    {
+                        DrawSections(actions, state);
+                    }
+                    ImGui.EndChild();
                 }
-                ImGui.EndChild();
             }
             ChromeTheme.EndPanel();
 
@@ -133,14 +139,28 @@ namespace SorceryForge.UI
             // appended. Same order the save path writes.
             foreach (var placement in state.Placements)
             {
+                // The entity id scopes the WHOLE section, header and body.
+                //
+                // Not just the header: two doors in one room both draw a row
+                // labelled "Opens", and an ImGui id is derived from the label
+                // plus the enclosing id stack. Push only around the header and
+                // those two rows become the SAME widget — hover and click state
+                // shared, so pressing one door's "Opens" reports on the other's.
+                // The id is already guaranteed unique: it is the persistence key
+                // GenerateId spins the counter to keep free.
+                ImGui.PushID(placement.Id);
+
                 bool collapsed = state.IsCollapsed(placement.Id);
                 SectionHeader(actions, state, placement, contentW, collapsed);
                 Gap(HeaderGap);
 
-                if (collapsed) continue;
+                if (!collapsed)
+                {
+                    SectionBody(actions, placement, contentW - BodyIndent * 2);
+                    Gap(BodyGap);
+                }
 
-                SectionBody(actions, placement, contentW - BodyIndent * 2);
-                Gap(BodyGap);
+                ImGui.PopID();
             }
 
             ImGui.PopStyleVar();
@@ -156,12 +176,10 @@ namespace SorceryForge.UI
             ImGui.SetCursorPosX(Padding);
             var p0 = ImGui.GetCursorScreenPos();
 
-            // PushID on the entity id — the persistence key, guaranteed unique
-            // by GenerateId, which is exactly what an ImGui id needs to be.
-            ImGui.PushID(p.Id);
+            // The caller has already pushed the entity id, so "##header" is
+            // unique across the panel.
             if (ImGui.InvisibleButton("##header", new NVector2(width, HeaderHeight)))
                 actions.SelectAndToggleSection(p);
-            ImGui.PopID();
 
             // No hover state. Selected or not, and nothing in between: the
             // header's colour means "the canvas outline is on this one", and a
@@ -271,10 +289,10 @@ namespace SorceryForge.UI
 
             if (onClick != null)
             {
-                // PushID on the label: the four editable fields of one
-                // placement have four distinct labels, and the header above
-                // already pushed the placement's unique id, so the pair is
-                // unique across the whole panel.
+                // The label is unique WITHIN a placement's body — no kind draws
+                // two rows with the same one — and DrawSections has pushed the
+                // placement's id around the whole section, so the pair is
+                // unique across the panel.
                 ImGui.PushID(label);
                 if (ImGui.InvisibleButton("##value", new NVector2(width, ValueH))) onClick();
                 hovered = ImGui.IsItemHovered();

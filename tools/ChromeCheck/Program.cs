@@ -805,6 +805,35 @@ namespace SorceryRemake.Tools.ChromeCheck
             AssertCall("  and its Needs row cycles ITS required item",
                 actions, nameof(IChromeActions.CycleBlockedDoorRequiredItem), blocked.Id);
 
+            // TWO PLACEMENTS OF THE SAME KIND. Both draw a row labelled
+            // "Opens", and an ImGui id is the label plus the enclosing id
+            // stack — so if the placement's id does not scope the whole
+            // section, the two rows fuse into one widget and clicking the
+            // second reports on the first. Nothing about that is visible on
+            // screen: both rows draw, both highlight, one of them lies.
+            actions.Reset();
+            state.Placements.Clear();
+            state.CollapsedPlacementIds.Clear();
+            var doorA = new Placement("chateau_0_door_1", PlacementKind.Door, new Vector2(0, 40))
+            { DoorOpeningSide = "LeftOpening" };
+            var doorB = new Placement("chateau_0_door_2", PlacementKind.Door, new Vector2(296, 40))
+            { DoorOpeningSide = "RightOpening" };
+            state.Placements.Add(doorA);
+            state.Placements.Add(doorB);
+            h.DriveInspector(actions, state);
+
+            // Door A: header, 2 px, five rows, 6 px. Then door B's header, 2 px,
+            // and its own body — whose row 1 is "Opens", the row that collides.
+            float doorBBody = bodyTop + 5f * rowH + 6f + headerH + headerGap;
+            h.ClickAt(new NVector2(x, doorBBody + rowH + labelH + innerGap + valueH / 2f));
+            AssertCall("two doors: the SECOND door's Opens row is the second door's",
+                actions, nameof(IChromeActions.CycleDoorOpeningSide), doorB.Id);
+
+            actions.Reset();
+            h.ClickAt(new NVector2(x, ValueY(1)));
+            AssertCall("  and the first door's Opens row is still the first door's",
+                actions, nameof(IChromeActions.CycleDoorOpeningSide), doorA.Id);
+
             // Labels the panel owns outright.
             AssertText("kind label for a door", InspectorPanel.KindShortLabel(door), "Door");
             AssertText("kind label for a blocked door",
