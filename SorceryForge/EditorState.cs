@@ -88,10 +88,16 @@ namespace SorceryForge
         public readonly HashSet<string> PuzzleProblemIds = new();
 
         // Right-side inspector panel. Default behaviour: all sections start
-        // EXPANDED; collapsed IDs are tracked here. Scroll position is the
-        // pixel offset to subtract from each section's Y when rendering.
+        // EXPANDED; collapsed IDs are tracked here.
+        //
+        // The scroll offset that used to sit beside this is gone — Dear ImGui
+        // owns panel scrolling now. The collapsed set stays, because it is not
+        // presentation: a canvas click force-EXPANDS the section of the
+        // placement it selected (see Expand), so the editor's logic has an
+        // opinion about it. IDs of deleted placements are never pruned, by
+        // design — the set survives room switches, and a placement's id is
+        // stable for the life of the world.
         public readonly HashSet<string> CollapsedPlacementIds = new();
-        public float InspectorScrollY = 0f;
 
         public bool IsCollapsed(string placementId) =>
             CollapsedPlacementIds.Contains(placementId);

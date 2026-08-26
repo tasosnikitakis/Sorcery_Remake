@@ -685,12 +685,11 @@ namespace SorceryForge
         // ====================================================================
         // NEW ROOM — background picker overlay
         // ====================================================================
-        // A modal list of every unused RoomBG_*.png, built on the same
-        // populate-in-Draw / consume-in-Update click-zone pattern the
-        // inspector uses. State lives here rather than on EditorState because
-        // it is transient view plumbing (like _inspectorButtons and
+        // A modal list of every unused RoomBG_*.png. State lives here rather
+        // than on EditorState because it is transient view plumbing (like
         // _discardArmed), not room data — nothing here survives a room switch
-        // or reaches disk.
+        // or reaches disk. The list itself is drawn by UI/Pickers; what is left
+        // in this file is the flow — what a pick means, and what cancels it.
         //
         // Zero typing: the room id and display name come from the filename
         // (NewRoomFlow's derivation rule). The editor has no text field, and
@@ -699,9 +698,6 @@ namespace SorceryForge
 
         private bool _newRoomOpen;
         private List<RoomCandidate> _newRoomCandidates = new();
-        private float _newRoomScrollY;
-        private int _newRoomContentHeight;
-        private readonly List<(Rectangle bounds, Action action)> _newRoomButtons = new();
 
         private void OpenNewRoomPicker()
         {
@@ -714,8 +710,6 @@ namespace SorceryForge
             if (!ConfirmDiscardUnsavedEdits()) return;
 
             _newRoomCandidates = NewRoomFlow.FindCandidates(EditorPaths.RepoContentDir, RoomManifest.All);
-            _newRoomScrollY = 0f;
-            _newRoomButtons.Clear();
             _newRoomOpen = true;
 
             int usable = 0;
@@ -728,7 +722,6 @@ namespace SorceryForge
         private void CloseNewRoomPicker(string status)
         {
             _newRoomOpen = false;
-            _newRoomButtons.Clear();
             _state.Status = status;
         }
 
@@ -738,27 +731,14 @@ namespace SorceryForge
         /// </summary>
         private void HandleNewRoomPicker()
         {
+            // Cancel only. The rows, the Cancel button and the list's scroll
+            // are UI/Pickers' now — ImGui hit-tests them in the same call that
+            // draws them. What stays here is the pair of gestures that must
+            // keep working with the cursor anywhere on screen, including over
+            // the panel itself, which is where ImGui would otherwise claim the
+            // mouse: Escape, and right-click.
             if (Pressed(Keys.Escape) || RightClicked())
-            {
                 CloseNewRoomPicker("New Room cancelled.");
-                return;
-            }
-
-            int delta = _mouseNow.ScrollWheelValue - _mousePrev.ScrollWheelValue;
-            if (delta != 0) _newRoomScrollY -= delta * 0.25f;
-            float maxScroll = Math.Max(0, _newRoomContentHeight - NewRoomListRect.Height);
-            _newRoomScrollY = Math.Clamp(_newRoomScrollY, 0, maxScroll);
-
-            if (!LeftClicked()) return;
-            var p = new Point(_mouseNow.X, _mouseNow.Y);
-            for (int i = _newRoomButtons.Count - 1; i >= 0; i--)
-            {
-                if (_newRoomButtons[i].bounds.Contains(p))
-                {
-                    _newRoomButtons[i].action();
-                    return;
-                }
-            }
         }
 
         /// <summary>
@@ -807,135 +787,9 @@ namespace SorceryForge
             // whichever way this goes the status line it leaves behind is the
             // thing the user needs to read.
             _newRoomOpen = false;
-            _newRoomButtons.Clear();
 
             var result = CreateAndOpenRoom(candidate);
             if (!result.Ok) _state.Status = result.Message;
-        }
-
-        // Panel geometry. Computed from the window rather than stored so a
-        // resize while the picker is open can't leave the click zones and the
-        // drawn rows disagreeing.
-        private static Rectangle NewRoomPanelRect
-        {
-            get
-            {
-                int w = Math.Min(660, EditorLayout.WindowWidth - 80);
-                int h = Math.Min(540, EditorLayout.WindowHeight - 120);
-                return new Rectangle((EditorLayout.WindowWidth - w) / 2,
-                                     (EditorLayout.WindowHeight - h) / 2, w, h);
-            }
-        }
-
-        private const int NewRoomTitleHeight = 56;
-        private const int NewRoomFooterHeight = 44;
-
-        private static Rectangle NewRoomListRect
-        {
-            get
-            {
-                var p = NewRoomPanelRect;
-                return new Rectangle(p.X + 10, p.Y + NewRoomTitleHeight,
-                                     p.Width - 20,
-                                     Math.Max(0, p.Height - NewRoomTitleHeight - NewRoomFooterHeight));
-            }
-        }
-
-        /// <summary>
-        /// The picker: a dimmed screen, a panel, one row per candidate. Rows
-        /// register their click zones here (consumed by HandleNewRoomPicker on
-        /// the next frame — the inspector's pattern).
-        /// </summary>
-        private void DrawNewRoomPicker()
-        {
-            if (!_newRoomOpen) return;
-
-            _newRoomButtons.Clear();
-
-            // Dim everything behind the modal so it reads as blocking input,
-            // which it does.
-            FillRect(new Rectangle(0, 0, EditorLayout.WindowWidth, EditorLayout.WindowHeight),
-                     new Color(0, 0, 0, 170));
-
-            var panel = NewRoomPanelRect;
-            FillRect(panel, new Color(30, 33, 42));
-            DrawRectOutline(panel, new Color(120, 130, 160));
-
-            DrawText("NEW ROOM — pick an unused background",
-                new Vector2(panel.X + 14, panel.Y + 12), new Color(255, 220, 110));
-            DrawText("Content/RoomBG_*.png not already claimed by a room in rooms.json",
-                new Vector2(panel.X + 14, panel.Y + 32), new Color(150, 160, 185));
-
-            var list = NewRoomListRect;
-            int rowH = 46;
-            int y = list.Y - (int)_newRoomScrollY;
-            _newRoomContentHeight = _newRoomCandidates.Count * (rowH + 4);
-
-            if (_newRoomCandidates.Count == 0)
-            {
-                // The intended path for a room that has no PNG yet is the
-                // screenshot import (EDITOR_REVIEW item A / PR 5), so say so
-                // rather than leaving an empty box.
-                DrawText("No unused RoomBG_*.png in Content/.",
-                    new Vector2(list.X + 6, list.Y + 8), new Color(230, 230, 240));
-                DrawText("Every background is already claimed by a room.",
-                    new Vector2(list.X + 6, list.Y + 30), new Color(180, 185, 200));
-                DrawText("To add a room from a screenshot, use Import instead —",
-                    new Vector2(list.X + 6, list.Y + 58), new Color(150, 160, 185));
-                DrawText("it writes the RoomBG_*.png this picker lists.",
-                    new Vector2(list.X + 6, list.Y + 78), new Color(150, 160, 185));
-            }
-
-            foreach (var candidate in _newRoomCandidates)
-            {
-                var row = new Rectangle(list.X, y, list.Width, rowH);
-                y += rowH + 4;
-
-                // Cull rows scrolled out of the list viewport — and skip their
-                // click zones with them, so an invisible row can't be clicked.
-                if (row.Bottom <= list.Top || row.Top >= list.Bottom) continue;
-
-                var captured = candidate;
-                bool hover = captured.CanCreate && row.Contains(_mouseNow.X, _mouseNow.Y)
-                             && list.Contains(_mouseNow.X, _mouseNow.Y);
-
-                Color bg = !captured.CanCreate ? new Color(46, 36, 40)
-                         : hover               ? new Color(60, 75, 110)
-                                               : new Color(40, 46, 60);
-                FillRect(row, bg);
-                DrawRectOutline(row, new Color(90, 100, 130));
-
-                DrawText(TruncateText(captured.BackgroundAsset + ".png", row.Width - 20),
-                    new Vector2(row.X + 8, row.Y + 5),
-                    captured.CanCreate ? Color.White : new Color(190, 150, 150));
-
-                string sub = captured.CanCreate
-                    ? $"-> {captured.RoomId}   \"{captured.DisplayName}\""
-                    : $"unavailable: {captured.Problem}";
-                DrawText(TruncateText(sub, row.Width - 20),
-                    new Vector2(row.X + 8, row.Y + 25),
-                    captured.CanCreate ? new Color(180, 200, 230) : new Color(255, 140, 140));
-
-                if (captured.CanCreate)
-                    _newRoomButtons.Add((row, () => CreateRoom(captured)));
-            }
-
-            // Footer: Cancel. Escape and right-click do the same thing; the
-            // button is here because a modal with no visible way out is a
-            // usability trap.
-            var cancel = new Rectangle(panel.Right - 110, panel.Bottom - NewRoomFooterHeight + 6, 100, 28);
-            bool cancelHover = cancel.Contains(_mouseNow.X, _mouseNow.Y);
-            FillRect(cancel, cancelHover ? new Color(70, 78, 100) : new Color(50, 55, 70));
-            DrawRectOutline(cancel, new Color(110, 120, 150));
-            var cz = MeasureText("Cancel");
-            DrawText("Cancel",
-                new Vector2(cancel.X + (cancel.Width - cz.X) / 2, cancel.Y + (cancel.Height - cz.Y) / 2),
-                Color.White);
-            _newRoomButtons.Add((cancel, () => CloseNewRoomPicker("New Room cancelled.")));
-
-            DrawText("Esc / right-click cancels",
-                new Vector2(panel.X + 14, panel.Bottom - NewRoomFooterHeight + 12),
-                new Color(150, 160, 185));
         }
 
         // ====================================================================
@@ -958,9 +812,6 @@ namespace SorceryForge
 
         private bool _importOpen;
         private List<ImportCandidate> _importCandidates = new();
-        private float _importScrollY;
-        private int _importContentHeight;
-        private readonly List<(Rectangle bounds, Action action)> _importButtons = new();
 
         // Session preference, not room data: it survives closing and reopening
         // the picker, because importing a set of screenshots is one decision
@@ -998,8 +849,6 @@ namespace SorceryForge
             _importCandidates = ImageImport.FindCandidates(
                 EditorPaths.RepoImportDir, EditorPaths.RepoContentDir, RoomManifest.All);
             _importPlan = ImageImport.PlanBatch(_importCandidates, _settings.CropPreset);
-            _importScrollY = 0f;
-            _importButtons.Clear();
             _importOpen = true;
 
             int usable = 0;
@@ -1014,7 +863,6 @@ namespace SorceryForge
         private void CloseImportPicker(string status)
         {
             _importOpen = false;
-            _importButtons.Clear();
             _importPlan = new ImageImport.BatchPlan();
             _state.Status = status;
         }
@@ -1034,27 +882,15 @@ namespace SorceryForge
 
             // Import All. Safe to press when nothing qualifies — it says so and
             // leaves the picker up — so it needs no guard beyond its own.
-            if (Pressed(Keys.A))
-            {
-                StartBatchImport();
-                return;
-            }
+            //
+            // A KEY, NOT A BUTTON, still. It belongs to the picker — it is only
+            // meaningful while looking at the list it acts on — and the footer
+            // hint advertises it whenever it is available.
+            if (Pressed(Keys.A)) StartBatchImport();
 
-            int delta = _mouseNow.ScrollWheelValue - _mousePrev.ScrollWheelValue;
-            if (delta != 0) _importScrollY -= delta * 0.25f;
-            float maxScroll = Math.Max(0, _importContentHeight - ImportListRect.Height);
-            _importScrollY = Math.Clamp(_importScrollY, 0, maxScroll);
-
-            if (!LeftClicked()) return;
-            var p = new Point(_mouseNow.X, _mouseNow.Y);
-            for (int i = _importButtons.Count - 1; i >= 0; i--)
-            {
-                if (_importButtons[i].bounds.Contains(p))
-                {
-                    _importButtons[i].action();
-                    return;
-                }
-            }
+            // The rows, the quantize toggle and the Cancel button are
+            // UI/Pickers' now. Escape and right-click stay here, ungated, so
+            // they keep working with the cursor over the panel itself.
         }
 
         private void ToggleImportQuantize()
@@ -1105,7 +941,6 @@ namespace SorceryForge
         private void RunImport(ImportCandidate candidate)
         {
             _importOpen = false;
-            _importButtons.Clear();
 
             if (!TryDecodeImportSource(candidate, out var src, out int w, out int h)) return;
 
@@ -1232,7 +1067,6 @@ namespace SorceryForge
             }
 
             _importOpen = false;
-            _importButtons.Clear();
 
             _batchQueue = plan.Eligible;
             _batchSkips.Clear();
@@ -1319,151 +1153,6 @@ namespace SorceryForge
             _state.Status = summary;
         }
 
-        // Panel geometry. Computed from the window rather than stored, so a
-        // resize while the picker is open can't leave the click zones and the
-        // drawn rows disagreeing. Wider than the New Room panel because each
-        // row carries a filename, a size and a derived room id.
-        private static Rectangle ImportPanelRect
-        {
-            get
-            {
-                int w = Math.Min(760, EditorLayout.WindowWidth - 80);
-                int h = Math.Min(560, EditorLayout.WindowHeight - 120);
-                return new Rectangle((EditorLayout.WindowWidth - w) / 2,
-                                     (EditorLayout.WindowHeight - h) / 2, w, h);
-            }
-        }
-
-        private const int ImportTitleHeight = 56;
-        private const int ImportToggleHeight = 36;
-        private const int ImportFooterHeight = 44;
-
-        private static Rectangle ImportToggleRect
-        {
-            get
-            {
-                var p = ImportPanelRect;
-                return new Rectangle(p.X + 10, p.Y + ImportTitleHeight, p.Width - 20, 28);
-            }
-        }
-
-        private static Rectangle ImportListRect
-        {
-            get
-            {
-                var p = ImportPanelRect;
-                return new Rectangle(p.X + 10, p.Y + ImportTitleHeight + ImportToggleHeight,
-                                     p.Width - 20,
-                                     Math.Max(0, p.Height - ImportTitleHeight - ImportToggleHeight - ImportFooterHeight));
-            }
-        }
-
-        /// <summary>
-        /// The picker: a dimmed screen, a panel, the quantize toggle, one row
-        /// per file in assets/import/. Rows register their click zones here and
-        /// HandleImportPicker consumes them next frame — the inspector's
-        /// pattern, and the New Room picker's.
-        /// </summary>
-        private void DrawImportPicker()
-        {
-            if (!_importOpen) return;
-
-            _importButtons.Clear();
-
-            FillRect(new Rectangle(0, 0, EditorLayout.WindowWidth, EditorLayout.WindowHeight),
-                     new Color(0, 0, 0, 170));
-
-            var panel = ImportPanelRect;
-            FillRect(panel, new Color(30, 33, 42));
-            DrawRectOutline(panel, new Color(120, 130, 160));
-
-            DrawText("IMPORT SCREENSHOT — pick a file from assets/import/",
-                new Vector2(panel.X + 14, panel.Y + 12), new Color(255, 220, 110));
-            DrawText(TruncateText(EditorPaths.RepoImportDir, panel.Width - 28),
-                new Vector2(panel.X + 14, panel.Y + 32), new Color(150, 160, 185));
-
-            DrawImportQuantizeToggle();
-
-            var list = ImportListRect;
-            int rowH = 46;
-            int y = list.Y - (int)_importScrollY;
-            _importContentHeight = _importCandidates.Count * (rowH + 4);
-
-            if (_importCandidates.Count == 0)
-            {
-                DrawText("Nothing to import.",
-                    new Vector2(list.X + 6, list.Y + 8), new Color(230, 230, 240));
-                DrawText("Drop a .jpg / .jpeg / .png screenshot into assets/import/",
-                    new Vector2(list.X + 6, list.Y + 34), new Color(180, 185, 200));
-                DrawText("and click Import again. The file name becomes the room:",
-                    new Vector2(list.X + 6, list.Y + 54), new Color(180, 185, 200));
-                DrawText("Chateau3.jpg  ->  RoomBG_Chateau3.png  ->  chateau_3",
-                    new Vector2(list.X + 6, list.Y + 80), new Color(150, 160, 185));
-            }
-
-            foreach (var candidate in _importCandidates)
-            {
-                var row = new Rectangle(list.X, y, list.Width, rowH);
-                y += rowH + 4;
-
-                // Cull rows scrolled out of the list viewport — and skip their
-                // click zones with them, so an invisible row can't be clicked.
-                if (row.Bottom <= list.Top || row.Top >= list.Bottom) continue;
-
-                var captured = candidate;
-                bool hover = captured.CanCreate && row.Contains(_mouseNow.X, _mouseNow.Y)
-                             && list.Contains(_mouseNow.X, _mouseNow.Y);
-
-                Color bg = !captured.CanCreate ? new Color(46, 36, 40)
-                         : hover               ? new Color(60, 75, 110)
-                                               : new Color(40, 46, 60);
-                FillRect(row, bg);
-                DrawRectOutline(row, new Color(90, 100, 130));
-
-                DrawText(TruncateText($"{captured.FileName}   {captured.SizeLabel}", row.Width - 20),
-                    new Vector2(row.X + 8, row.Y + 5),
-                    captured.CanCreate ? Color.White : new Color(190, 150, 150));
-
-                // "[crop]" marks the sources that open the crop step instead of
-                // importing on the click, so that is never a surprise.
-                string sub = captured.CanCreate
-                    ? (captured.NeedsCrop ? "[crop] " : "") +
-                      $"-> {captured.BackgroundAsset}.png   ->   {captured.RoomId}   \"{captured.DisplayName}\""
-                    : $"unavailable: {captured.Problem}";
-                DrawText(TruncateText(sub, row.Width - 20),
-                    new Vector2(row.X + 8, row.Y + 25),
-                    captured.CanCreate ? new Color(180, 200, 230) : new Color(255, 140, 140));
-
-                if (captured.CanCreate)
-                    _importButtons.Add((row, () => RunImport(captured)));
-            }
-
-            var cancel = new Rectangle(panel.Right - 110, panel.Bottom - ImportFooterHeight + 6, 100, 28);
-            bool cancelHover = cancel.Contains(_mouseNow.X, _mouseNow.Y);
-            FillRect(cancel, cancelHover ? new Color(70, 78, 100) : new Color(50, 55, 70));
-            DrawRectOutline(cancel, new Color(110, 120, 150));
-            var cz = MeasureText("Cancel");
-            DrawText("Cancel",
-                new Vector2(cancel.X + (cancel.Width - cz.X) / 2, cancel.Y + (cancel.Height - cz.Y) / 2),
-                Color.White);
-            _importButtons.Add((cancel, () => CloseImportPicker("Import cancelled.")));
-
-            // Hint line. "A imports all N" appears only when a batch is
-            // actually available, so the key can never look broken — the same
-            // reason "[crop]" only marks the rows that open the crop step.
-            // Read from the plan computed when the picker opened: nothing that
-            // can change eligibility (the candidate list, the stored presets)
-            // is reachable without closing it, and re-planning per frame would
-            // allocate a list per file per frame for an unchanging answer.
-            bool offered = _importPlan.Offered;
-            string hint = offered
-                ? $"A imports all {_importPlan.Eligible.Count} ready file(s)   |   Esc / right-click cancels   " +
-                  "|   sources are never modified or deleted"
-                : "Esc / right-click cancels   |   sources are never modified or deleted";
-            DrawText(TruncateText(hint, panel.Width - 130),
-                new Vector2(panel.X + 14, panel.Bottom - ImportFooterHeight + 12),
-                offered ? new Color(190, 205, 230) : new Color(150, 160, 185));
-        }
 
         // ====================================================================
         // IMPORT — CROP OVERLAY
@@ -1495,7 +1184,6 @@ namespace SorceryForge
         private bool _cropDragging;
         private Point _cropDragStartMouse;
         private Point _cropDragStartOrigin;                    // rect top-left at drag start
-        private readonly List<(Rectangle bounds, Action action)> _cropButtons = new();
 
         // Where the box was when the overlay opened. Shown, not enforced —
         // the moment the user drags or wheels it, the label is stale in the
@@ -1515,7 +1203,6 @@ namespace SorceryForge
             _cropRect = ImageImport.ResolveCropRect(
                 srcW, srcH, _settings.CropPreset(srcW, srcH), out _cropPresetOrigin);
             _cropDragging = false;
-            _cropButtons.Clear();
 
             // Built back up from the decoded pixels rather than kept from the
             // decode, so what is on screen is provably the same array the crop
@@ -1541,7 +1228,6 @@ namespace SorceryForge
         private void CloseCrop(string? status)
         {
             _cropOpen = false;
-            _cropButtons.Clear();
             _cropTexture?.Dispose();
             _cropTexture = null;
             _cropPixels = Array.Empty<Color>();
@@ -1624,19 +1310,12 @@ namespace SorceryForge
             var mouse = new Point(_mouseNow.X, _mouseNow.Y);
             var fit = CropFitRect;
 
-            // Buttons first: the footer sits outside the image, but checking it
-            // first means a Confirm click can never also start a drag.
+            // The Confirm and Cancel buttons used to be hit-tested here, first,
+            // so that a click on one could never also start a drag. The router
+            // does that now: both live in ImGui strips, and hovering either
+            // makes ImGui claim the mouse, which is what clears worldMouse.
             if (LeftClicked())
             {
-                for (int i = _cropButtons.Count - 1; i >= 0; i--)
-                {
-                    if (_cropButtons[i].bounds.Contains(mouse))
-                    {
-                        _cropButtons[i].action();
-                        return;
-                    }
-                }
-
                 if (worldMouse && fit.Contains(mouse))
                 {
                     _cropDragging = true;
@@ -1690,7 +1369,6 @@ namespace SorceryForge
         {
             if (!_cropOpen || _cropTexture == null || _cropCandidate == null) return;
 
-            _cropButtons.Clear();
             var fit = CropFitRect;
 
             // -- pass A: the source image ------------------------------------
@@ -1728,44 +1406,10 @@ namespace SorceryForge
             DrawCropCornerTicks(sel);
             DrawRectOutline(fit, new Color(90, 100, 130));
 
-            // Header strip over the top bar: what is being cropped, and into what.
-            var header = new Rectangle(0, 0, EditorLayout.WindowWidth, EditorLayout.TopBarHeight);
-            FillRect(header, new Color(24, 26, 32));
-            DrawRectOutline(header, new Color(120, 130, 160));
-            DrawText(TruncateText(
-                    $"CROP  {_cropCandidate.FileName}  ({_cropSrcW}x{_cropSrcH})  ->  " +
-                    $"{_cropCandidate.RoomId}   \"{_cropCandidate.DisplayName}\"",
-                    header.Width - 28),
-                new Vector2(14, 8), new Color(255, 220, 110));
-            float scale = _cropRect.Width / (float)ImageImport.RoomWidth;
-            DrawText(TruncateText(
-                    $"selection {_cropRect.Width}x{_cropRect.Height} at ({_cropRect.X}, {_cropRect.Y})  ->  " +
-                    $"{ImageImport.RoomWidth}x{ImageImport.RoomHeight} ({scale:0.00}x down)   |   " +
-                    $"CPC quantize {(_importQuantize ? "ON" : "OFF")}   |   " +
-                    // Where the box STARTED. Left unchanged as the user drags,
-                    // because that is what it is claiming — not "this is the
-                    // preset", but "this is what you were handed".
-                    ImageImport.DescribeCropPreset(_cropPresetOrigin, _cropSrcW, _cropSrcH),
-                    header.Width - 28),
-                new Vector2(14, 30), new Color(160, 175, 200));
-
-            // Footer strip over the status bar: the controls, and the two
-            // buttons. Escape and Enter do the same as the buttons; the buttons
-            // exist because a modal with no visible way out is a usability trap.
-            var footer = new Rectangle(0, EditorLayout.WindowHeight - EditorLayout.StatusBarHeight,
-                                       EditorLayout.WindowWidth, EditorLayout.StatusBarHeight);
-            FillRect(footer, new Color(20, 22, 28));
-            DrawRectOutline(footer, new Color(120, 130, 160));
-            DrawText("drag to move   |   wheel resizes (20:9 locked)   |   Enter confirms   |   Esc / right-click cancels",
-                new Vector2(8, footer.Y + 8), new Color(200, 200, 220));
-
-            int by = footer.Y + 3;
-            int bh = EditorLayout.StatusBarHeight - 6;
-            var confirm = new Rectangle(EditorLayout.WindowWidth - 108, by, 100, bh);
-            var cancel = new Rectangle(EditorLayout.WindowWidth - 216, by, 100, bh);
-            DrawCropButton(confirm, "Confirm", new Color(60, 100, 70), ConfirmCrop);
-            DrawCropButton(cancel, "Cancel", new Color(60, 55, 70),
-                () => CloseCrop("Import cancelled — nothing was written."));
+            // The header and footer strips that used to follow are UI/Pickers'
+            // now. What is left here is the pixel-space half of the crop step —
+            // the fitted image, the shading, the selection and its ticks — and
+            // that is the half ImGui has nothing to offer.
 
             _spriteBatch.End();
         }
@@ -1785,46 +1429,6 @@ namespace SorceryForge
             FillRect(new Rectangle(sel.Right - 3, sel.Bottom - t, 3, t), c);
         }
 
-        private void DrawCropButton(Rectangle bounds, string label, Color baseColor, Action action)
-        {
-            bool hover = bounds.Contains(_mouseNow.X, _mouseNow.Y);
-            FillRect(bounds, hover
-                ? new Color(baseColor.R + 25, baseColor.G + 25, baseColor.B + 30)
-                : baseColor);
-            DrawRectOutline(bounds, new Color(120, 135, 165));
-            var sz = MeasureText(label);
-            DrawText(label,
-                new Vector2(bounds.X + (bounds.Width - sz.X) / 2, bounds.Y + (bounds.Height - sz.Y) / 2),
-                Color.White);
-            _cropButtons.Add((bounds, action));
-        }
-
-        /// <summary>
-        /// The CPC quantize checkbox. A whole row rather than a small box, so
-        /// the click target is obvious and the "why" fits beside it.
-        /// </summary>
-        private void DrawImportQuantizeToggle()
-        {
-            var rect = ImportToggleRect;
-            bool hover = rect.Contains(_mouseNow.X, _mouseNow.Y);
-            FillRect(rect, hover ? new Color(60, 75, 110) : new Color(40, 46, 60));
-            DrawRectOutline(rect, new Color(90, 100, 130));
-
-            var box = new Rectangle(rect.X + 7, rect.Y + 7, 14, 14);
-            DrawRectOutline(box, new Color(170, 180, 205));
-            if (_importQuantize)
-                FillRect(new Rectangle(box.X + 3, box.Y + 3, 8, 8), new Color(120, 230, 140));
-
-            DrawText(TruncateText(
-                    _importQuantize
-                        ? "CPC quantize ON — snap to the 27 hardware colours (removes JPEG noise)"
-                        : "CPC quantize OFF — source colours pass through untouched",
-                    rect.Width - 40),
-                new Vector2(rect.X + 30, rect.Y + 5),
-                _importQuantize ? new Color(210, 230, 210) : new Color(200, 200, 215));
-
-            _importButtons.Add((rect, ToggleImportQuantize));
-        }
 
         // ====================================================================
         // WORLD MAP MODE
@@ -2649,8 +2253,6 @@ namespace SorceryForge
             if (_router.KeyboardReachesEditor
                 && Pressed(Keys.Escape) && ConfirmDiscardUnsavedEdits(includeMap: true)) Exit();
 
-            HandleInspectorScroll();
-
             // Right-click cancels a palette drag from ANYWHERE — over the
             // palette, over the inspector, over the canvas margin. UNGATED, for
             // the same reason the modal pickers' cancels are: the cursor is
@@ -2664,10 +2266,14 @@ namespace SorceryForge
                 _state.Status = "Drag cancelled.";
             }
 
-            // Inspector buttons take priority over the canvas: clicking a
-            // cycle button shouldn't deselect the entity it's editing.
-            if (HandleInspectorClicks()) { /* swallowed */ }
-            else if (_router.MouseReachesWorld)
+            // Inspector clicks used to be tested here and, on a hit, to swallow
+            // the frame's canvas handling so that clicking a cycle button could
+            // not also deselect the entity it was editing. The router does that
+            // now, and does it better: the inspector is an ImGui window, so a
+            // click anywhere in it makes ImGui claim the mouse and this branch
+            // never runs at all — no hand-maintained priority list, and no
+            // one-frame-stale rectangles to test against.
+            if (_router.MouseReachesWorld)
             {
                 HandleCanvasView();
                 HandleCanvasInput();
@@ -2689,48 +2295,6 @@ namespace SorceryForge
             _mouseNow.LeftButton == ButtonState.Released &&
             _mousePrev.LeftButton == ButtonState.Pressed;
 
-        /// <summary>
-        /// Mouse wheel over the inspector pane scrolls its content. The
-        /// content height is computed during DrawInspector — we clamp the
-        /// scroll position into [0, contentHeight - viewportHeight] each
-        /// frame so resizing the window can't leave the scroll out of range.
-        /// </summary>
-        private void HandleInspectorScroll()
-        {
-            if (!EditorLayout.InspectorRect.Contains(_mouseNow.X, _mouseNow.Y)) return;
-
-            int delta = _mouseNow.ScrollWheelValue - _mousePrev.ScrollWheelValue;
-            if (delta != 0)
-            {
-                // SDL/MonoGame reports ~120 per notch; convert to ~30 px.
-                _state.InspectorScrollY -= delta * 0.25f;
-            }
-
-            int viewportH = EditorLayout.InspectorRect.Height - 40;
-            float maxScroll = Math.Max(0, _inspectorContentHeight - viewportH);
-            if (_state.InspectorScrollY < 0)         _state.InspectorScrollY = 0;
-            if (_state.InspectorScrollY > maxScroll) _state.InspectorScrollY = maxScroll;
-        }
-
-        /// <summary>
-        /// Returns true if a left-click landed on an inspector cycle button
-        /// (and the click was consumed). Iterated in reverse so the most
-        /// recently-drawn button wins on overlap (defensive).
-        /// </summary>
-        private bool HandleInspectorClicks()
-        {
-            if (!LeftClicked()) return false;
-            var p = new Point(_mouseNow.X, _mouseNow.Y);
-            for (int i = _inspectorButtons.Count - 1; i >= 0; i--)
-            {
-                if (_inspectorButtons[i].bounds.Contains(p))
-                {
-                    _inspectorButtons[i].action();
-                    return true;
-                }
-            }
-            return false;
-        }
 
         /// <summary>
         /// Canvas view navigation, active in every mode: mouse-wheel zooms
@@ -3628,9 +3192,18 @@ namespace SorceryForge
             // The board takes the palette's and the inspector's space while it
             // is up: at seventy-five rooms the scarce thing is width, and
             // neither panel has anything to say about a world.
-            if (!_mapMode) PalettePanel.Draw(this, _state);
+            if (!_mapMode)
+            {
+                PalettePanel.Draw(this, _state);
+                InspectorPanel.Draw(this, _state);
+            }
 
             StatusBar.Draw(_state, Snapshot());
+
+            // Over the panels, and over the board: at most one of the three is
+            // ever open, and while one is, EditorGame's Update returns before
+            // anything underneath sees input.
+            Pickers.Draw(this, Snapshot());
 
             // Last, and into the FOREGROUND list, so the carried entry floats
             // over every panel. Suppressed while a modal is up or the board is
@@ -3659,6 +3232,31 @@ namespace SorceryForge
             Zoom = EditorLayout.Zoom,
             MapRoomCount = _mapRooms.Count,
             MapZoomPercent = _mapView.ZoomPercent,
+
+            NewRoomOpen = _newRoomOpen,
+            NewRoomCandidates = _newRoomCandidates,
+
+            ImportOpen = _importOpen,
+            ImportCandidates = _importCandidates,
+            ImportDir = EditorPaths.RepoImportDir,
+            ImportQuantize = _importQuantize,
+            // Read from the plan computed when the picker opened: nothing that
+            // can change eligibility is reachable without closing it, and
+            // re-planning per frame would allocate a list per file per frame
+            // for an unchanging answer.
+            ImportBatchOffered = _importPlan.Offered,
+            ImportBatchCount = _importPlan.Eligible.Count,
+
+            CropOpen = _cropOpen,
+            CropFileName = _cropCandidate?.FileName ?? "",
+            CropRoomId = _cropCandidate?.RoomId ?? "",
+            CropDisplayName = _cropCandidate?.DisplayName ?? "",
+            CropPresetNote = _cropOpen
+                ? ImageImport.DescribeCropPreset(_cropPresetOrigin, _cropSrcW, _cropSrcH)
+                : "",
+            CropSourceWidth = _cropSrcW,
+            CropSourceHeight = _cropSrcH,
+            CropRect = _cropRect,
         };
 
         /// <summary>
@@ -3702,11 +3300,6 @@ namespace SorceryForge
             // The pickers sit above whichever mode is underneath: they are
             // reachable from the top bar in room view, and (once the map has
             // its own entry points) from the board too. Only one is ever open.
-            _spriteBatch.Begin(samplerState: SamplerState.PointClamp);
-            DrawNewRoomPicker();
-            DrawImportPicker();
-            _spriteBatch.End();
-
             // The crop step owns its own two passes — the source image wants
             // LINEAR filtering (it is shown at an arbitrary fractional scale,
             // where point sampling drops whole rows and makes a screenshot
@@ -3750,11 +3343,11 @@ namespace SorceryForge
             DrawCanvasOverlays();
             _spriteBatch.End();
 
-            // Pass 3: overlays that intentionally draw outside the canvas
-            // (door labels live in the canvas margin) and the side panels.
+            // Pass 3: overlays that intentionally draw outside the canvas —
+            // door labels live in the canvas margin. The side panels that used
+            // to be drawn here are ImGui windows now.
             _spriteBatch.Begin(samplerState: SamplerState.PointClamp);
             DrawDoorLabels();
-            DrawInspector();
             _spriteBatch.End();
         }
 
@@ -4048,294 +3641,68 @@ namespace SorceryForge
                 ChromeTheme.Packed(255, 255, 255, 180));
         }
 
-        // -- Door inspector -------------------------------------------------
-
-        // Click-zones populated by DrawInspector each frame, consumed by
-        // HandleInspectorClicks. Each entry is a screen rectangle and the
-        // action to run on click (toggle a section, cycle a field value).
-        private readonly List<(Rectangle bounds, Action action)> _inspectorButtons = new();
-
-        // Total height of inspector content (computed during DrawInspector)
-        // — used by HandleInspectorScroll to clamp scrolling.
-        private int _inspectorContentHeight;
-
-        // -- Right-side persistent inspector --------------------------------
+        // ====================================================================
+        // INSPECTOR EDITS
+        // ====================================================================
+        // Each of these was a lambda inside DrawInspector, carrying its full
+        // side-effect set inline in a render method. Extracted verbatim — same
+        // writes, same order, same omissions — so that "what happens when I
+        // retarget a door" is answerable without reading a renderer.
         //
-        // Replaces the old bottom-of-palette modal. Shows every Placement in
-        // the current room as a collapsible section. Each section's body
-        // contains read-only attributes plus cycle-buttons for editable ones
-        // (door target room / target door / opening side, blocked-door key).
-        //
-        // Mouse-wheel scrolls when the cursor is over the inspector area;
-        // clicks on section headers toggle expand/collapse and select the
-        // placement (so the canvas highlights it).
+        // Note what they all leave ALONE. None writes _state.Status: the status
+        // bar keeps whatever it had, which is how these have always behaved.
+        // None clears HasValidated (they change door wiring, not geometry), and
+        // none touches selection or collapse.
+        // ====================================================================
 
-        private void DrawInspector()
+        /// <summary>Section header click: select the placement AND toggle its collapse.</summary>
+        // Exactly two side effects, and they cannot be separated: the canvas
+        // outline follows SelectedPlacement, so a header that only toggled
+        // would leave the canvas pointing at a different entity than the panel.
+        // It deliberately does NOT clear SpawnSelected — unlike a canvas click
+        // — because DrawSelectionHighlight prefers SelectedPlacement anyway.
+        private void SelectAndToggleSection(Placement p)
         {
-            _inspectorButtons.Clear();
-
-            var rect = EditorLayout.InspectorRect;
-            FillRect(rect, new Color(28, 30, 38));
-            DrawRectOutline(rect, new Color(60, 64, 78));
-
-            int titleY = rect.Y + 8;
-            DrawText("INSPECTOR", new Vector2(rect.X + 8, titleY), new Color(180, 180, 200));
-            DrawText($"{_state.Placements.Count} entities",
-                new Vector2(rect.X + rect.Width - 110, titleY), new Color(140, 150, 170));
-
-            int contentX = rect.X + 8;
-            int contentW = rect.Width - 16;
-            int viewportTop = rect.Y + 32;
-            int viewportBottom = rect.Bottom - 8;
-
-            // Y cursor in screen space — scroll offset is subtracted so the
-            // user can scroll past content that exceeds the viewport.
-            int currentY = viewportTop - (int)_state.InspectorScrollY;
-            int contentStartY = currentY;
-
-            if (_state.Placements.Count == 0)
-            {
-                DrawText("(empty room — drag from the palette)",
-                    new Vector2(contentX, currentY + 8), new Color(140, 150, 170));
-            }
-
-            foreach (var placement in _state.Placements)
-            {
-                // Closure capture: each lambda needs a stable reference to
-                // the placement it was built for.
-                var captured = placement;
-                bool collapsed = _state.IsCollapsed(captured.Id);
-                bool selected  = ReferenceEquals(_state.SelectedPlacement, captured);
-
-                // Two-line section header: line 1 = chevron + kind, line 2 =
-                // (truncated) full ID. The two-line shape keeps the header
-                // narrow enough that IDs like `chateau1_door_topright` don't
-                // overflow the inspector width at the DebugFont's pixel size.
-                const int headerLine1H = 22;
-                const int headerLine2H = 18;
-                int headerH = headerLine1H + headerLine2H;
-                var headerRect = new Rectangle(contentX, currentY, contentW, headerH);
-
-                // Only render and register a click zone when the header sits
-                // inside the visible viewport — otherwise scrolled-away rows
-                // would be clickable.
-                if (headerRect.Bottom > viewportTop && headerRect.Top < viewportBottom)
-                {
-                    Color headerBg = selected ? new Color(70, 90, 130)
-                                              : new Color(45, 50, 65);
-                    Color headerBorder = selected ? new Color(255, 220,  60)
-                                                  : new Color(80, 90, 120);
-                    FillRect(headerRect, headerBg);
-                    DrawRectOutline(headerRect, headerBorder);
-
-                    string chevron = collapsed ? "+" : "-";
-                    DrawText($"{chevron}  {KindShortLabel(captured)}",
-                        new Vector2(headerRect.X + 6, headerRect.Y + 3),
-                        Color.White);
-
-                    string idLine = TruncateText(captured.Id, headerRect.Width - 24);
-                    DrawText(idLine,
-                        new Vector2(headerRect.X + 18, headerRect.Y + headerLine1H),
-                        new Color(180, 200, 230));
-
-                    _inspectorButtons.Add((headerRect, () =>
-                    {
-                        _state.SelectedPlacement = captured;
-                        _state.ToggleCollapse(captured.Id);
-                    }));
-                }
-                currentY += headerH + 2;
-
-                if (!collapsed)
-                {
-                    int bodyHeight = DrawSectionBody(captured, contentX + 10, currentY,
-                                                     contentW - 20, viewportTop, viewportBottom);
-                    currentY += bodyHeight + 6;
-                }
-            }
-
-            _inspectorContentHeight = currentY - contentStartY;
-
-            // Right-edge scrollbar hint when content overflows.
-            int viewportH = viewportBottom - viewportTop;
-            if (_inspectorContentHeight > viewportH)
-            {
-                int trackX = rect.Right - 6;
-                int trackY = viewportTop;
-                FillRect(new Rectangle(trackX, trackY, 4, viewportH), new Color(40, 44, 56));
-                float ratio = (float)viewportH / _inspectorContentHeight;
-                int thumbH = Math.Max(20, (int)(viewportH * ratio));
-                int thumbY = trackY + (int)((viewportH - thumbH) * (_state.InspectorScrollY / Math.Max(1, _inspectorContentHeight - viewportH)));
-                FillRect(new Rectangle(trackX, thumbY, 4, thumbH), new Color(120, 130, 160));
-            }
+            _state.SelectedPlacement = p;
+            _state.ToggleCollapse(p.Id);
         }
 
-        private static string KindShortLabel(Placement p) => p.Kind switch
+        private void CycleDoorOpeningSide(Placement p)
         {
-            PlacementKind.Item        => "Item",
-            PlacementKind.Enemy       => "Enemy",
-            PlacementKind.Wizard      => "Wizard",
-            PlacementKind.BlockedDoor => "BlockedDoor",
-            PlacementKind.Door        => "Door",
-            _ => "?",
-        };
-
-        /// <summary>
-        /// Draw a section's expanded body. Returns the total pixel height
-        /// consumed (so the caller can advance currentY). Each row also
-        /// registers a click zone in _inspectorButtons when interactive.
-        /// </summary>
-        private int DrawSectionBody(Placement p, int x, int y, int w, int viewportTop, int viewportBottom)
-        {
-            int row = 0;
-            int rowGap = 4;
-
-            // Position is read-only; drag the placement on the canvas to move.
-            row += DrawInspectorRow(x, y + row, w, "Pos",
-                $"({(int)p.Position.X}, {(int)p.Position.Y})",
-                null, viewportTop, viewportBottom) + rowGap;
-
-            switch (p.Kind)
-            {
-                case PlacementKind.Item:
-                    row += DrawInspectorRow(x, y + row, w, "Type",
-                        p.ItemType.ToString(), null, viewportTop, viewportBottom) + rowGap;
-                    break;
-
-                case PlacementKind.Enemy:
-                    row += DrawInspectorRow(x, y + row, w, "Type",
-                        p.EnemyType.ToString(), null, viewportTop, viewportBottom) + rowGap;
-                    break;
-
-                case PlacementKind.Wizard:
-                    // Wizards have no extra attributes today — just position.
-                    break;
-
-                case PlacementKind.BlockedDoor:
-                    var capturedBd = p;
-                    row += DrawInspectorRow(x, y + row, w, "Needs",
-                        capturedBd.RequiredItem.ToString(),
-                        () =>
-                        {
-                            capturedBd.RequiredItem = NextItemType(capturedBd.RequiredItem);
-                            _state.HasValidatedDoors = false;
-                            _state.PlacementsDirty = true;
-                            _discardArmed = false;
-                        },
-                        viewportTop, viewportBottom) + rowGap;
-                    break;
-
-                case PlacementKind.Door:
-                    var capturedD = p;
-                    row += DrawInspectorRow(x, y + row, w, "Opens",
-                        capturedD.DoorOpeningSide,
-                        () =>
-                        {
-                            capturedD.DoorOpeningSide = capturedD.DoorOpeningSide == "LeftOpening"
-                                ? "RightOpening" : "LeftOpening";
-                            _state.HasValidatedDoors = false;
-                            _state.PlacementsDirty = true;
-                            _discardArmed = false;
-                        },
-                        viewportTop, viewportBottom) + rowGap;
-
-                    row += DrawInspectorRow(x, y + row, w, "Room",
-                        string.IsNullOrEmpty(capturedD.DoorTargetRoomId) ? "(none)" : capturedD.DoorTargetRoomId,
-                        () =>
-                        {
-                            capturedD.DoorTargetRoomId = NextRoomId(capturedD.DoorTargetRoomId);
-                            capturedD.DoorTargetDoorId = "";
-                            _state.HasValidatedDoors = false;
-                            _state.PlacementsDirty = true;
-                            _discardArmed = false;
-                        },
-                        viewportTop, viewportBottom) + rowGap;
-
-                    row += DrawInspectorRow(x, y + row, w, "Door",
-                        string.IsNullOrEmpty(capturedD.DoorTargetDoorId) ? "(none)" : capturedD.DoorTargetDoorId,
-                        () =>
-                        {
-                            capturedD.DoorTargetDoorId = NextTargetDoorId(capturedD.DoorTargetRoomId, capturedD.DoorTargetDoorId);
-                            _state.HasValidatedDoors = false;
-                            _state.PlacementsDirty = true;
-                            _discardArmed = false;
-                        },
-                        viewportTop, viewportBottom) + rowGap;
-                    break;
-            }
-
-            // Punch-out is generic — every kind gets the row. A wizard standing
-            // on the original game's baked-in artwork needs its footprint cut
-            // out just as much as a door does. Same closure-capture rule as the
-            // rows above: the lambda outlives this frame's local `p`.
-            var capturedP = p;
-            row += DrawInspectorRow(x, y + row, w, "Background",
-                "Punch (clear 24x24)",
-                () => PunchBackground(capturedP),
-                viewportTop, viewportBottom) + rowGap;
-
-            return row;
+            p.DoorOpeningSide = p.DoorOpeningSide == "LeftOpening" ? "RightOpening" : "LeftOpening";
+            _state.HasValidatedDoors = false;
+            _state.PlacementsDirty = true;
+            _discardArmed = false;
         }
 
-        /// <summary>
-        /// One inspector field rendered as TWO lines: a small label on top,
-        /// a full-row-width value box below. The two-line shape gives long
-        /// values (e.g. door IDs like `chateau1_door_topright`) the entire
-        /// row width so they never collide with the label.
-        /// </summary>
-        private int DrawInspectorRow(int x, int y, int w,
-                                     string label, string value,
-                                     Action? onClick,
-                                     int viewportTop, int viewportBottom)
+        /// <summary>Advance the target room — and blank the target door with it.</summary>
+        // The blanking is load-bearing, not tidiness: a door id is only
+        // meaningful inside one room, so carrying the old one across a room
+        // change would leave a link that validates as orphan-door and reads
+        // like a typo.
+        private void CycleDoorTargetRoom(Placement p)
         {
-            const int labelH = 16;
-            const int valueH = 22;
-            const int innerGap = 2;
-            int totalH = labelH + valueH + innerGap;
-
-            // Row entirely outside the viewport — skip drawing AND skip
-            // click registration.
-            if (y + totalH <= viewportTop || y >= viewportBottom) return totalH;
-
-            // -- Line 1: label -----------------------------------------------
-            DrawText(label, new Vector2(x, y), new Color(190, 190, 210));
-
-            // -- Line 2: value box (full width) ------------------------------
-            var valueRect = new Rectangle(x, y + labelH + innerGap, w, valueH);
-            if (onClick != null)
-            {
-                bool hover = valueRect.Contains(_mouseNow.X, _mouseNow.Y);
-                FillRect(valueRect, hover ? new Color(60, 75, 110) : new Color(40, 46, 60));
-                DrawRectOutline(valueRect, new Color(90, 100, 130));
-                _inspectorButtons.Add((valueRect, onClick));
-            }
-            else
-            {
-                // Read-only fields get a flatter, borderless background so
-                // it's visually obvious you can't click them.
-                FillRect(valueRect, new Color(34, 38, 50));
-            }
-
-            // Truncate text that would overflow the box width.
-            string display = TruncateText(value, valueRect.Width - 12);
-            DrawText(display, new Vector2(valueRect.X + 6, valueRect.Y + 4), Color.White);
-            return totalH;
+            p.DoorTargetRoomId = NextRoomId(p.DoorTargetRoomId);
+            p.DoorTargetDoorId = "";
+            _state.HasValidatedDoors = false;
+            _state.PlacementsDirty = true;
+            _discardArmed = false;
         }
 
-        /// <summary>
-        /// Trim a string with ellipsis until it fits the given pixel width.
-        /// Uses MeasureText, so it respects whatever the loaded font measures.
-        /// </summary>
-        private string TruncateText(string text, float maxPx)
+        private void CycleDoorTargetDoor(Placement p)
         {
-            if (_font == null || string.IsNullOrEmpty(text)) return text;
-            if (_font.MeasureString(text).X <= maxPx) return text;
+            p.DoorTargetDoorId = NextTargetDoorId(p.DoorTargetRoomId, p.DoorTargetDoorId);
+            _state.HasValidatedDoors = false;
+            _state.PlacementsDirty = true;
+            _discardArmed = false;
+        }
 
-            const string ell = "...";
-            string trimmed = text;
-            while (trimmed.Length > 0 && _font.MeasureString(trimmed + ell).X > maxPx)
-                trimmed = trimmed.Substring(0, trimmed.Length - 1);
-            return trimmed + ell;
+        private void CycleBlockedDoorRequiredItem(Placement p)
+        {
+            p.RequiredItem = NextItemType(p.RequiredItem);
+            _state.HasValidatedDoors = false;
+            _state.PlacementsDirty = true;
+            _discardArmed = false;
         }
 
         private static ItemType NextItemType(ItemType current)
@@ -4439,6 +3806,27 @@ namespace SorceryForge
         private Vector2 MeasureText(string text) =>
             _font != null ? _font.MeasureString(text) : Vector2.Zero;
 
+        /// <summary>
+        /// Trim a string with a three-dot ellipsis until it fits the given
+        /// pixel width, measured with the SpriteFont.
+        /// </summary>
+        // The chrome has its own copy of this rule in ChromeTheme.Truncate,
+        // measured with ImGui's font. Two copies because there are genuinely
+        // two fonts: this one serves the map board's room labels, which are
+        // canvas-side and drawn by SpriteBatch. Neither can measure for the
+        // other.
+        private string TruncateText(string text, float maxPx)
+        {
+            if (_font == null || string.IsNullOrEmpty(text)) return text;
+            if (_font.MeasureString(text).X <= maxPx) return text;
+
+            const string ell = "...";
+            string trimmed = text;
+            while (trimmed.Length > 0 && _font.MeasureString(trimmed + ell).X > maxPx)
+                trimmed = trimmed.Substring(0, trimmed.Length - 1);
+            return trimmed + ell;
+        }
+
         // ====================================================================
         // ICHROMEACTIONS — the complete list of what the chrome may do
         // ====================================================================
@@ -4493,7 +3881,25 @@ namespace SorceryForge
             _state.Status = $"Dragging: {entry.Label}. Click on canvas to drop, right-click to cancel.";
         }
 
+        void IChromeActions.SelectAndToggleSection(Placement p) => SelectAndToggleSection(p);
+        void IChromeActions.CycleDoorOpeningSide(Placement p) => CycleDoorOpeningSide(p);
+        void IChromeActions.CycleDoorTargetRoom(Placement p) => CycleDoorTargetRoom(p);
+        void IChromeActions.CycleDoorTargetDoor(Placement p) => CycleDoorTargetDoor(p);
+        void IChromeActions.CycleBlockedDoorRequiredItem(Placement p) => CycleBlockedDoorRequiredItem(p);
+        void IChromeActions.PunchBackground(Placement p) => PunchBackground(p);
+
         void IChromeActions.OpenNewRoomPicker() => OpenNewRoomPicker();
         void IChromeActions.OpenImportPicker() => OpenImportPicker();
+        void IChromeActions.CreateRoom(RoomCandidate candidate) => CreateRoom(candidate);
+        void IChromeActions.CancelNewRoomPicker() => CloseNewRoomPicker("New Room cancelled.");
+        void IChromeActions.RunImport(ImportCandidate candidate) => RunImport(candidate);
+        void IChromeActions.CancelImportPicker() => CloseImportPicker("Import cancelled.");
+        void IChromeActions.ToggleImportQuantize() => ToggleImportQuantize();
+        void IChromeActions.ConfirmCrop() => ConfirmCrop();
+
+        // The same message the Escape and right-click paths leave, so the
+        // reassurance that nothing reached the disk does not depend on which
+        // way you backed out.
+        void IChromeActions.CancelCrop() => CloseCrop("Import cancelled — nothing was written.");
     }
 }

@@ -51,6 +51,10 @@
 //                 order, including the three unsaved markers
 //   9 palette     the real PalettePanel, driven with synthetic clicks: the row
 //                 you click is the row you saw, scrolled or not
+//  10 inspector   every field reaches its own named verb, on its own placement;
+//                 a collapsed section registers nothing
+//  11 pickers     candidate rows, the quantize toggle, and the crop step's two
+//                 buttons - including that the crop IMAGE is left to the canvas
 //
 // HOW TO RUN
 //
@@ -66,8 +70,10 @@
 // ============================================================================
 
 using ImGuiNET;
+using Microsoft.Xna.Framework;
 using SorceryForge;
 using SorceryForge.UI;
+using SorceryRemake.Core;
 using System;
 using System.Collections.Generic;
 using NVector2 = System.Numerics.Vector2;
@@ -114,6 +120,8 @@ namespace SorceryRemake.Tools.ChromeCheck
             CheckTitles();
             CheckStatusLine();
             CheckPalette(harness);
+            CheckInspector(harness);
+            CheckPickers(harness);
 
             Console.WriteLine();
             Console.WriteLine($"  {_checks} checks, {_failures} failure(s)");
@@ -700,6 +708,246 @@ namespace SorceryRemake.Tools.ChromeCheck
             return state;
         }
 
+        // ====================================================================
+        // 10. INSPECTOR — every field reaches its own verb
+        // ====================================================================
+        // The old inspector's editable fields carried their whole side-effect
+        // set in a lambda inside a Draw method. They are named verbs now, and
+        // this follows a click on each one all the way to the verb it fires and
+        // the placement it fires it on.
+        //
+        // It also pins down the two things about the header that a rewrite is
+        // most likely to split apart: one click both SELECTS and TOGGLES, and a
+        // collapsed section registers no field clicks at all.
+        // ====================================================================
+
+        private static void CheckInspector(Harness h)
+        {
+            Section("10. INSPECTOR — the field you click is the verb that fires");
+
+            h.Resize(1280, 720);
+            var actions = new RecordingActions();
+            var state = new EditorState();
+
+            var door = new Placement("chateau_0_door_1", PlacementKind.Door, new Vector2(0, 40))
+            { DoorOpeningSide = "LeftOpening", DoorTargetRoomId = "chateau_1", DoorTargetDoorId = "" };
+            state.Placements.Add(door);
+            h.DriveInspector(actions, state);
+
+            // Header geometry, from InspectorPanel's own constants.
+            const float titleH = 32f, headerH = 40f, headerGap = 2f;
+            const float labelH = 16f, innerGap = 2f, valueH = 22f, rowGap = 4f;
+            const float rowH = labelH + innerGap + valueH + rowGap;   // 44
+            float x = EditorLayout.InspectorRect.X + 40f;
+            float headerTop = EditorLayout.InspectorRect.Y + titleH;
+            float bodyTop = headerTop + headerH + headerGap;
+
+            // A row's clickable half is the VALUE BOX, not the label above it.
+            float ValueY(int row) => bodyTop + row * rowH + labelH + innerGap + valueH / 2f;
+
+            h.ClickAt(new NVector2(x, headerTop + headerH / 2f));
+            AssertCall("clicking the header selects AND toggles, in one verb",
+                actions, nameof(IChromeActions.SelectAndToggleSection), door.Id);
+
+            // Row 0 is Pos, and it is read-only: no hit region at all.
+            actions.Reset();
+            h.ClickAt(new NVector2(x, ValueY(0)));
+            Assert("the Pos row is read-only and fires nothing", actions.Calls.Count == 0,
+                actions.Only);
+
+            actions.Reset();
+            h.ClickAt(new NVector2(x, ValueY(1)));
+            AssertCall("Opens cycles the door's side", actions,
+                nameof(IChromeActions.CycleDoorOpeningSide), door.Id);
+
+            actions.Reset();
+            h.ClickAt(new NVector2(x, ValueY(2)));
+            AssertCall("Room cycles the target room", actions,
+                nameof(IChromeActions.CycleDoorTargetRoom), door.Id);
+
+            actions.Reset();
+            h.ClickAt(new NVector2(x, ValueY(3)));
+            AssertCall("Door cycles the target door", actions,
+                nameof(IChromeActions.CycleDoorTargetDoor), door.Id);
+
+            actions.Reset();
+            h.ClickAt(new NVector2(x, ValueY(4)));
+            AssertCall("Background punches under this placement", actions,
+                nameof(IChromeActions.PunchBackground), door.Id);
+
+            // Collapsed, the body is not drawn and none of its rows can be
+            // clicked — the old panel achieved this by not calling
+            // DrawSectionBody, which is what registered the zones.
+            actions.Reset();
+            state.CollapsedPlacementIds.Add(door.Id);
+            h.DriveInspector(actions, state);
+            h.ClickAt(new NVector2(x, ValueY(1)));
+            Assert("a collapsed section registers no field clicks", actions.Calls.Count == 0,
+                actions.Only);
+            state.CollapsedPlacementIds.Clear();
+
+            // The right verb on the right entity when there is more than one.
+            actions.Reset();
+            var blocked = new Placement("chateau_0_blockeddoor_2", PlacementKind.BlockedDoor,
+                                        new Vector2(80, 40)) { RequiredItem = ItemType.Lyre };
+            state.Placements.Add(blocked);
+            h.DriveInspector(actions, state);
+
+            // Door section: header + 5 rows. Then the blocked door's header.
+            float secondHeaderTop = bodyTop + 5f * rowH + 6f;
+            h.ClickAt(new NVector2(x, secondHeaderTop + headerH / 2f));
+            AssertCall("the second section's header names the SECOND placement",
+                actions, nameof(IChromeActions.SelectAndToggleSection), blocked.Id);
+
+            actions.Reset();
+            float blockedBody = secondHeaderTop + headerH + headerGap;
+            h.ClickAt(new NVector2(x, blockedBody + rowH + labelH + innerGap + valueH / 2f));
+            AssertCall("  and its Needs row cycles ITS required item",
+                actions, nameof(IChromeActions.CycleBlockedDoorRequiredItem), blocked.Id);
+
+            // Labels the panel owns outright.
+            AssertText("kind label for a door", InspectorPanel.KindShortLabel(door), "Door");
+            AssertText("kind label for a blocked door",
+                InspectorPanel.KindShortLabel(blocked), "BlockedDoor");
+            AssertText("kind label for a wizard",
+                InspectorPanel.KindShortLabel(
+                    new Placement("w", PlacementKind.Wizard, Vector2.Zero)), "Wizard");
+        }
+
+        // ====================================================================
+        // 11. PICKERS — rows, cancels, and the toggle
+        // ====================================================================
+
+        private static void CheckPickers(Harness h)
+        {
+            Section("11. PICKERS — a row is its candidate, and Cancel is a cancel");
+
+            h.Resize(1280, 720);
+            var actions = new RecordingActions();
+
+            var view = new ChromeView
+            {
+                NewRoomOpen = true,
+                NewRoomCandidates = new List<RoomCandidate>
+                {
+                    Candidate("RoomBG_Chateau3", "chateau_3", "Chateau 3", true),
+                    Candidate("RoomBG_Taken", "", "", false),
+                    Candidate("RoomBG_Chateau4", "chateau_4", "Chateau 4", true),
+                },
+                ImportCandidates = new List<ImportCandidate>(),
+            };
+            h.DrivePickers(actions, view);
+
+            // Panel geometry: centred, 660x540 at this window size, 12 px top
+            // padding, two title lines, a 6 px gap, then the list.
+            var panel = CentredPanel(660, 540);
+            float rowTop = panel.Y + 12f + ImGui.GetTextLineHeight() * 2f
+                           + ImGui.GetStyle().ItemSpacing.Y * 2f + 6f;
+            float rowX = panel.X + 60f;
+
+            h.ClickAt(new NVector2(rowX, rowTop + 23f));
+            AssertPicked("the first row is the first candidate", actions, "chateau_3");
+
+            // An unusable candidate is drawn but has no hit region — the red
+            // tint has to be trustworthy.
+            actions.Reset();
+            h.ClickAt(new NVector2(rowX, rowTop + 50f + 23f));
+            Assert("an unavailable row cannot be clicked", actions.Calls.Count == 0, actions.Only);
+
+            actions.Reset();
+            h.ClickAt(new NVector2(rowX, rowTop + 100f + 23f));
+            AssertPicked("  and the row below it is still the right candidate", actions, "chateau_4");
+
+            // Cancel, bottom right of the panel.
+            actions.Reset();
+            h.ClickAt(new NVector2(panel.Right - 64f, panel.Bottom - 12f - ImGui.GetFrameHeight() / 2f));
+            AssertCall("Cancel cancels the New Room picker", actions,
+                nameof(IChromeActions.CancelNewRoomPicker));
+
+            // The import picker's quantize toggle: a whole row, so the click
+            // target is obvious.
+            actions.Reset();
+            view.NewRoomOpen = false;
+            view.ImportOpen = true;
+            view.ImportQuantize = true;
+            view.ImportDir = @"D:\Sorcery_Remake\assets\import";
+            h.DrivePickers(actions, view);
+
+            var importPanel = CentredPanel(760, 560);
+            float toggleY = importPanel.Y + 12f + ImGui.GetTextLineHeight() * 2f
+                            + ImGui.GetStyle().ItemSpacing.Y * 2f + 6f + 14f;
+            h.ClickAt(new NVector2(importPanel.X + 200f, toggleY));
+            AssertCall("the quantize row toggles quantize", actions,
+                nameof(IChromeActions.ToggleImportQuantize));
+
+            // The crop step's two buttons, in the footer strip.
+            actions.Reset();
+            view.ImportOpen = false;
+            view.CropOpen = true;
+            view.CropFileName = "Chateau3.jpg";
+            view.CropRoomId = "chateau_3";
+            view.CropDisplayName = "Chateau 3";
+            view.CropPresetNote = "built-in framing";
+            view.CropSourceWidth = 384;
+            view.CropSourceHeight = 270;
+            view.CropRect = new Rectangle(32, 41, 320, 144);
+            h.DrivePickers(actions, view);
+
+            float footerY = EditorLayout.StatusBarRect.Y + EditorLayout.StatusBarRect.Height / 2f;
+            h.ClickAt(new NVector2(EditorLayout.WindowWidth - 158f, footerY));
+            AssertCall("the crop footer's Cancel cancels", actions, nameof(IChromeActions.CancelCrop));
+
+            actions.Reset();
+            h.ClickAt(new NVector2(EditorLayout.WindowWidth - 50f, footerY));
+            AssertCall("  and Confirm confirms", actions, nameof(IChromeActions.ConfirmCrop));
+
+            // The crop's IMAGE area is not chrome: ImGui must decline it, so
+            // that dragging the selection box still reaches EditorGame.
+            h.MoveTo(Centre(EditorLayout.CanvasRect));
+            h.Settle();
+            Assert("the crop image area is left to the canvas",
+                h.Router.MouseReachesWorld,
+                $"WantCaptureMouse={h.Router.ImGuiWantsMouse}");
+        }
+
+        // CanCreate is derived from Problem, not settable — which is the right
+        // shape and worth noticing: a candidate cannot claim to be usable
+        // without also saying why it is not.
+        private static RoomCandidate Candidate(string asset, string roomId, string display, bool ok) =>
+            new()
+            {
+                BackgroundAsset = asset,
+                RoomId = roomId,
+                DisplayName = display,
+                Problem = ok ? null : "already claimed by a room",
+            };
+
+        private static Rectangle CentredPanel(int maxW, int maxH)
+        {
+            int w = Math.Min(maxW, EditorLayout.WindowWidth - 80);
+            int hh = Math.Min(maxH, EditorLayout.WindowHeight - 120);
+            return new Rectangle((EditorLayout.WindowWidth - w) / 2,
+                                 (EditorLayout.WindowHeight - hh) / 2, w, hh);
+        }
+
+        private static void AssertCall(string label, RecordingActions actions,
+                                       string expectedVerb, string? expectedTarget = null)
+        {
+            _checks++;
+            bool ok = actions.Calls.Count == 1 && actions.Calls[0] == expectedVerb
+                      && (expectedTarget == null ||
+                          (actions.Targets.Count == 1 && actions.Targets[0] == expectedTarget));
+            if (!ok) _failures++;
+            Console.WriteLine($"    {(ok ? "ok  " : "FAIL")} {label}");
+            if (!ok)
+            {
+                Console.WriteLine($"           expected: {expectedVerb}" +
+                                  (expectedTarget == null ? "" : $" on {expectedTarget}"));
+                Console.WriteLine($"           actual  : {actions.Only}" +
+                                  (actions.Targets.Count == 0 ? "" : $" on {string.Join(",", actions.Targets)}"));
+            }
+        }
+
         private static void AssertPicked(string label, RecordingActions actions, string expected)
         {
             _checks++;
@@ -719,13 +967,45 @@ namespace SorceryRemake.Tools.ChromeCheck
             public string? Picked;
             public readonly List<string> Calls = new();
 
-            public void Reset() { Picked = null; Calls.Clear(); }
+            /// <summary>The entity id each placement-targeted verb was given.</summary>
+            public readonly List<string> Targets = new();
+
+            public void Reset() { Picked = null; Calls.Clear(); Targets.Clear(); }
+
+            public string Only => Calls.Count == 1 ? Calls[0] : $"[{Calls.Count}: {string.Join(",", Calls)}]";
 
             public void BeginPaletteDrag(PaletteEntry entry)
             {
                 Picked = entry.Label;
                 Calls.Add("BeginPaletteDrag");
             }
+
+            private void Hit(string verb, Placement p) { Calls.Add(verb); Targets.Add(p.Id); }
+
+            public void SelectAndToggleSection(Placement p) => Hit(nameof(SelectAndToggleSection), p);
+            public void CycleDoorOpeningSide(Placement p) => Hit(nameof(CycleDoorOpeningSide), p);
+            public void CycleDoorTargetRoom(Placement p) => Hit(nameof(CycleDoorTargetRoom), p);
+            public void CycleDoorTargetDoor(Placement p) => Hit(nameof(CycleDoorTargetDoor), p);
+            public void CycleBlockedDoorRequiredItem(Placement p) => Hit(nameof(CycleBlockedDoorRequiredItem), p);
+            public void PunchBackground(Placement p) => Hit(nameof(PunchBackground), p);
+
+            public void CreateRoom(RoomCandidate candidate)
+            {
+                Picked = candidate.RoomId;
+                Calls.Add(nameof(CreateRoom));
+            }
+
+            public void RunImport(ImportCandidate candidate)
+            {
+                Picked = candidate.FileName;
+                Calls.Add(nameof(RunImport));
+            }
+
+            public void CancelNewRoomPicker() => Calls.Add(nameof(CancelNewRoomPicker));
+            public void CancelImportPicker() => Calls.Add(nameof(CancelImportPicker));
+            public void ToggleImportQuantize() => Calls.Add(nameof(ToggleImportQuantize));
+            public void ConfirmCrop() => Calls.Add(nameof(ConfirmCrop));
+            public void CancelCrop() => Calls.Add(nameof(CancelCrop));
 
             public void CyclePrevRoom() => Calls.Add(nameof(CyclePrevRoom));
             public void CycleNextRoom() => Calls.Add(nameof(CycleNextRoom));
@@ -855,11 +1135,34 @@ namespace SorceryRemake.Tools.ChromeCheck
             private IChromeActions? _paletteActions;
             private EditorState? _paletteState;
 
+            private IChromeActions? _inspectorActions;
+            private EditorState? _inspectorState;
+            private IChromeActions? _pickerActions;
+            private ChromeView _pickerView;
+            private bool _pickersOn;
+
             /// <summary>Switch the palette band to the real PalettePanel.</summary>
             public void DrivePalette(IChromeActions actions, EditorState state)
             {
                 _paletteActions = actions;
                 _paletteState = state;
+                Settle();
+            }
+
+            /// <summary>Switch the inspector band to the real InspectorPanel.</summary>
+            public void DriveInspector(IChromeActions actions, EditorState state)
+            {
+                _inspectorActions = actions;
+                _inspectorState = state;
+                Settle();
+            }
+
+            /// <summary>Draw the real Pickers over whatever else is up.</summary>
+            public void DrivePickers(IChromeActions actions, ChromeView view)
+            {
+                _pickerActions = actions;
+                _pickerView = view;
+                _pickersOn = true;
                 Settle();
             }
 
@@ -916,8 +1219,18 @@ namespace SorceryRemake.Tools.ChromeCheck
                     });
                 }
 
-                Panel("##inspector", EditorLayout.InspectorRect, () => ImGui.TextUnformatted("inspector"));
+                if (_inspectorActions != null && _inspectorState != null)
+                {
+                    InspectorPanel.Draw(_inspectorActions, _inspectorState);
+                }
+                else
+                {
+                    Panel("##inspector", EditorLayout.InspectorRect, () => ImGui.TextUnformatted("inspector"));
+                }
+
                 Panel("##status", EditorLayout.StatusBarRect, () => ImGui.TextUnformatted("status"));
+
+                if (_pickersOn && _pickerActions != null) Pickers.Draw(_pickerActions, _pickerView);
             }
 
             private static void Panel(string id, Microsoft.Xna.Framework.Rectangle r, Action body)

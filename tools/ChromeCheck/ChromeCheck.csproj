@@ -72,7 +72,13 @@
   <ItemGroup>
     <Compile Include="..\..\SorceryForge\EditorPaths.cs" />
     <Compile Include="..\..\SorceryForge\EditorLayout.cs" />
+    <Compile Include="..\..\SorceryForge\EditorSettings.cs" />
     <Compile Include="..\..\SorceryForge\EditorState.cs" />
+    <!-- The pickers name RoomCandidate and ImportCandidate. Both live in
+         files ImportCheck already drives headlessly, for the same reason:
+         they are free of Texture2D and GraphicsDevice by design. -->
+    <Compile Include="..\..\SorceryForge\ImageImport.cs" />
+    <Compile Include="..\..\SorceryForge\NewRoomFlow.cs" />
     <Compile Include="..\..\SorceryForge\PaletteEntry.cs" />
     <Compile Include="..\..\SorceryForge\Placement.cs" />
     <!-- EditorState names PuzzleReport; RoundTrip pulls it in for the same
@@ -84,7 +90,9 @@
     <Compile Include="..\..\SorceryForge\UI\ChromeView.cs" />
     <Compile Include="..\..\SorceryForge\UI\IChromeActions.cs" />
     <Compile Include="..\..\SorceryForge\UI\MenuBar.cs" />
+    <Compile Include="..\..\SorceryForge\UI\InspectorPanel.cs" />
     <Compile Include="..\..\SorceryForge\UI\PalettePanel.cs" />
+    <Compile Include="..\..\SorceryForge\UI\Pickers.cs" />
     <Compile Include="..\..\SorceryForge\UI\StatusBar.cs" />
     <Compile Include="Program.cs" />
   </ItemGroup>

@@ -57,30 +57,62 @@ namespace SorceryForge.UI
         /// <summary>Anything unsaved. The one colour the `*` markers wear.</summary>
         public static readonly NVector4 Dirty = Rgb(255, 190, 90);
 
+        /// <summary>The crop header's second line: what is being cut, in numbers.</summary>
+        public static readonly NVector4 CropDetail = Rgb(160, 175, 200);
+
         public static readonly NVector4 White = Rgb(255, 255, 255);
 
         // ---- Window shape --------------------------------------------------
 
         /// <summary>
-        /// A panel pinned to a fixed screen rectangle: no title bar, no move,
-        /// no resize, no collapse, and never raised over the modal overlays.
+        /// Shared by both: no title bar, no move, no resize, no collapse.
         /// </summary>
-        public const ImGuiWindowFlags PanelFlags =
+        private const ImGuiWindowFlags BaseFlags =
             ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.NoResize |
             ImGuiWindowFlags.NoMove | ImGuiWindowFlags.NoCollapse |
-            ImGuiWindowFlags.NoSavedSettings | ImGuiWindowFlags.NoBringToFrontOnFocus |
-            ImGuiWindowFlags.NoNavFocus;
+            ImGuiWindowFlags.NoSavedSettings | ImGuiWindowFlags.NoNavFocus;
+
+        /// <summary>
+        /// A fixed band — menu bar, palette, inspector, status bar.
+        /// </summary>
+        // NoBringToFrontOnFocus is what pins these to the BACK of the z-order.
+        // Read it literally, because the name suggests the opposite of what it
+        // does to ordering: ImGui inserts such a window at the FRONT of its
+        // back-to-front window list, i.e. permanently underneath everything
+        // else. That is exactly right for four bands that tile the screen and
+        // never overlap each other — and exactly wrong for a modal, which is
+        // why BeginOverlay below does not use it.
+        public const ImGuiWindowFlags PanelFlags =
+            BaseFlags | ImGuiWindowFlags.NoBringToFrontOnFocus;
+
+        /// <summary>
+        /// A modal overlay — the two pickers and the crop step's strips.
+        /// </summary>
+        // Deliberately WITHOUT NoBringToFrontOnFocus, so it is created at the
+        // top of the z-order and stays there: the bands beneath it can never be
+        // raised, because they all carry the flag it lacks. Without this, a
+        // picker drawn last in the frame still ended up UNDERNEATH the status
+        // bar, and its buttons could not be clicked — which is what
+        // tools/ChromeCheck section 11 caught.
+        public const ImGuiWindowFlags OverlayFlags = BaseFlags;
 
         /// <summary>
         /// Open a panel pinned to <paramref name="r"/>. Returns false when the
         /// window is fully clipped, in which case the caller must still call
         /// <see cref="EndPanel"/> — ImGui's Begin/End are unconditional pairs.
         /// </summary>
-        public static bool BeginPanel(string id, Rectangle r, ImGuiWindowFlags extra = ImGuiWindowFlags.None)
+        public static bool BeginPanel(string id, Rectangle r, ImGuiWindowFlags extra = ImGuiWindowFlags.None) =>
+            Begin(id, r, PanelFlags | extra);
+
+        /// <summary>Open a modal overlay pinned to <paramref name="r"/>.</summary>
+        public static bool BeginOverlay(string id, Rectangle r, ImGuiWindowFlags extra = ImGuiWindowFlags.None) =>
+            Begin(id, r, OverlayFlags | extra);
+
+        private static bool Begin(string id, Rectangle r, ImGuiWindowFlags flags)
         {
             ImGui.SetNextWindowPos(new NVector2(r.X, r.Y), ImGuiCond.Always);
             ImGui.SetNextWindowSize(new NVector2(Math.Max(1, r.Width), Math.Max(1, r.Height)), ImGuiCond.Always);
-            return ImGui.Begin(id, PanelFlags | extra);
+            return ImGui.Begin(id, flags);
         }
 
         public static void EndPanel() => ImGui.End();
@@ -165,6 +197,27 @@ namespace SorceryForge.UI
             Set(ImGuiCol.CheckMark, 120, 230, 140);    // the import toggle's tick
             Set(ImGuiCol.Separator, 60, 64, 78);
             Set(ImGuiCol.ModalWindowDimBg, 0, 0, 0, 170);  // the pickers' dim, exactly
+        }
+
+        /// <summary>
+        /// Trim with a three-dot ellipsis until the text fits
+        /// <paramref name="maxPx"/>. The rule the inspector's IDs and values
+        /// have always used, measured now against the font actually drawing
+        /// them rather than against the SpriteFont that used to.
+        /// </summary>
+        // ASCII "..." and not U+2026, as before — and it can legitimately
+        // return just "..." when nothing fits, which is the honest answer for a
+        // 300 px panel showing a door id like chateau1_door_topright.
+        public static string Truncate(string text, float maxPx)
+        {
+            if (string.IsNullOrEmpty(text)) return text;
+            if (ImGui.CalcTextSize(text).X <= maxPx) return text;
+
+            const string ellipsis = "...";
+            string trimmed = text;
+            while (trimmed.Length > 0 && ImGui.CalcTextSize(trimmed + ellipsis).X > maxPx)
+                trimmed = trimmed.Substring(0, trimmed.Length - 1);
+            return trimmed + ellipsis;
         }
 
         private static void Set(ImGuiCol idx, int r, int g, int b, int a = 255) =>

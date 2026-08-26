@@ -72,9 +72,50 @@ namespace SorceryForge.UI
         // together on the logic side rather than in a click handler.
         void BeginPaletteDrag(PaletteEntry entry);
 
+        // ---- Inspector -------------------------------------------------------
+        //
+        // Every one of these was a lambda inside DrawInspector, carrying its
+        // full side-effect set inline in a render method — which made "what
+        // happens when I retarget a door" a question you answered by reading
+        // the renderer. They are named methods on the logic side now.
+
+        /// <summary>
+        /// A section header click: select the placement AND toggle its
+        /// collapse. Both, always — the two cannot be separated, because the
+        /// canvas outline follows the selection.
+        /// </summary>
+        void SelectAndToggleSection(Placement p);
+
+        void CycleDoorOpeningSide(Placement p);
+
+        /// <summary>Advance the target room — and blank the target door with it.</summary>
+        void CycleDoorTargetRoom(Placement p);
+
+        void CycleDoorTargetDoor(Placement p);
+        void CycleBlockedDoorRequiredItem(Placement p);
+
+        /// <summary>Clear the background under a placement's 24x24 footprint.</summary>
+        void PunchBackground(Placement p);
+
         // ---- Modal pickers -------------------------------------------------
 
         void OpenNewRoomPicker();
         void OpenImportPicker();
+
+        /// <summary>Write a room's files, register it, and open it.</summary>
+        void CreateRoom(RoomCandidate candidate);
+
+        void CancelNewRoomPicker();
+
+        /// <summary>Decode a source and either import it or open the crop step.</summary>
+        void RunImport(ImportCandidate candidate);
+
+        void CancelImportPicker();
+        void ToggleImportQuantize();
+
+        /// <summary>Cut the selection to 320x144 and finish the import.</summary>
+        void ConfirmCrop();
+
+        void CancelCrop();
     }
 }
