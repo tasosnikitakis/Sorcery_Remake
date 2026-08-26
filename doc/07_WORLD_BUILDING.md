@@ -173,6 +173,33 @@ you confirm your first crop), round-trips byte-identically, and preserves
 members it doesn't recognise, because it will grow other settings later. See
 `SorceryForge/EditorSettings.cs`.
 
+#### Importing a whole folder — `A`
+
+Once a size has a preset, files of that size need no decision at all: the crop
+is known, the quantize toggle is already set, and the filename rule does the
+rest. When **two or more** files in the picker are in that state, the footer
+hint reads `A imports all N ready file(s)` and `A` runs them.
+
+A file is **ready** when the picker has no complaint about it *and* either it is
+an exact multiple of 320×144 (no crop step at all) or its source size has a
+preset. Everything else is **skipped and named** — never forced through. The
+interesting skip is `<W>×<H> has no crop preset yet`, whose fix is in the
+message: import one file of that size on its own, which stores its crop, and
+the rest become ready.
+
+Import All is a loop over the same functions a single click runs — the same
+candidate checks, the same `BuildRoomBackground`, the same `NewRoomFlow.Create`.
+It lowers no bar. One file is imported per frame, so the status bar counts up
+(`Import All: 12/47 — Chateau12.png (11 in, 1 skipped)`) and `Esc` stops after
+the current file; what has been imported stays imported. The finish line reads
+`imported N, skipped M: <id> (<reason>); …`, listing the first five skips and
+then `and K more` — capped because the status bar is one line, counted because a
+silent cap would read as "everything went in".
+
+The new rooms join the [world map](#world-map) on the next `Tab`,
+auto-placed like any unwired room. The game needs one content rebuild for all of
+them.
+
 **CPC quantize** (default on) snaps every pixel to the nearest of the 27
 Amstrad CPC hardware colours — three levels per RGB channel, taken from
 `extraction/convert_cpc_graphics.py`, the project's own Mode 0 decoder. JPEG's

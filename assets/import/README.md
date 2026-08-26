@@ -62,6 +62,19 @@ seams; snapping restores real flats so every later cut lands clean.
 
 Turn it **off** for art that isn't a capture of the original game.
 
+## Importing the whole folder — `A`
+
+When two or more files in the picker need no decision — an exact multiple of
+320×144, or a source size that already has a crop preset — the footer reads
+`A imports all N ready file(s)` and `A` runs them all with the preset crop and
+the current quantize setting.
+
+Everything else is skipped and named, never forced through. The one worth
+acting on is `<W>×<H> has no crop preset yet`: import one file of that size on
+its own, which stores its crop, and the rest of that size become ready. The
+status bar counts up as it goes; `Esc` stops after the current file, and what
+has already gone in stays in.
+
 ## Re-importing
 
 The source file is never moved, deleted or modified — re-import as often as you

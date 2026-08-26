@@ -51,6 +51,7 @@ dotnet run --project tools/ImportCheck/ImportCheck.csproj -- --probe "C:\shots\c
 | 8 headers | PNG and JPEG dimension reading, including a real repo PNG, a progressive JPEG, and a JPEG whose APP1 holds a decoy frame header (an EXIF thumbnail) that must **not** be mistaken for the real one. |
 | 9 crop | The aspect lock, the 320×144 floor, clamping, the wheel step (60 notches in and 60 back out, checking the invariants every time) and the fit transform in both directions — then the pixels an awkward 2.19× crop actually cuts. |
 | 10 presets | The built-in 384×270 calibration `(32, 41, 320, 144)` — including that `x` equals the CPC's own `(384−320)/2` border arithmetic and that no near-miss size matches it — and the resolution order stored → built-in → largest-that-fits, with a nonsense stored rect clamped rather than trusted. Then `.sorceryforge/settings.json`: born empty, byte-identical round-trip, unknown members carried through, malformed input reported and never partially applied, and a `.gitignore` line that actually covers it. Finally the aspect lock over **every reachable selection state** — twelve source sizes × seven opening rectangles × 120 mixed wheel/drag gestures, ~10k states, each checked for `Height == CropHeightFor(Width)`, the 320-wide floor, the source bounds, and samplability. |
+| 11 batch | Which files "Import All" takes and which it names as skips, over a mixed folder — including that an exact multiple ignores a preset for its size (branch-order parity with the single import) and that storing one preset moves exactly one file across the line. Then the summary: counts, named reasons, the five-item list cap with its `and K more` tail, and the distinct wording for a stopped run. Plus the reason the editor's loop must reload the registry between files, asserted rather than trusted. |
 
 Section 9's source carries each pixel's own coordinates as its colour, so
 decoding an output pixel says where it came from **independently of the
@@ -80,4 +81,6 @@ Nothing outside the scratch directory is written. `assets/data`, `Content/` and
 `assets/import/` are read only — `Content.mgcb` and `rooms.json` are *copied*
 into the scratch tree and the copies are what `Create` edits. A scratch path
 that is, holds, or sits inside the repository is refused up front, and the
-pre-run clean removes only the four subdirectories the harness itself creates.
+pre-run clean removes only the five subdirectories the harness itself creates.
+Section 10 writes its `settings.json` into `<scratch>/settings`, never into the
+repo's real `.sorceryforge/`.

@@ -45,6 +45,8 @@
 //   10 presets    the built-in 384x270 calibration, stored-beats-built-in
 //                 resolution, .sorceryforge/settings.json's contract, and the
 //                 aspect lock over every reachable selection state
+//   11 batch      which files "Import All" takes and which it names as skips,
+//                 the region each one cuts, and the summary line
 //
 // HOW TO RUN
 //
@@ -174,6 +176,7 @@ namespace SorceryRemake.Tools.ImportCheck
             CheckImageHeaders(scratch, repoRoot);
             CheckCrop();
             CheckCropPresets(scratchSettings, repoRoot);
+            CheckBatch(scratchContent, scratchData);
 
             Console.WriteLine();
             Console.WriteLine($"  {_checks} checks, {_failures} failure(s)");
@@ -653,6 +656,13 @@ namespace SorceryRemake.Tools.ImportCheck
                 exact != null && !exact.NeedsCrop);
 
             AssertProblemMentions(found, "Bad Name.png", "rename the file");
+            // An illegal name derives nothing at all — there is no asset name,
+            // so no id. The batch summary relies on that empty id to fall back
+            // to the filename, which is the only handle such a file has.
+            var badName = Find(found, "Bad Name.png");
+            Assert("  and derives no id to report it under",
+                badName != null && badName.RoomId.Length == 0 && badName.BackgroundAsset.Length == 0,
+                badName?.RoomId ?? "not listed");
             AssertProblemMentions(found, "Chateau0.png", "already exists");
             AssertProblemMentions(found, "Room1.png", "reserved");
             AssertProblemMentions(found, "Tiny.png", "smaller than a 320x144 room");
@@ -1391,6 +1401,305 @@ namespace SorceryRemake.Tools.ImportCheck
             }
             Assert("CropHeightFor is the rounded 20:9 height at every width 320..4000",
                 derived, derivedFail);
+        }
+
+        // ====================================================================
+        // 11. BATCH IMPORT
+        // ====================================================================
+        // PR 5b. "Import All" is a loop over the functions the sections above
+        // already prove — FindCandidates for the checks, BuildRoomBackground
+        // for the pixels, NewRoomFlow.Create for the registration. What is new,
+        // and what this section covers, is the two pieces of judgement wrapped
+        // round that loop:
+        //
+        //   the PARTITION  which files go in with no decision, and the exact
+        //                  reason each of the others is named as a skip
+        //   the SUMMARY    what the status bar says afterwards
+        //
+        // Both are plain data in and a string or a list out, so both are fully
+        // checkable here. The decode and the encode are the owner's smoke test,
+        // as they are for every other route into the import.
+        // ====================================================================
+
+        /// <summary>An ImportCandidate as FindCandidates would have built it.</summary>
+        // Synthesised rather than written to disk and scanned: section 6
+        // already proves FindCandidates fills these fields correctly, and what
+        // is under test here is what PlanBatch does with them. Deriving the
+        // names through NewRoomFlow keeps the labels honest anyway.
+        private static ImportCandidate Synth(string fileName, int w, int h, string? problem = null)
+        {
+            string baseName = Path.GetFileNameWithoutExtension(fileName);
+            var candidate = new ImportCandidate
+            {
+                SourcePath = fileName,
+                FileName = fileName,
+                BaseName = baseName,
+                SourceWidth = w,
+                SourceHeight = h,
+                Multiple = ImageImport.ExactMultiple(w, h),
+                Problem = problem,
+            };
+
+            // FindCandidates stops at an illegal base name and derives NOTHING
+            // from it — there is no asset name, so no id and no display name.
+            // Mirrored here because that empty id is exactly what makes the
+            // batch summary fall back to the filename, and a fixture that
+            // derived one anyway would test a state the editor cannot produce.
+            if (!ImageImport.IsLegalBaseName(baseName)) return candidate;
+
+            var derived = NewRoomFlow.MakeCandidate(NewRoomFlow.AssetNameFor(baseName));
+            candidate.BackgroundAsset = derived.BackgroundAsset;
+            candidate.RoomId = derived.RoomId;
+            candidate.DisplayName = derived.DisplayName;
+            return candidate;
+        }
+
+        private static void CheckBatch(string contentDir, string dataDir)
+        {
+            Section("11. BATCH — the eligibility partition, the skips, the summary");
+
+            CheckBatchRegion();
+            CheckBatchPartition();
+            CheckBatchSummary();
+            CheckBatchNeedsAReload(contentDir, dataDir);
+        }
+
+        // ---- which region a batch would cut ---------------------------------
+
+        private static void CheckBatchRegion()
+        {
+            var none = (Rectangle?)null;
+
+            Assert("320x144 batches as the whole image",
+                ImageImport.BatchRegionFor(320, 144, none, out _) == new Rectangle(0, 0, 320, 144));
+            Assert("640x288 batches as the whole image (2x, no crop step)",
+                ImageImport.BatchRegionFor(640, 288, none, out _) == new Rectangle(0, 0, 640, 288));
+
+            var frame = ImageImport.BatchRegionFor(384, 270, none, out var frameOrigin);
+            Assert("384x270 batches on the built-in preset",
+                frame == ImageImport.CpcFrameCrop
+                && frameOrigin == ImageImport.CropPresetOrigin.BuiltIn, frame?.ToString() ?? "null");
+
+            Assert("700x500 with no preset does not batch — it needs a decision",
+                ImageImport.BatchRegionFor(700, 500, none, out _) == null);
+
+            var mine = new Rectangle(10, 20, 640, 288);
+            var stored = ImageImport.BatchRegionFor(700, 500, mine, out var storedOrigin);
+            Assert("  and with one stored, it does",
+                stored == mine && storedOrigin == ImageImport.CropPresetOrigin.Stored,
+                stored?.ToString() ?? "null");
+
+            // Branch-order parity with the single import. RunImport tests
+            // ExactMultiple FIRST and only then reaches the crop step, so a
+            // preset stored against an exact-multiple size must not divert the
+            // batch into cropping what the click would have taken whole.
+            var multipleWithPreset = ImageImport.BatchRegionFor(640, 288, new Rectangle(0, 0, 320, 144), out var mOrigin);
+            Assert("an exact multiple ignores a preset for its size, as the single import does",
+                multipleWithPreset == new Rectangle(0, 0, 640, 288)
+                && mOrigin == ImageImport.CropPresetOrigin.None,
+                multipleWithPreset?.ToString() ?? "null");
+
+            Assert("a source smaller than a room never batches",
+                ImageImport.BatchRegionFor(100, 50, none, out _) == null);
+            Assert("  not even with a preset stored against that size",
+                ImageImport.BatchRegionFor(100, 50, new Rectangle(0, 0, 320, 144), out _) == null);
+            Assert("an unreadable size never batches",
+                ImageImport.BatchRegionFor(0, 0, none, out _) == null);
+        }
+
+        // ---- the partition ---------------------------------------------------
+
+        private static void CheckBatchPartition()
+        {
+            var candidates = new List<ImportCandidate>
+            {
+                Synth("FrameA.png", 384, 270),                       // built-in preset
+                Synth("FrameB.png", 384, 270),                       // built-in preset
+                Synth("Double.png", 640, 288),                       // exact 2x
+                Synth("Exact.png", 320, 144),                        // exact 1x
+                Synth("Odd.png", 700, 500),                          // no preset yet
+                Synth("Taken.png", 384, 270, "room id 'taken' already exists"),
+                Synth("Bad Name.png", 384, 270, "rename the file — the name may hold only letters..."),
+                Synth("Headless.png", 0, 0),                         // no Problem, unreadable size
+            };
+
+            var plan = ImageImport.PlanBatch(candidates, (w, h) => null);
+
+            Assert("four files import with no decision", plan.Eligible.Count == 4,
+                $"{plan.Eligible.Count}: {string.Join(", ", EligibleNames(plan))}");
+            Assert("  and four are named as skips", plan.Skipped.Count == 4,
+                $"{plan.Skipped.Count}: {string.Join(", ", SkipLabels(plan))}");
+            Assert("  so the batch is offered", plan.Offered);
+            Assert("every candidate lands on exactly one side",
+                plan.Eligible.Count + plan.Skipped.Count == candidates.Count);
+
+            var frameA = FindEntry(plan, "FrameA.png");
+            Assert("FrameA.png carries the built-in crop",
+                frameA != null && frameA.Region == ImageImport.CpcFrameCrop
+                && frameA.Origin == ImageImport.CropPresetOrigin.BuiltIn,
+                frameA?.Region.ToString() ?? "not eligible");
+
+            var doubled = FindEntry(plan, "Double.png");
+            Assert("Double.png carries the whole 640x288 image",
+                doubled != null && doubled.Region == new Rectangle(0, 0, 640, 288),
+                doubled?.Region.ToString() ?? "not eligible");
+
+            // The picker's own refusals are restated verbatim, so the summary
+            // and the greyed-out row cannot say different things.
+            AssertSkipMentions(plan, "taken", "already exists");
+            AssertSkipMentions(plan, "Bad Name.png", "rename the file");
+            AssertSkipMentions(plan, "odd", "no crop preset yet");
+            AssertSkipMentions(plan, "odd", "import one of these on its own first");
+            AssertSkipMentions(plan, "headless", "size could not be read");
+
+            // The label is the room id where there is one, because that is what
+            // would have been created — but a file refused for its NAME never
+            // got an id, and there the filename is the only handle.
+            Assert("a skip is labelled by its room id where there is one",
+                SkipLabels(plan).Contains("taken"), string.Join(", ", SkipLabels(plan)));
+            Assert("  and by its filename where the name itself was the problem",
+                SkipLabels(plan).Contains("Bad Name.png"), string.Join(", ", SkipLabels(plan)));
+
+            // Storing a preset for the awkward size moves exactly one file
+            // across the line — which is the workflow the skip reason
+            // recommends, so it had better be true.
+            var withPreset = ImageImport.PlanBatch(candidates,
+                (w, h) => w == 700 && h == 500 ? new Rectangle(0, 92, 700, 315) : null);
+            Assert("storing a 700x500 preset makes Odd.png eligible",
+                withPreset.Eligible.Count == 5 && withPreset.Skipped.Count == 3,
+                $"{withPreset.Eligible.Count} eligible, {withPreset.Skipped.Count} skipped");
+            var odd = FindEntry(withPreset, "Odd.png");
+            Assert("  cutting the stored rectangle",
+                odd != null && odd.Region == new Rectangle(0, 92, 700, 315)
+                && odd.Origin == ImageImport.CropPresetOrigin.Stored,
+                odd?.Region.ToString() ?? "not eligible");
+
+            // One ready file is not a batch: pressing A would be a slower way
+            // to click the row already in front of you.
+            var lonely = ImageImport.PlanBatch(
+                new List<ImportCandidate> { Synth("FrameA.png", 384, 270), Synth("Odd.png", 700, 500) },
+                (w, h) => null);
+            Assert($"one eligible file does not offer a batch (MinBatchSize {ImageImport.MinBatchSize})",
+                lonely.Eligible.Count == 1 && !lonely.Offered);
+
+            var empty = ImageImport.PlanBatch(new List<ImportCandidate>(), (w, h) => null);
+            Assert("an empty folder plans an empty batch",
+                !empty.Offered && empty.Eligible.Count == 0 && empty.Skipped.Count == 0);
+        }
+
+        private static List<string> EligibleNames(ImageImport.BatchPlan plan)
+        {
+            var names = new List<string>();
+            foreach (var e in plan.Eligible) names.Add(e.Candidate.FileName);
+            return names;
+        }
+
+        private static List<string> SkipLabels(ImageImport.BatchPlan plan)
+        {
+            var labels = new List<string>();
+            foreach (var s in plan.Skipped) labels.Add(s.Label);
+            return labels;
+        }
+
+        private static ImageImport.BatchEntry? FindEntry(ImageImport.BatchPlan plan, string fileName)
+        {
+            foreach (var e in plan.Eligible)
+                if (string.Equals(e.Candidate.FileName, fileName, StringComparison.OrdinalIgnoreCase)) return e;
+            return null;
+        }
+
+        private static void AssertSkipMentions(ImageImport.BatchPlan plan, string label, string fragment)
+        {
+            foreach (var s in plan.Skipped)
+            {
+                if (!string.Equals(s.Label, label, StringComparison.OrdinalIgnoreCase)) continue;
+                Assert($"{label} skipped: \"...{fragment}...\"",
+                    s.Reason.IndexOf(fragment, StringComparison.OrdinalIgnoreCase) >= 0, s.Reason);
+                return;
+            }
+            Assert($"{label} skipped: \"...{fragment}...\"", false, "not in the skip list");
+        }
+
+        // ---- the summary -----------------------------------------------------
+
+        private static void CheckBatchSummary()
+        {
+            var nothing = new List<ImageImport.BatchSkip>();
+            string clean = ImageImport.SummariseBatch(4, nothing, aborted: false);
+            Assert("a clean run counts what went in",
+                clean.StartsWith("Import All: imported 4, skipped 0.", StringComparison.Ordinal), clean);
+            Assert("  and says the game needs a rebuild to see them",
+                clean.Contains("Rebuild the game", StringComparison.Ordinal), clean);
+
+            string nothingAtAll = ImageImport.SummariseBatch(0, nothing, aborted: false);
+            Assert("a run that imported nothing does not ask for a rebuild",
+                !nothingAtAll.Contains("Rebuild the game", StringComparison.Ordinal), nothingAtAll);
+
+            var two = new List<ImageImport.BatchSkip>
+            {
+                new("chateau_4", "room id 'chateau_4' already exists"),
+                new("Odd.png", "700x500 has no crop preset yet"),
+            };
+            string listed = ImageImport.SummariseBatch(3, two, aborted: false);
+            Assert("skips are named with their reasons",
+                listed.Contains("chateau_4 (room id 'chateau_4' already exists)", StringComparison.Ordinal)
+                && listed.Contains("Odd.png (700x500 has no crop preset yet)", StringComparison.Ordinal), listed);
+
+            // The status bar is one line, so a long tail is capped — but it is
+            // COUNTED, never dropped silently. "and 3 more" is the difference
+            // between a cap and a lie.
+            var many = new List<ImageImport.BatchSkip>();
+            for (int i = 0; i < ImageImport.BatchSummaryListLimit + 3; i++)
+                many.Add(new ImageImport.BatchSkip($"room_{i}", "reason"));
+            string capped = ImageImport.SummariseBatch(1, many, aborted: false);
+            Assert($"a long skip list stops after {ImageImport.BatchSummaryListLimit}",
+                Occurrences(capped, "(reason)") == ImageImport.BatchSummaryListLimit, capped);
+            Assert("  and says how many it did not name",
+                capped.Contains("and 3 more", StringComparison.Ordinal), capped);
+            Assert("  while the total count is still exact",
+                capped.Contains($"skipped {many.Count}", StringComparison.Ordinal), capped);
+
+            string stopped = ImageImport.SummariseBatch(2, two, aborted: true);
+            Assert("a stopped run says so rather than reading as a clean finish",
+                stopped.StartsWith("Import All stopped:", StringComparison.Ordinal), stopped);
+        }
+
+        // ---- why the loop must reload the registry ---------------------------
+
+        private static void CheckBatchNeedsAReload(string contentDir, string dataDir)
+        {
+            // NewRoomFlow.Create builds the new registry from RoomManifest.All,
+            // which is a cached Lazy. Two Creates without a Reload between them
+            // therefore both start from the SAME nine rooms, and the second
+            // write silently drops the first room. The editor's batch avoids
+            // this only because it goes through CreateAndOpenRoom, which
+            // reloads after every file.
+            //
+            // That is a real hazard hiding behind a convenience method, so it
+            // is asserted rather than trusted: if Create ever stops depending
+            // on the cache, this check says so and the batch can be simplified.
+            string scratchRooms = Path.Combine(dataDir, "rooms.json");
+            if (!File.Exists(scratchRooms))
+            {
+                Assert("section 7 left a scratch rooms.json to work from", false, "missing");
+                return;
+            }
+
+            // Section 7 already created chateau_3 here.
+            Assert("the scratch registry currently holds section 7's room",
+                File.ReadAllText(scratchRooms).Contains("\"id\": \"chateau_3\"", StringComparison.Ordinal));
+
+            var second = NewRoomFlow.MakeCandidate(NewRoomFlow.AssetNameFor("Chateau4"));
+            var result = NewRoomFlow.Create(second, contentDir, dataDir);
+            Assert("a second Create succeeds on its own terms", result.Ok, result.Message);
+
+            string after = File.ReadAllText(scratchRooms);
+            Assert("  but without a registry reload it drops the first room",
+                after.Contains("\"id\": \"chateau_4\"", StringComparison.Ordinal)
+                && !after.Contains("\"id\": \"chateau_3\"", StringComparison.Ordinal),
+                "Create no longer reads the cached registry — the batch's reload may be redundant now");
+            Assert("  which is exactly why the batch goes through CreateAndOpenRoom",
+                EntryRows(after) == RoomManifest.All.Count + 1, EntryRows(after).ToString());
         }
 
         // ====================================================================

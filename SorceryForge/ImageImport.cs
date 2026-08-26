@@ -44,6 +44,7 @@ using SorceryRemake.Rooms;
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Text;
 
 namespace SorceryForge
 {
@@ -707,6 +708,188 @@ namespace SorceryForge
                        $"{RoomWidth}x{RoomHeight} room — there is nothing to crop out of it";
 
             return null;
+        }
+
+        // ====================================================================
+        // BATCH IMPORT
+        // ====================================================================
+        // Once a preset exists, a source of that size needs no decision at all:
+        // the crop is known, the quantize toggle is already set, and the naming
+        // rule takes it from there. Seventy-five files that each need one click
+        // and one Enter is seventy-five chances to misclick; "Import All" is
+        // the same seventy-five with one keypress.
+        //
+        // WHAT IT DOES NOT DO. It does not lower any bar. Every file still goes
+        // through the same FindCandidates checks and the same NewRoomFlow.Create
+        // — one creation path, exactly as the single import has always used —
+        // and anything that fails is SKIPPED and named, never forced through.
+        // The batch is a loop over the existing functions, not a second import.
+        //
+        // ELIGIBLE means "would need no decision if you clicked it":
+        //
+        //   - the candidate has no Problem (name, id, target, size all fine),
+        //     AND
+        //   - it is an exact multiple of a room (no crop step at all), OR its
+        //     source size has a preset — stored or built-in — so the crop step
+        //     would open already framed.
+        //
+        // Everything else is listed as a skip with its reason. A size with no
+        // preset is the interesting one: the fix is to import ONE of them by
+        // hand, which stores the preset, after which the rest are eligible.
+        // ====================================================================
+
+        /// <summary>Fewest eligible files worth offering a batch for.</summary>
+        // One file is not a batch — pressing A would be a slower way to click
+        // the row that is already in front of you.
+        public const int MinBatchSize = 2;
+
+        /// <summary>
+        /// The region a batch would cut from a source of this size, or null
+        /// when the size still needs a human to frame it.
+        /// </summary>
+        // The single decision function, called twice on purpose: once by
+        // PlanBatch against the size read from the file HEADER (to decide what
+        // to offer), and again by the editor against the size the DECODER
+        // actually produced (to decide what to cut). A header this misreads
+        // therefore costs a skip with a reason, never a bad room.
+        public static Rectangle? BatchRegionFor(int srcW, int srcH, Rectangle? stored,
+                                                out CropPresetOrigin origin)
+        {
+            origin = CropPresetOrigin.None;
+            if (srcW <= 0 || srcH <= 0) return null;
+
+            // An exact multiple never opens the crop step, so it needs no
+            // preset — the whole image IS the region.
+            if (ExactMultiple(srcW, srcH) > 0) return WholeImage(srcW, srcH);
+
+            if (!CanCrop(srcW, srcH)) return null;
+            if (!HasCropPreset(srcW, srcH, stored)) return null;
+            return ResolveCropRect(srcW, srcH, stored, out origin);
+        }
+
+        /// <summary>One file a batch will import, and the region it will cut.</summary>
+        public class BatchEntry
+        {
+            public ImportCandidate Candidate;
+            public Rectangle Region;              // source pixels, from the header size
+            public CropPresetOrigin Origin;
+
+            public BatchEntry(ImportCandidate candidate, Rectangle region, CropPresetOrigin origin)
+            {
+                Candidate = candidate;
+                Region = region;
+                Origin = origin;
+            }
+        }
+
+        /// <summary>One file a batch will not touch, and why.</summary>
+        public class BatchSkip
+        {
+            /// <summary>The room id if one could be derived, else the filename.</summary>
+            // The id is what the summary is about — it is what would have been
+            // created — but a file refused for its NAME never got one, and
+            // there the filename is the only handle the user has.
+            public string Label;
+            public string Reason;
+
+            public BatchSkip(string label, string reason)
+            {
+                Label = label;
+                Reason = reason;
+            }
+        }
+
+        /// <summary>How a folder of candidates partitions for a batch import.</summary>
+        public class BatchPlan
+        {
+            public readonly List<BatchEntry> Eligible = new();
+            public readonly List<BatchSkip> Skipped = new();
+
+            /// <summary>True when the batch is worth offering at all.</summary>
+            public bool Offered => Eligible.Count >= MinBatchSize;
+        }
+
+        /// <summary>
+        /// Partition the picker's candidates into "would import with no
+        /// decision" and "would not, because —".
+        /// </summary>
+        // storedPreset is a lookup rather than a dictionary so this file keeps
+        // knowing nothing about EditorSettings or the filesystem; the editor
+        // passes its settings' accessor, tools/ImportCheck passes a lambda.
+        public static BatchPlan PlanBatch(IReadOnlyList<ImportCandidate> candidates,
+                                          Func<int, int, Rectangle?> storedPreset)
+        {
+            if (candidates == null) throw new ArgumentNullException(nameof(candidates));
+            if (storedPreset == null) throw new ArgumentNullException(nameof(storedPreset));
+
+            var plan = new BatchPlan();
+            foreach (var candidate in candidates)
+            {
+                string label = string.IsNullOrEmpty(candidate.RoomId) ? candidate.FileName : candidate.RoomId;
+
+                // Every refusal the picker already made stands. Restating the
+                // picker's own reason keeps the summary and the greyed-out row
+                // saying the same thing.
+                if (!candidate.CanCreate)
+                {
+                    plan.Skipped.Add(new BatchSkip(label, candidate.Problem ?? "unavailable"));
+                    continue;
+                }
+
+                var stored = storedPreset(candidate.SourceWidth, candidate.SourceHeight);
+                var region = BatchRegionFor(candidate.SourceWidth, candidate.SourceHeight,
+                                            stored, out var origin);
+                if (region == null)
+                {
+                    // Two ways to get here, and only one of them has a fix the
+                    // user can act on. Unreachable from the editor today —
+                    // FindCandidates already refuses an unreadable source — but
+                    // a defensive branch that gives the wrong advice is worse
+                    // than no branch at all.
+                    plan.Skipped.Add(new BatchSkip(label,
+                        candidate.SourceWidth <= 0 || candidate.SourceHeight <= 0
+                            ? "the image size could not be read"
+                            : $"{candidate.SourceWidth}x{candidate.SourceHeight} has no crop preset yet — " +
+                              "import one of these on its own first, then the rest go in a batch"));
+                    continue;
+                }
+
+                plan.Eligible.Add(new BatchEntry(candidate, region.Value, origin));
+            }
+            return plan;
+        }
+
+        /// <summary>How many skips a summary names before it stops listing.</summary>
+        // The status bar is one line. Listing every skip in a folder of
+        // seventy-five would push the count — the part that is always worth
+        // reading — off the end of it. The tail is COUNTED, never dropped
+        // silently: "and 9 more" is the difference between a cap and a lie.
+        public const int BatchSummaryListLimit = 5;
+
+        /// <summary>The line the status bar carries when a batch finishes.</summary>
+        public static string SummariseBatch(int imported, IReadOnlyList<BatchSkip> skipped, bool aborted)
+        {
+            int m = skipped?.Count ?? 0;
+            var sb = new StringBuilder();
+            sb.Append(aborted ? "Import All stopped: imported " : "Import All: imported ").Append(imported);
+            sb.Append(", skipped ").Append(m);
+
+            if (m > 0)
+            {
+                sb.Append(": ");
+                int listed = Math.Min(m, BatchSummaryListLimit);
+                for (int i = 0; i < listed; i++)
+                {
+                    if (i > 0) sb.Append("; ");
+                    sb.Append(skipped![i].Label).Append(" (").Append(skipped[i].Reason).Append(')');
+                }
+                if (m > listed) sb.Append($"; and {m - listed} more");
+            }
+
+            sb.Append('.');
+            if (imported > 0)
+                sb.Append(" Rebuild the game (dotnet build) for it to see the backgrounds.");
+            return sb.ToString();
         }
 
         // ====================================================================

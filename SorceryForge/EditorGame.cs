@@ -1102,6 +1102,12 @@ namespace SorceryForge
         // nearly always.
         private bool _importQuantize = true;
 
+        // How the current candidate list partitions for a batch import.
+        // Computed once when the picker opens — nothing that can change the
+        // answer (the file list, the stored presets) is reachable without
+        // closing it — and read by the footer hint every frame.
+        private ImageImport.BatchPlan _importPlan = new();
+
         private void OpenImportPicker()
         {
             // Importing LOADS the new room, discarding unsaved edits in the
@@ -1124,6 +1130,7 @@ namespace SorceryForge
 
             _importCandidates = ImageImport.FindCandidates(
                 EditorPaths.RepoImportDir, EditorPaths.RepoContentDir, RoomManifest.All);
+            _importPlan = ImageImport.PlanBatch(_importCandidates, _settings.CropPreset);
             _importScrollY = 0f;
             _importButtons.Clear();
             _importOpen = true;
@@ -1132,13 +1139,16 @@ namespace SorceryForge
             foreach (var c in _importCandidates) if (c.CanCreate) usable++;
             _state.Status = _importCandidates.Count == 0
                 ? "Import: assets/import/ holds no .jpg/.jpeg/.png — drop a screenshot in and click Import again."
-                : $"Import: pick a screenshot ({usable} of {_importCandidates.Count} importable). Esc or right-click cancels.";
+                : $"Import: pick a screenshot ({usable} of {_importCandidates.Count} importable)" +
+                  (_importPlan.Offered ? $", or A to import all {_importPlan.Eligible.Count}" : "") +
+                  ". Esc or right-click cancels.";
         }
 
         private void CloseImportPicker(string status)
         {
             _importOpen = false;
             _importButtons.Clear();
+            _importPlan = new ImageImport.BatchPlan();
             _state.Status = status;
         }
 
@@ -1152,6 +1162,14 @@ namespace SorceryForge
             if (Pressed(Keys.Escape) || RightClicked())
             {
                 CloseImportPicker("Import cancelled.");
+                return;
+            }
+
+            // Import All. Safe to press when nothing qualifies — it says so and
+            // leaves the picker up — so it needs no guard beyond its own.
+            if (Pressed(Keys.A))
+            {
+                StartBatchImport();
                 return;
             }
 
@@ -1250,7 +1268,13 @@ namespace SorceryForge
         /// Write the finished 320x144 pixels to Content/ and register the room.
         /// The tail of every import route.
         /// </summary>
-        private void FinishImport(ImportCandidate candidate, Color[] pixels)
+        // Returns rather than setting the status line, because there are now
+        // two callers that want the outcome for different reasons: the single
+        // import shows the message, and the batch collects it as one row of a
+        // summary. The WORK is identical for both — one PNG write, one
+        // CreateAndOpenRoom — which is what "the batch is a loop over the
+        // existing functions" has to mean to be worth saying.
+        private bool TryFinishImport(ImportCandidate candidate, Color[] pixels, out string message)
         {
             string pngPath = Path.Combine(EditorPaths.RepoContentDir, candidate.BackgroundAsset + ".png");
             try
@@ -1261,8 +1285,8 @@ namespace SorceryForge
             }
             catch (Exception ex)
             {
-                _state.Status = $"Import: writing {candidate.BackgroundAsset}.png failed — {ex.Message}";
-                return;
+                message = $"Import: writing {candidate.BackgroundAsset}.png failed — {ex.Message}";
+                return false;
             }
 
             // PNG first, registration second. Should the registration fail, the
@@ -1273,10 +1297,159 @@ namespace SorceryForge
             // start with.
             var result = CreateAndOpenRoom(candidate);
             string mode = _importQuantize ? "CPC" : "raw";
-            _state.Status = result.Ok
-                ? $"Imported {candidate.FileName} [{mode}] -> {candidate.BackgroundAsset}.png. {result.Message}"
-                : $"Wrote {candidate.BackgroundAsset}.png but registration failed: {result.Message} " +
-                  "The PNG is now an unused background — New Room can finish it.";
+            if (result.Ok)
+            {
+                message = $"Imported {candidate.FileName} [{mode}] -> {candidate.BackgroundAsset}.png. {result.Message}";
+                return true;
+            }
+
+            message = $"Wrote {candidate.BackgroundAsset}.png but registration failed: {result.Message} " +
+                      "The PNG is now an unused background — New Room can finish it.";
+            return false;
+        }
+
+        private void FinishImport(ImportCandidate candidate, Color[] pixels)
+        {
+            TryFinishImport(candidate, pixels, out string message);
+            _state.Status = message;
+        }
+
+        // ====================================================================
+        // IMPORT — BATCH ("IMPORT ALL")
+        // ====================================================================
+        // With a preset in hand, a whole folder of identically framed captures
+        // needs no decisions: A in the picker imports every file that would
+        // have gone straight through, skipping and naming the rest.
+        //
+        // A KEY, NOT A BUTTON. The top bar is full (the same reason Tab opens
+        // the map and N/I open the pickers), and this belongs to the picker
+        // anyway — it is only meaningful while looking at the list it acts on.
+        // The footer hint line advertises it whenever it is available, and says
+        // nothing when it is not, so it can't look broken.
+        //
+        // ONE FILE PER FRAME, not a loop. Seventy-five decode-resample-encode
+        // cycles inside one Update is several frozen seconds with no way to
+        // tell a slow batch from a hung editor. A per-frame step costs a small
+        // state machine and buys a status line that actually counts up, and an
+        // Esc that actually stops it.
+        //
+        // The partition, the skip reasons and the summary all live in
+        // ImageImport, where tools/ImportCheck drives them; what is here is the
+        // decode, the encode and the pacing.
+        // ====================================================================
+
+        private bool _batchRunning;
+        private List<ImageImport.BatchEntry> _batchQueue = new();
+        private readonly List<ImageImport.BatchSkip> _batchSkips = new();
+        private int _batchIndex;
+        private int _batchImported;
+        private int _batchTotal;
+
+        private void StartBatchImport()
+        {
+            // Re-planned here rather than reusing _importPlan. It is one call
+            // on a keypress, and it means the batch acts on the state it is
+            // actually started from — not on whatever was true when the picker
+            // opened, however hard that is to arrange today.
+            var plan = ImageImport.PlanBatch(_importCandidates, _settings.CropPreset);
+            if (!plan.Offered)
+            {
+                // Not an error — just nothing to do. Say which of the two
+                // reasons it is, because "no preset yet" has an obvious fix and
+                // "everything here is refused" does not.
+                _state.Status = plan.Eligible.Count == 1
+                    ? "Import All needs at least two ready files — click the one that is ready."
+                    : "Import All: nothing here imports without a decision. Import one of each " +
+                      "size on its own first; that stores its crop preset and the rest follow.";
+                return;
+            }
+
+            _importOpen = false;
+            _importButtons.Clear();
+
+            _batchQueue = plan.Eligible;
+            _batchSkips.Clear();
+            _batchSkips.AddRange(plan.Skipped);
+            _batchIndex = 0;
+            _batchImported = 0;
+            _batchTotal = plan.Eligible.Count;
+            _batchRunning = true;
+
+            string mode = _importQuantize ? "CPC" : "raw";
+            _state.Status = $"Import All: {_batchTotal} file(s) [{mode}], {_batchSkips.Count} skipped. " +
+                            "Esc stops after the file in progress.";
+        }
+
+        /// <summary>
+        /// Modal input plus exactly one file's work. Runs instead of every
+        /// other handler while a batch is going.
+        /// </summary>
+        private void StepBatchImport()
+        {
+            // Esc stops after the current file rather than mid-write: a batch
+            // is a sequence of complete, independent creations, and there is no
+            // half-done room to unwind. What has been imported stays imported.
+            if (Pressed(Keys.Escape) || RightClicked())
+            {
+                FinishBatchImport(aborted: true);
+                return;
+            }
+
+            if (_batchIndex >= _batchQueue.Count)
+            {
+                FinishBatchImport(aborted: false);
+                return;
+            }
+
+            var entry = _batchQueue[_batchIndex++];
+            var candidate = entry.Candidate;
+            string label = string.IsNullOrEmpty(candidate.RoomId) ? candidate.FileName : candidate.RoomId;
+
+            if (TryDecodeImportSource(candidate, out var src, out int w, out int h))
+            {
+                // Re-decided against the DECODED size, through the same
+                // function that built the plan from the header size. A header
+                // we misread costs a named skip here, not a bad room.
+                var region = ImageImport.BatchRegionFor(w, h, _settings.CropPreset(w, h), out _);
+                if (region == null)
+                {
+                    _batchSkips.Add(new ImageImport.BatchSkip(label,
+                        $"decoded as {w}x{h}, which has no preset — import it on its own"));
+                }
+                else
+                {
+                    var pixels = ImageImport.BuildRoomBackground(src, w, h, region.Value, _importQuantize);
+                    if (TryFinishImport(candidate, pixels, out string message)) _batchImported++;
+                    else _batchSkips.Add(new ImageImport.BatchSkip(label, message));
+                }
+            }
+            else
+            {
+                // TryDecodeImportSource put its own reason in the status line,
+                // which the progress line below is about to overwrite — so take
+                // it as this file's skip reason before that happens.
+                _batchSkips.Add(new ImageImport.BatchSkip(label, _state.Status));
+            }
+
+            // Last, over whatever TryFinishImport's CreateAndOpenRoom left
+            // behind: while a batch is running, the count is the thing to read.
+            _state.Status = $"Import All: {_batchIndex}/{_batchTotal} — {candidate.FileName} " +
+                            $"({_batchImported} in, {_batchSkips.Count} skipped). Esc stops.";
+        }
+
+        private void FinishBatchImport(bool aborted)
+        {
+            // A stop leaves the queue's tail unattempted. Those are not
+            // failures and must not be reported as skips — say plainly how many
+            // were never reached.
+            int unreached = Math.Max(0, _batchQueue.Count - _batchIndex);
+
+            _batchRunning = false;
+            _batchQueue = new List<ImageImport.BatchEntry>();
+
+            string summary = ImageImport.SummariseBatch(_batchImported, _batchSkips, aborted);
+            if (aborted && unreached > 0) summary += $" {unreached} not attempted.";
+            _state.Status = summary;
         }
 
         // Panel geometry. Computed from the window rather than stored, so a
@@ -1408,9 +1581,21 @@ namespace SorceryForge
                 Color.White);
             _importButtons.Add((cancel, () => CloseImportPicker("Import cancelled.")));
 
-            DrawText("Esc / right-click cancels   |   sources are never modified or deleted",
+            // Hint line. "A imports all N" appears only when a batch is
+            // actually available, so the key can never look broken — the same
+            // reason "[crop]" only marks the rows that open the crop step.
+            // Read from the plan computed when the picker opened: nothing that
+            // can change eligibility (the candidate list, the stored presets)
+            // is reachable without closing it, and re-planning per frame would
+            // allocate a list per file per frame for an unchanging answer.
+            bool offered = _importPlan.Offered;
+            string hint = offered
+                ? $"A imports all {_importPlan.Eligible.Count} ready file(s)   |   Esc / right-click cancels   " +
+                  "|   sources are never modified or deleted"
+                : "Esc / right-click cancels   |   sources are never modified or deleted";
+            DrawText(TruncateText(hint, panel.Width - 130),
                 new Vector2(panel.X + 14, panel.Bottom - ImportFooterHeight + 12),
-                new Color(150, 160, 185));
+                offered ? new Color(190, 205, 230) : new Color(150, 160, 185));
         }
 
         // ====================================================================
@@ -2463,6 +2648,16 @@ namespace SorceryForge
             // fall through to the canvas behind it and Escape closes the picker
             // rather than the editor. At most one is ever open — the top-bar
             // buttons that open them are themselves unreachable from here.
+            // A running batch outranks everything, pickers included: it is
+            // writing files, and one file's worth of work happens per frame.
+            // Its own handler owns Escape (stop after the current file).
+            if (_batchRunning)
+            {
+                StepBatchImport();
+                base.Update(gameTime);
+                return;
+            }
+
             if (_newRoomOpen)
             {
                 HandleNewRoomPicker();
