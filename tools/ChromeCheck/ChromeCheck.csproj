@@ -34,6 +34,10 @@
     <!-- The default glob would sweep up bin/obj leftovers from a previous
          run; we list every source explicitly below instead. -->
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <!-- One pointer write: io.IniFilename has no managed setter, and this
+         harness must not drop an imgui.ini into whatever directory it is
+         run from. Same reason SorceryForge.csproj enables it. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <ItemGroup>

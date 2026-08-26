@@ -1095,6 +1095,12 @@ namespace SorceryRemake.Tools.ChromeCheck
 
                 var io = ImGui.GetIO();
                 io.ConfigFlags &= ~ImGuiConfigFlags.NavEnableKeyboard;
+
+                // No imgui.ini, for the same reason ImGuiRenderer disables it,
+                // and one more: this harness promises to write nothing, and
+                // ImGui saves window settings on a timer driven by DeltaTime —
+                // which a few hundred synthetic frames sails straight past.
+                unsafe { io.NativePtr->IniFilename = null; }
                 io.DisplaySize = new NVector2(1280, 720);
                 io.DisplayFramebufferScale = new NVector2(1f, 1f);
                 io.DeltaTime = 1f / 60f;
