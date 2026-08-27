@@ -420,23 +420,43 @@ namespace SorceryRemake.Tools.ChromeCheck
             // never costs the editor a keypress, which is the case above.
             h.MoveTo(Centre(EditorLayout.PaletteRect));
             h.Settle();
-            // A REAL widget held down, not the stand-in panel's text: an
-            // InvisibleButton takes ImGui's ActiveId, and ActiveId is one of the
-            // two things that raises WantCaptureKeyboard.
+            // A MOUSE BUTTON HELD ON CHROME must not cost the editor its keys.
+            //
+            // HOLD FOR SEVERAL FRAMES, and read the flag on the last of them.
+            // ImGui's ActiveId — and with it io.WantCaptureKeyboard — is still
+            // clear on the frame of the press and only goes true from the NEXT
+            // one, so a probe that presses and asserts immediately reports a
+            // clean result whatever the rule is. This assertion passed for a
+            // while against a router that was in fact killing every keybind.
             var actions = new RecordingActions();
             var state = BuildPaletteState();
             h.SetBandsModal(false);
             h.DrivePalette(actions, state);
-            h.MoveTo(new NVector2(140f, EditorLayout.PaletteRect.Y + 30f + 22f + 4f + 22f));
-            h.Settle();
-            h.SetLeft(true);
-            h.Frame();
-            Assert("holding a palette row does NOT cost the editor its keys",
-                h.Router.KeyboardReachesEditor,
-                $"WantCaptureKeyboard={h.Router.ImGuiWantsKeyboard}");
-            h.SetLeft(false);
-            h.Frame();
-            h.Settle();
+
+            foreach (var (label, at) in new[]
+            {
+                ("a palette row", new NVector2(140f, EditorLayout.PaletteRect.Y + 30f + 22f + 4f + 22f)),
+                // Empty space counts: a window takes its own MoveId on a press
+                // even when it is NoMove, so this raises ActiveId exactly as a
+                // widget does.
+                ("the palette's title strip", new NVector2(140f, EditorLayout.PaletteRect.Y + 10f)),
+                ("empty status bar", Centre(EditorLayout.StatusBarRect)),
+                ("empty top bar", new NVector2(EditorLayout.WindowWidth - 400f, EditorLayout.TopBarRect.Y + 40f)),
+            })
+            {
+                h.MoveTo(at);
+                h.Settle();
+                h.SetLeft(true);
+                h.Frame(); h.Frame(); h.Frame();
+                Assert($"holding {label} does NOT cost the editor its keys",
+                    h.Router.KeyboardReachesEditor,
+                    $"WantCaptureKeyboard={h.Router.ImGuiWantsKeyboard} " +
+                    $"WantTextInput={h.Router.ImGuiWantsTextInput}");
+                h.SetLeft(false);
+                h.Frame();
+                h.Settle();
+            }
+
             Assert("after releasing, keys reach the editor again", h.Router.KeyboardReachesEditor);
 
             // AN OPEN MENU IS THE DANGEROUS CASE. Escape in room view arms the
@@ -981,6 +1001,22 @@ namespace SorceryRemake.Tools.ChromeCheck
             h.ClickAt(new NVector2(EditorLayout.WindowWidth - 50f, footerY));
             AssertCall("  and Confirm confirms", actions, nameof(IChromeActions.ConfirmCrop));
 
+            // ONE CLICK MODEL PER MODAL. The rows and the quantize toggle were
+            // put back on the PRESS edge to match every old click zone; a
+            // Cancel button left on ImGui's release-inside default would mean a
+            // single panel answering two different questions about when a click
+            // happens. Pressing and NOT releasing must already have acted.
+            actions.Reset();
+            h.MoveTo(new NVector2(EditorLayout.WindowWidth - 158f, footerY));
+            h.Settle();
+            h.SetLeft(true);
+            h.Frame();
+            AssertCall("the crop footer's Cancel fires on the PRESS, not the release",
+                actions, nameof(IChromeActions.CancelCrop));
+            h.SetLeft(false);
+            h.Frame();
+            h.Settle();
+
             // The crop's IMAGE area is not chrome: ImGui must decline it, so
             // that dragging the selection box still reaches EditorGame.
             h.MoveTo(Centre(EditorLayout.CanvasRect));
@@ -1290,7 +1326,7 @@ namespace SorceryRemake.Tools.ChromeCheck
                 foreach (var pair in _keys) io.AddKeyEvent(pair.Key, pair.Value);
 
                 ImGui.NewFrame();
-                Router.Sample(io.WantCaptureMouse, io.WantCaptureKeyboard, AnyPopupOpen);
+                Router.Sample(io.WantCaptureMouse, io.WantCaptureKeyboard, AnyPopupOpen, io.WantTextInput);
 
                 BuildChrome();
 

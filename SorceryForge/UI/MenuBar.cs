@@ -268,11 +268,9 @@ namespace SorceryForge.UI
             // The two toggles keep a permanent, always-readable state here —
             // that is what the old "Snap: OFF" / "Punch: OFF" labels were for,
             // and burying them in a menu would have lost it.
-            bool snap = state.SnapEnabled;
-            if (ImGui.Checkbox("Snap", ref snap)) actions.ToggleSnap();
+            if (ChromeTheme.PressCheckbox("Snap", state.SnapEnabled)) actions.ToggleSnap();
             ImGui.SameLine(0f, 12f);
-            bool punch = state.AutoPunch;
-            if (ImGui.Checkbox("Auto-punch", ref punch)) actions.ToggleAutoPunch();
+            if (ChromeTheme.PressCheckbox("Auto-punch", state.AutoPunch)) actions.ToggleAutoPunch();
 
             ImGui.EndDisabled();
 
@@ -283,7 +281,7 @@ namespace SorceryForge.UI
         {
             bool active = state.Mode == mode;
             if (active) ImGui.PushStyleColor(ImGuiCol.Button, ImGui.GetColorU32(ImGuiCol.ButtonActive));
-            if (ImGui.Button(label)) actions.SetMode(mode);
+            if (ChromeTheme.PressButton(label)) actions.SetMode(mode);
             if (active) ImGui.PopStyleColor();
         }
 
@@ -306,10 +304,10 @@ namespace SorceryForge.UI
             if (x > ImGui.GetCursorPosX()) ImGui.SetCursorPosX(x);
 
             ImGui.BeginDisabled(!CanActOnRoom(view));
-            if (ImGui.SmallButton("<")) actions.CyclePrevRoom();
+            if (ChromeTheme.PressSmallButton("<")) actions.CyclePrevRoom();
             Tooltip("Previous room (PageUp)");
             ImGui.SameLine(0f, 2f);
-            if (ImGui.SmallButton(">")) actions.CycleNextRoom();
+            if (ChromeTheme.PressSmallButton(">")) actions.CycleNextRoom();
             Tooltip("Next room (PageDown)");
             ImGui.EndDisabled();
 

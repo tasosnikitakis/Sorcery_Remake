@@ -135,6 +135,33 @@ namespace SorceryForge
             finally { _resizingGuard = false; }
         }
 
+        /// <summary>
+        /// Ask for a fullscreen toggle. It is APPLIED after the ImGui frame
+        /// closes, never during it.
+        /// </summary>
+        // ToggleFullscreen resizes the back buffer and re-runs
+        // EditorLayout.Recalculate. Both callers — F11 in
+        // HandleKeyboardShortcuts, and View > Fullscreen in the menu — run
+        // INSIDE the open ImGui frame, where io.DisplaySize was already sampled
+        // from the old back buffer. Applying it there leaves every panel built
+        // afterwards positioned in the new window space while the renderer's
+        // projection still describes the old one: one frame of chrome drawn at
+        // the wrong scale, which on a 1280 -> 2560 transition means a menu bar
+        // twice its height and a status bar off the bottom of the screen.
+        //
+        // A plain window drag-resize does not need this — SDL dispatches
+        // ClientSizeChanged between ticks, not inside the frame.
+        private bool _fullscreenTogglePending;
+
+        private void RequestFullscreenToggle() => _fullscreenTogglePending = true;
+
+        private void ApplyPendingFullscreenToggle()
+        {
+            if (!_fullscreenTogglePending) return;
+            _fullscreenTogglePending = false;
+            ToggleFullscreen();
+        }
+
         private void ToggleFullscreen()
         {
             _resizingGuard = true;
@@ -2150,7 +2177,8 @@ namespace SorceryForge
             var io = ImGui.GetIO();
             _router.WorldGestureInProgress = WorldGestureInProgress();
             _router.Sample(io.WantCaptureMouse, io.WantCaptureKeyboard,
-                ImGui.IsPopupOpen("", ImGuiPopupFlags.AnyPopupId | ImGuiPopupFlags.AnyPopupLevel));
+                ImGui.IsPopupOpen("", ImGuiPopupFlags.AnyPopupId | ImGuiPopupFlags.AnyPopupLevel),
+                io.WantTextInput);
 
             UpdateEditor();
 
@@ -2158,6 +2186,10 @@ namespace SorceryForge
             // this frame just produced — the status line especially.
             BuildChrome();
             _imgui.EndFrame();
+
+            // After the frame closes: a back-buffer resize mid-frame would
+            // leave the chrome drawn against a stale projection for one frame.
+            ApplyPendingFullscreenToggle();
 
             base.Update(gameTime);
         }
@@ -3056,7 +3088,7 @@ namespace SorceryForge
             if (Pressed(Keys.PageDown)) CycleNextRoom();
 
             // F11 → borderless fullscreen toggle.
-            if (Pressed(Keys.F11)) ToggleFullscreen();
+            if (Pressed(Keys.F11)) RequestFullscreenToggle();
         }
 
         private void SetBrushSize(int size)
@@ -3867,7 +3899,7 @@ namespace SorceryForge
         void IChromeActions.SetMode(EditorMode mode) => SetMode(mode);
         void IChromeActions.ToggleSnap() => ToggleSnap();
         void IChromeActions.ToggleAutoPunch() => ToggleAutoPunch();
-        void IChromeActions.ToggleFullscreen() => ToggleFullscreen();
+        void IChromeActions.ToggleFullscreen() => RequestFullscreenToggle();
         void IChromeActions.ToggleMapMode() => ToggleMapMode();
 
         void IChromeActions.ValidateReachability() => ValidateReachability();

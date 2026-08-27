@@ -37,12 +37,27 @@
 // internals of a third-party immediate-mode library is a promise with a version
 // number attached. tools/ChromeCheck drives the real ImGui and asserts both.
 //
-// KEYBOARD. Two things hold it, not one: WantCaptureKeyboard, and an open
-// popup. With keyboard navigation deliberately off (see ImGuiRenderer) and
-// no text field anywhere in the chrome, WantCaptureKeyboard is false except
-// while an ImGui widget is actively held. Every editor keybind therefore keeps
-// firing exactly as it did. The gate is implemented properly regardless — the
-// first text field to land must not have to discover this file.
+// KEYBOARD, and the trap in it. The obvious rule — gate on
+// io.WantCaptureKeyboard — is WRONG here, and quietly so. ImGui raises that
+// flag whenever g.ActiveId is set, which happens on ANY press into an ImGui
+// window: a button, a scrollbar, or plain empty space in the palette's title
+// strip, because a window takes its own MoveId even when it is NoMove. So
+// gating on it means every editor keybind dies for as long as a mouse button is
+// held anywhere on the chrome — hold the button on the status bar and Ctrl+S,
+// PageDown, F11 and the arrows all stop working. On main they fired regardless
+// of the mouse.
+//
+// (Measured, and worth measuring carefully: the flag is still false on the
+// frame of the press and only goes true from the NEXT frame, so a probe that
+// samples one frame after pressing reports a clean result and lies. That is
+// exactly how this shipped into a passing test once already.)
+//
+// So the rule is built on io.WantTextInput instead — true only while a text
+// field is actually taking keystrokes — plus an open popup. Both are things
+// that genuinely own the keyboard; a held button is not. The chrome has no text
+// field today, so today the first term is always false and every keybind
+// behaves exactly as it did before the migration. The gate is written properly
+// regardless: the first text field to land must not have to discover this file.
 //
 // DEVICE-FREE by construction: no Texture2D, no GraphicsDevice, no SpriteBatch.
 // That is what lets tools/ChromeCheck compile it and drive it headlessly.
@@ -54,7 +69,18 @@ namespace SorceryForge.UI
     {
         /// <summary>What ImGui asked for during the current frame's NewFrame.</summary>
         public bool ImGuiWantsMouse { get; private set; }
+
+        /// <summary>
+        /// Reported for the --imgui-probe readout, and DELIBERATELY NOT what
+        /// the keyboard rule is built on. See KeyboardReachesEditor.
+        /// </summary>
         public bool ImGuiWantsKeyboard { get; private set; }
+
+        /// <summary>True while an ImGui text field is taking keystrokes.</summary>
+        // io.WantTextInput, not io.WantCaptureKeyboard. The chrome has no text
+        // field today, so this is always false and every editor keybind fires
+        // exactly as it did before the migration — which is the whole point.
+        public bool ImGuiWantsTextInput { get; private set; }
 
         /// <summary>True while an ImGui popup — in practice, a menu — is open.</summary>
         // A THIRD input, because WantCaptureKeyboard does not cover it and the
@@ -80,11 +106,12 @@ namespace SorceryForge.UI
         public bool WorldGestureInProgress { get; set; }
 
         /// <summary>Record this frame's ImGui verdict. Call right after NewFrame.</summary>
-        public void Sample(bool wantsMouse, bool wantsKeyboard, bool popupOpen = false)
+        public void Sample(bool wantsMouse, bool wantsKeyboard, bool popupOpen, bool wantsTextInput)
         {
             ImGuiWantsMouse = wantsMouse;
             ImGuiWantsKeyboard = wantsKeyboard;
             ImGuiPopupOpen = popupOpen;
+            ImGuiWantsTextInput = wantsTextInput;
         }
 
         /// <summary>
@@ -95,6 +122,6 @@ namespace SorceryForge.UI
         /// <summary>
         /// True when the editor's own keybinds may read this frame's keyboard.
         /// </summary>
-        public bool KeyboardReachesEditor => !ImGuiWantsKeyboard && !ImGuiPopupOpen;
+        public bool KeyboardReachesEditor => !ImGuiWantsTextInput && !ImGuiPopupOpen;
     }
 }

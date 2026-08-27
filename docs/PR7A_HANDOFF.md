@@ -1,6 +1,6 @@
 # PR 7a — ImGui chrome migration: hand-off
 
-Branch `pr7a-imgui-chrome`, eight commits off `main`. **Nothing user-visible was
+Branch `pr7a-imgui-chrome`, ten commits off `main`. **Nothing user-visible was
 added.** Every menu, panel, overlay and status line the editor draws is now Dear
 ImGui; the canvas, the world-map board and the crop image are untouched
 SpriteBatch. `EDITOR_REVIEW` item 17 is decided and item 18 is partly done.
@@ -82,6 +82,23 @@ including a running batch import (which shows no overlay of its own and is
 writing files). The flag is repeated on the scrolling **child** windows, because
 `NoInputs` does not propagate.
 
+**The keyboard rule is built on `io.WantTextInput`, not `io.WantCaptureKeyboard`**
+— and that distinction is the subtlest thing in this PR. ImGui raises
+`WantCaptureKeyboard` whenever `g.ActiveId` is set, which happens on **any** press
+into an ImGui window, including plain empty space (a window takes its own MoveId
+even when it is `NoMove`). Gating on it meant every editor keybind died for as
+long as a mouse button was held anywhere on the chrome — hold the button on the
+status bar and `Ctrl+S`, `PageDown`, `F11` and the arrows all stopped working.
+`WantTextInput` is true only while a text field is actually taking keystrokes —
+of which there are none today — so every keybind fires exactly as it did on
+`main`.
+
+> The flag is still **false on the frame of the press** and only goes true from
+> the next one, so a probe that presses and asserts immediately reports a clean
+> result whatever the rule is. That is how this shipped into a *passing*
+> ChromeCheck assertion for several commits, until an adversarial pass caught it.
+> The corrected assertion holds for three frames and covers empty chrome space.
+
 **An open menu holds the keyboard.** `WantCaptureKeyboard` does *not* cover an
 open popup, and with keyboard navigation off (it would claim the arrow keys,
 Enter and Escape — all documented keybinds) ImGui's own Escape-closes-a-popup
@@ -98,7 +115,7 @@ closes itself on Escape.
 |---|---:|---:|
 | `SorceryForge/EditorGame.cs` | 4,709 | **3,912** (−797, −17%) |
 | `SorceryForge/UI/` (new) | — | 2,588 across 10 files |
-| `tools/ChromeCheck/` (new) | — | 1,464 |
+| `tools/ChromeCheck/` (new) | — | 1,524 |
 
 Largest new files: `ImGuiRenderer.cs` 558 (the binding, once), `Pickers.cs` 395,
 `MenuBar.cs` 353, `InspectorPanel.cs` 335.
@@ -114,7 +131,7 @@ Largest new files: `ImGuiRenderer.cs` 558 (the binding, once), `Pickers.cs` 395,
 
 ## 4. What was verified headlessly, and what needs your eyes
 
-### Verified headlessly — `tools/ChromeCheck`, 117 checks
+### Verified headlessly — `tools/ChromeCheck`, 121 checks
 
 Dear ImGui is pure CPU: it builds its font atlas, lays out its windows, decides
 what the mouse is over and records draw lists in ordinary memory. So the harness
@@ -128,7 +145,7 @@ file under `SorceryForge/UI/` is device-free **except** `ImGuiRenderer.cs`.
 | 2 | A gesture begun on the canvas survives crossing a panel, and hands it back on release |
 | 3 | A gesture begun on a panel does not leak onto the canvas; right-click over chrome *is* captured (why the picker cancels bypass the router) |
 | 4 | One wheel notch, one consumer |
-| 5 | Keybinds survive hovering every band and holding a real widget; an open menu holds them and Escape closes the menu |
+| 5 | Keybinds survive hovering every band **and holding a button on one, across frames**; an open menu holds them and Escape closes the menu |
 | 6 | Menu enablement in both modes, and the four documented map-mode exceptions |
 | 7 | Room and board titles verbatim; which `*` means which unsaved thing |
 | 8 | Every fragment of the status line's right-hand group, in order |
@@ -197,21 +214,37 @@ Everything below is a deliberate, known difference. Nothing else was intended.
 14. `N` and `I` remain **map-mode-only keys**. Room mode reaches both through the
     File menu, as it always did through the buttons. Unchanged, but easy to
     misread from the menu.
-15. ImGui's own widgets (`MenuItem`, `Button`, `Checkbox`) fire on **release**;
-    every hand-rolled zone fired on the press edge. The custom rows (palette,
-    inspector, picker candidates, quantize toggle) were put back on the press
-    edge; the ImGui widgets cannot be, as the flags are not in ImGui.NET's public
-    surface — and release is the convention for a menu anyway.
+15. ImGui's `MenuItem` fires on **release**; every hand-rolled zone fired on the
+    press edge. Everything else in the chrome — palette rows, inspector fields,
+    picker candidates, the quantize toggle, both pickers' Cancel, the crop's
+    Cancel and Confirm, the mode buttons, the room nav buttons and both
+    checkboxes — was put back on the press edge via `ChromeTheme.Press*`.
+    `MenuItem` is left alone deliberately: menus are new here, so there is no
+    prior behaviour to match, release-to-commit is the platform convention, and
+    it is also what closes the menu.
 16. The drag ghost is suppressed while a modal is open or the board is showing.
-17. `F11` / `View > Fullscreen` resizes the back buffer in the middle of the open
-    ImGui frame, so one frame of chrome is drawn against a stale projection.
-    A one-frame artefact during a transition; not fixed, listed here so it is not
-    rediscovered as a bug.
 
-### Refuted by measurement, not fixed
-- *"Holding a chrome widget costs the editor its keys."* It does not —
-  ChromeCheck §5 holds a real palette row and reports `WantCaptureKeyboard`
-  false.
+### Found by the adversarial pass, after the migration was "done"
+
+Twenty-six candidates went through three-way adversarial refutation. Twenty-one
+were dismissed — all of them things already fixed earlier in the branch, which is
+the result you want from a verifier run against a moving target. Five survived,
+covering four distinct issues (two were the same one seen from different angles),
+and **all four are fixed**:
+
+| Issue | Now |
+|---|---|
+| Keybinds died while a mouse button was held anywhere on chrome | Rule rebuilt on `io.WantTextInput` |
+| `Escape` with a menu open quit the editor | Popup gates the keyboard; menus close on `Escape` |
+| `F11` resized the back buffer inside the open ImGui frame | Deferred until after `EndFrame` |
+| Modal buttons fired on release while their rows fired on press | `ChromeTheme.Press*` wrappers |
+
+The first is the instructive one. It had a **passing** ChromeCheck assertion
+behind it — the assertion pressed the button and read the flag on that same
+frame, one frame before ImGui sets it. A test that measures the wrong moment is
+worse than no test, because it is evidence. The corrected assertion holds for
+three frames, covers empty chrome space as well as widgets, and was verified to
+fail against the old rule before being trusted.
 
 ---
 
@@ -247,7 +280,7 @@ dotnet build SorceryForge/SorceryForge.csproj
 dotnet run --project tools/RoundTrip/RoundTrip.csproj      # 13 identical, 0 violations
 dotnet run --project tools/ImportCheck/ImportCheck.csproj  # 232 checks, 0 failures
 dotnet run --project tools/MapCheck/MapCheck.csproj        # 78 checks, 0 failures
-dotnet run --project tools/ChromeCheck/ChromeCheck.csproj  # 117 checks, 0 failures
+dotnet run --project tools/ChromeCheck/ChromeCheck.csproj  # 121 checks, 0 failures
 dotnet run --project SorceryForge/SorceryForge.csproj
 ```
 

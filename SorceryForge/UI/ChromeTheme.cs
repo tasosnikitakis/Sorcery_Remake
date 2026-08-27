@@ -62,6 +62,46 @@ namespace SorceryForge.UI
 
         public static readonly NVector4 White = Rgb(255, 255, 255);
 
+        // ---- Press-edge widgets ---------------------------------------------
+        //
+        // Every click zone in the chrome this replaces fired on the PRESS edge
+        // (LeftClicked() == down-this-frame && up-last-frame). ImGui's widgets
+        // fire on release-inside. These three wrappers draw the normal widget
+        // and then read IsItemClicked, which IS the press edge — so a modal's
+        // Cancel button and the rows above it agree about when a click happens,
+        // instead of the panel mixing two models.
+        //
+        // ImGui.MenuItem is deliberately NOT wrapped. Menus are new in this PR,
+        // so there is no prior behaviour to match, and release-to-commit is the
+        // convention every menu on the platform follows. It is also what closes
+        // the menu, which IsItemClicked would not.
+
+        /// <summary>A Button that fires on the press edge.</summary>
+        public static bool PressButton(string label, NVector2 size = default)
+        {
+            ImGui.Button(label, size);
+            return ImGui.IsItemClicked();
+        }
+
+        /// <summary>A SmallButton that fires on the press edge.</summary>
+        public static bool PressSmallButton(string label)
+        {
+            ImGui.SmallButton(label);
+            return ImGui.IsItemClicked();
+        }
+
+        /// <summary>
+        /// A Checkbox that fires on the press edge. The tick it draws comes
+        /// from <paramref name="value"/>, re-read from state every frame, so
+        /// the caller never owns a copy that could drift.
+        /// </summary>
+        public static bool PressCheckbox(string label, bool value)
+        {
+            bool scratch = value;
+            ImGui.Checkbox(label, ref scratch);
+            return ImGui.IsItemClicked();
+        }
+
         // ---- Window shape --------------------------------------------------
 
         /// <summary>

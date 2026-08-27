@@ -359,7 +359,7 @@ namespace SorceryForge.UI
             ImGui.SameLine();
             float x = ImGui.GetWindowWidth() - buttonWidth - 14f;
             if (x > ImGui.GetCursorPosX()) ImGui.SetCursorPosX(x);
-            if (ImGui.Button(buttonLabel, new NVector2(buttonWidth, 0f))) onClick();
+            if (ChromeTheme.PressButton(buttonLabel, new NVector2(buttonWidth, 0f))) onClick();
         }
 
         // ====================================================================
@@ -407,9 +407,9 @@ namespace SorceryForge.UI
                 ImGui.SameLine();
                 float x = ImGui.GetWindowWidth() - 216f;
                 if (x > ImGui.GetCursorPosX()) ImGui.SetCursorPosX(x);
-                if (ImGui.Button("Cancel", new NVector2(100f, 0f))) actions.CancelCrop();
+                if (ChromeTheme.PressButton("Cancel", new NVector2(100f, 0f))) actions.CancelCrop();
                 ImGui.SameLine(0f, 8f);
-                if (ImGui.Button("Confirm", new NVector2(100f, 0f))) actions.ConfirmCrop();
+                if (ChromeTheme.PressButton("Confirm", new NVector2(100f, 0f))) actions.ConfirmCrop();
             }
             ChromeTheme.EndPanel();
             ImGui.PopStyleVar();
