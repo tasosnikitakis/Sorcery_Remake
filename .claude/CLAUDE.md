@@ -184,10 +184,11 @@ screenshot (JPEG) import → world map view. Game-side, the next phase is 4B
   `doc/07` in the same PR.
 - Any PR touching the save path, loaders, or room registration must run
   tools/RoundTrip against main before hand-off and report the result.
-- Four headless harnesses guard the editor; run all four before hand-off and
+- Five headless harnesses guard the editor; run all five before hand-off and
   report the counts, which must not fall:
   `tools/RoundTrip` (save path), `tools/ImportCheck` (screenshot import),
-  `tools/MapCheck` (world map), `tools/ChromeCheck` (chrome + input routing).
+  `tools/MapCheck` (world map), `tools/ChromeCheck` (chrome + input routing),
+  `tools/EditCheck` (undo/redo commands + registry edits).
   None needs a desktop session — that is a property of the code they test, and
   a PR that breaks it has taken something away.
 - Work on a branch named pr<N>-<slug>; the owner merges to main after

@@ -84,6 +84,17 @@ namespace SorceryForge.UI
         /// <summary>Escape exits from room view only; on the board it returns to the room.</summary>
         internal static bool CanExit(in ChromeView v) => !v.MapMode;
 
+        /// <summary>Ctrl+Z, when there is something on the stack to take back.</summary>
+        // TWO conditions, and both are load-bearing. !MapMode because Ctrl+Z is
+        // read in HandleKeyboardShortcuts, which the board never reaches — the
+        // same reason Fullscreen is off there. CanUndo because a menu item that
+        // is always enabled and sometimes does nothing teaches the author to
+        // distrust the rest of the menu.
+        internal static bool CanUndo(in ChromeView v) => !v.MapMode && v.CanUndo;
+
+        /// <summary>Ctrl+Y / Ctrl+Shift+Z, when something has been undone.</summary>
+        internal static bool CanRedo(in ChromeView v) => !v.MapMode && v.CanRedo;
+
         /// <summary>F11 is read in HandleKeyboardShortcuts, which the board never reaches.</summary>
         internal static bool CanToggleFullscreen(in ChromeView v) => !v.MapMode;
 
@@ -183,6 +194,16 @@ namespace SorceryForge.UI
         {
             if (!ImGui.BeginMenu("Edit")) return;
             CloseOnEscape();
+
+            // First, and separated: undo is what an Edit menu is FOR, and it is
+            // the one pair of items whose enablement changes moment to moment.
+            // Ctrl+Shift+Z redoes as well and is deliberately not advertised —
+            // the shortcut column holds one accelerator per item, and Ctrl+Y is
+            // the one this editor documents.
+            if (ImGui.MenuItem("Undo", "Ctrl+Z", false, CanUndo(view))) actions.Undo();
+            if (ImGui.MenuItem("Redo", "Ctrl+Y", false, CanRedo(view))) actions.Redo();
+
+            ImGui.Separator();
 
             // Checkmarked rather than labelled with their state ("Snap: OFF").
             // The toolbar below still carries both as always-visible toggles,

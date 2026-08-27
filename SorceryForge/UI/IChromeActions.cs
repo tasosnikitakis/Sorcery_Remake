@@ -47,6 +47,17 @@ namespace SorceryForge.UI
         /// <summary>Escape's exit: the discard guard first, including the map.</summary>
         void ExitEditor();
 
+        // ---- Undo / redo ----------------------------------------------------
+
+        /// <summary>Ctrl+Z. Takes back the most recent edit, of any kind.</summary>
+        // The chrome does not get to know what is on the stack, or what kind of
+        // command it is. It asks for "the last thing", and the editor's one
+        // undo path decides — which is the point of EDITOR_REVIEW item 11.
+        void Undo();
+
+        /// <summary>Ctrl+Y / Ctrl+Shift+Z.</summary>
+        void Redo();
+
         // ---- Mode and toggles ---------------------------------------------
 
         void SetMode(EditorMode mode);

@@ -1,0 +1,91 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- ========================================
+       EDITCHECK — EDITOR LOGIC-LAYER HARNESS
+       Fifth of the headless harnesses, same shape as tools/RoundTrip,
+       tools/ImportCheck, tools/MapCheck and tools/ChromeCheck: compile the
+       editor's OWN sources and drive them, rather than testing a
+       reimplementation.
+
+       WHY IT IS NOT PART OF CHROMECHECK. ChromeCheck's charter is one
+       sentence — "Dear ImGui gets first refusal on every frame's mouse" —
+       and it needs a real ImGui context to answer anything. What this
+       harness drives has no chrome in it at all: the undo/redo command
+       stack, and the room-registry edits behind rename and New Room. Those
+       are pure state transitions over EditorState and over rooms.json, and
+       folding them into a file whose name promises input routing would make
+       that name a lie.
+
+       WHY IT EXISTS AT ALL. An undo stack fails silently. A command whose
+       Undo is not the inverse of its Do does not crash and does not draw
+       anything wrong; it quietly leaves the room in a state the author never
+       authored, and the first sign of it is a git diff nobody can explain.
+       So every command class is driven here through the round-trip property
+       that defines it:
+
+           Do(); Undo();        leaves the state it found
+           Do(); Undo(); Do();  leaves the state Do() alone would have
+
+       MonoGame is referenced for the value types the shared sources use
+       (Rectangle, Vector2, Color). No GraphicsDevice is ever created — the
+       one part of undo that needs pixels reaches them through
+       IBackgroundTarget, which this harness implements over a bare array.
+       ======================================== -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RollForward>Major</RollForward>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <RootNamespace>SorceryRemake.Tools.EditCheck</RootNamespace>
+    <AssemblyName>EditCheck</AssemblyName>
+    <!-- The default glob would sweep up bin/obj leftovers from a previous
+         run; we list every source explicitly below instead. -->
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="MonoGame.Framework.DesktopGL" Version="3.8.1.303" />
+  </ItemGroup>
+
+  <!-- ========================================
+       SHARED GAME SOURCE
+       Mirrors SorceryForge.csproj's globs, as the other four harnesses do.
+       The commands name EditorState and Placement, which reach into Core/,
+       Tiles/ and Rooms/.
+       ======================================== -->
+
+  <ItemGroup>
+    <Compile Include="..\..\Core\**\*.cs" Exclude="..\..\Core\PlayerController.cs" />
+    <Compile Include="..\..\Graphics\**\*.cs" />
+    <Compile Include="..\..\Tiles\**\*.cs" />
+    <Compile Include="..\..\Rooms\**\*.cs" />
+    <Compile Include="..\..\Doors\**\*.cs" />
+    <Compile Include="..\..\Physics\**\*.cs" />
+  </ItemGroup>
+
+  <!-- ========================================
+       EDITOR LOGIC (no UI, no GraphicsDevice)
+       EditorCommands.cs and UndoStack.cs are the subject; the rest are what
+       they name. Everything MonoGame-windowed (EditorGame, EditorLayout,
+       SorceryForge/UI/) is deliberately left out — if any of it were needed
+       here, that would be the signal that undo had leaked into the chrome.
+       ======================================== -->
+
+  <ItemGroup>
+    <Compile Include="..\..\SorceryForge\EditorCommands.cs" />
+    <Compile Include="..\..\SorceryForge\EditorPaths.cs" />
+    <Compile Include="..\..\SorceryForge\EditorState.cs" />
+    <Compile Include="..\..\SorceryForge\NewRoomFlow.cs" />
+    <Compile Include="..\..\SorceryForge\PaletteEntry.cs" />
+    <Compile Include="..\..\SorceryForge\Placement.cs" />
+    <!-- EditorState names PuzzleReport; RoundTrip pulls it in for the same
+         reason. Neither harness runs the analyzer. -->
+    <Compile Include="..\..\SorceryForge\PuzzleAnalyzer.cs" />
+    <Compile Include="..\..\SorceryForge\RoomMeta.cs" />
+    <Compile Include="..\..\SorceryForge\UndoStack.cs" />
+    <Compile Include="Program.cs" />
+  </ItemGroup>
+
+</Project>

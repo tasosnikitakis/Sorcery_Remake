@@ -588,6 +588,33 @@ Plus `SavedRoomEnemies` — a snapshot map of `roomId → List<EnemyInstance>` u
 
 The persistence model is what makes rooms feel like a coherent world rather than independent levels: dropping a Sword in room 5, going to room 6, and coming back finds the Sword exactly where you left it.
 
+## Undo and Redo in SorceryForge
+
+`Ctrl+Z` takes back the last edit of **any** kind; `Ctrl+Y` (and `Ctrl+Shift+Z`) puts it back. Both are also in **Edit > Undo / Redo**, greyed when their stack is empty. The stack holds 64 entries and evicts the oldest.
+
+One user action costs one `Ctrl+Z`. Every editor action is a command object (`SorceryForge/EditorCommands.cs`) that knows how to do itself and how to take itself back:
+
+| Command | Recorded when |
+|---|---|
+| `AddPlacementCommand` | a palette entry is dropped on the canvas |
+| `DeletePlacementCommand` | `Delete` with a placement selected |
+| `MovePlacementCommand` | a placement drag is **released** — one command per drag, not per frame |
+| `SetPlacementFieldCommand` | one applied inspector change (all of a placement's editable fields, together) |
+| `SetPlayerSpawnCommand` | the spawn is set, moved or cleared |
+| `PaintTilesCommand` | a paint drag **ends** — every cell it changed, in one command |
+| `BackgroundEditCommand` | an erase/restore stroke ends, or a punch happens |
+| `CompositeCommand` | a drop or move that also auto-punched: both halves, one entry |
+
+The status line names what happened — `Undid: move chateau_0_sword_2 (3 more, Ctrl+Y redoes)`.
+
+**Undo history is per room, and switching rooms clears it — both halves.** This is a correctness decision, not a simplification. `LoadRoom` rebuilds `Placements` from disk: every `Placement` object in the working set is replaced by a new instance, and the commands hold *references* to those objects. A command surviving the switch would, on `Ctrl+Z`, write to an object that is no longer in any room's list — no crash, no visible effect, and the edit the author thought they took back still there. Keying commands by entity ID instead would not help; it would only change the failure to "the ID now names a different object with different fields."
+
+**Undo and redo always mark the room dirty**, in both directions. Undoing back to exactly the last-saved state still shows `room*`. That is deliberate and conservative: the cost is one redundant save, and the opposite error loses work silently — which is the whole reason the discard guard exists.
+
+**The world-map arrangement is out of scope.** Dragging a room on the board sets `map*` and is written by its own `Ctrl+S` in map mode; it is not per-room working state, and it survives every room switch — the event that clears this stack. Folding it in would mean a stack some clears applied to and some did not. Undo on the board is disabled for the same reason `F11` is: `Ctrl+Z` is read in `HandleKeyboardShortcuts`, which map mode never reaches.
+
+Every command is driven headlessly by `tools/EditCheck`, through the property that defines it: `Do(); Undo();` leaves the state it found, and `Do(); Undo(); Do();` leaves the state `Do()` alone would have.
+
 ## RoomData (DTO, future use)
 
 `Rooms/RoomData.cs` defines a fuller DTO (`Width`, `Height`, `Tiles`, `PlayerSpawn`, `Exits`, `BackgroundColor`, `BackgroundTextureName`, `CollisionGrid`) that is *not currently used* by the live system. (Its `PlayerSpawn` is unrelated to the live one: that ships as `playerSpawn` in `layout_<id>.json` — see [Player Entry Position](#player-entry-position).) It exists as the target shape for a future serializable-rooms / map-editor pipeline (Phase 5A). Today the live shape is the builder lambda + `RoomContent`; `RoomData` is a sketch.

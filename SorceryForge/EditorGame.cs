@@ -22,7 +22,9 @@ namespace SorceryForge
     /// assets/data/content_&lt;roomId&gt;.json which the main game picks up
     /// next time it loads the room.
     /// </summary>
-    public class EditorGame : Game, IChromeActions
+    // IBackgroundTarget is how an undo command reaches the room's pixels
+    // without ever naming a Texture2D — see the header of EditorCommands.cs.
+    public class EditorGame : Game, IChromeActions, IBackgroundTarget
     {
         private readonly GraphicsDeviceManager _graphics;
         private SpriteBatch _spriteBatch = null!;
@@ -75,12 +77,32 @@ namespace SorceryForge
         private Color[]? _bgPixels;
         private Color[]? _bgOriginal;
         private bool _ownsBackground;                      // true when _currentBackground came from FromStream (we must Dispose it); false for ContentManager-owned XNB
-        private readonly List<Color[]> _bgUndo = new();   // per-stroke snapshots, oldest first
-        private const int MaxUndo = 40;
         private bool _strokeActive;
-        private bool _strokeChanged;                       // any pixel changed this stroke (no-op strokes drop their snapshot)
+        private bool _strokeChanged;                       // any pixel changed this stroke (no-op strokes drop their command)
+        private Color[]? _strokeBefore;                    // full image as it was when the stroke opened; diffed at EndStroke, never retained
         private Point _lastStamp;                          // room px, previous stamp centre
         private (int zoom, int panX, int panY) _strokeView; // view at last stamp — a view jump must not Bresenham across it
+
+        // ---- UNDO / REDO ----------------------------------------------------
+        // EDITOR_REVIEW item 11. One stack for every kind of edit — placements,
+        // inspector fields, the spawn, painted tiles and background pixels —
+        // reached by Ctrl+Z and Ctrl+Y through exactly one path. The commands
+        // and the rules live beside EditorState, device-free, so
+        // tools/EditCheck can drive all of them headlessly; this class supplies
+        // the pixels they act on and closes any running gesture first.
+        private readonly UndoStack _undo = new();
+        private EditorCommandContext _cmd = null!;         // built in the constructor, below
+
+        // Collision cells changed by the paint drag currently under the mouse.
+        // Committed as ONE PaintTilesCommand when the buttons come up, for the
+        // same reason a placement drag is recorded once at release: a swipe
+        // across twenty tiles is one action, not twenty.
+        private readonly List<TileEdit> _paintStroke = new();
+
+        // Where the placement / spawn being dragged started. A move is recorded
+        // at RELEASE as from -> to, so the from has to be captured at the press.
+        private Vector2 _moveFrom;
+        private Vector2 _spawnMoveFrom;
 
         // Middle-mouse panning of the zoomed canvas.
         private bool _panning;
@@ -113,6 +135,33 @@ namespace SorceryForge
             Window.Title = "SorceryForge — Room Editor";
             Window.AllowUserResizing = true;
             Window.ClientSizeChanged += OnClientSizeChanged;
+
+            // The context every command is handed. Built once: it is two
+            // references, and rebuilding it per call would be the only way for
+            // a command to be handed a different EditorState than the chrome is
+            // rendering.
+            _cmd = new EditorCommandContext(_state, this);
+        }
+
+        // ====================================================================
+        // IBackgroundTarget — the pixels an undo command is allowed to touch
+        // ====================================================================
+        // Explicitly implemented, so none of this widens EditorGame's own
+        // surface: these four members exist for EditorCommands.cs and nothing
+        // else calls them.
+
+        Color[]? IBackgroundTarget.BackgroundPixels => _bgPixels;
+
+        int IBackgroundTarget.BackgroundWidth => _currentBackground?.Width ?? 0;
+
+        int IBackgroundTarget.BackgroundHeight => _currentBackground?.Height ?? 0;
+
+        void IBackgroundTarget.BackgroundPixelsChanged()
+        {
+            // The one line in the undo path that needs a GraphicsDevice, which
+            // is exactly why it is on this side of the interface.
+            if (_currentBackground != null && _bgPixels != null)
+                _currentBackground.SetData(_bgPixels);
         }
 
         private void OnClientSizeChanged(object? sender, EventArgs e)
@@ -506,6 +555,10 @@ namespace SorceryForge
                 _state.IsMovingSelection = false;
             }
             if (_state.Mode != EditorMode.Erase) EndStroke();
+            // ...and switching out of Paint closes the paint drag, so its
+            // command is recorded rather than left open to merge with the next
+            // one the mode is re-entered for.
+            if (_state.Mode != EditorMode.Paint) EndPaintStroke();
             _state.Status = _state.Mode switch
             {
                 EditorMode.Paint => "Paint mode: left-click adds solid, right-click clears.",
@@ -538,8 +591,20 @@ namespace SorceryForge
             _currentBackground = null;
             _bgPixels = null;
             _bgOriginal = null;
-            _bgUndo.Clear();
             _strokeActive = false;
+            _strokeChanged = false;
+            _strokeBefore = null;
+            _paintStroke.Clear();
+
+            // UNDO HISTORY IS PER-ROOM, and this is where it ends. Below, this
+            // method REBUILDS Placements from disk — every Placement object in
+            // the working set is replaced — and the commands hold references to
+            // those objects. Carrying the stack across would mean a Ctrl+Z that
+            // writes to an object no longer in any room's list: no crash, no
+            // visible effect, and the edit the user thought they took back
+            // still there. See the header of UndoStack.cs, and doc/07.
+            _undo.Clear();
+
             _discardArmed = false;
             _state.BackgroundDirty = false;
             EditorLayout.ResetView();
@@ -2152,6 +2217,78 @@ namespace SorceryForge
         }
 
         // ====================================================================
+        // UNDO / REDO
+        // ====================================================================
+        // EDITOR_REVIEW item 11. The stack, the commands and the four rules
+        // they follow live in UndoStack.cs and EditorCommands.cs, device-free
+        // and driven headlessly by tools/EditCheck. What is HERE is the two
+        // ways an edit gets recorded, and the two entry points Ctrl+Z / Ctrl+Y
+        // reach.
+        //
+        // MAP ARRANGEMENT IS OUT OF SCOPE, deliberately. Dragging a room on the
+        // board is not per-room working state — it survives every room switch,
+        // which is the event that clears this stack — and it has its own Ctrl+S
+        // in its own mode. Folding it in would mean a stack whose entries some
+        // clears apply to and some do not. Recorded in doc/07.
+        // ====================================================================
+
+        /// <summary>Run a discrete edit AS a command, and record it.</summary>
+        // The preferred form: the command's Do IS the edit, so redo cannot
+        // drift from what the original click did.
+        private void ExecuteCommand(IEditorCommand command)
+        {
+            _undo.Execute(command, _cmd);
+            _discardArmed = false;   // an edit re-arms the discard guard
+        }
+
+        /// <summary>Record an edit that has already happened.</summary>
+        // For the gestures that are incremental by nature — a drag, a brush
+        // stroke, a paint swipe — where the "after" is only known once the
+        // button comes up. See UndoStack.PushApplied.
+        private void RecordCommand(IEditorCommand command)
+        {
+            _undo.PushApplied(command);
+            _discardArmed = false;
+        }
+
+        /// <summary>
+        /// Close anything the mouse is still in the middle of, so a half-done
+        /// gesture cannot merge into the entry undo is about to pop.
+        /// </summary>
+        // The generalisation of a rule the old background-only Ctrl+Z already
+        // had ("close any in-progress stroke first"). It now has three kinds of
+        // gesture to close, and forgetting one of them would mean an undo that
+        // pops a command while the mouse is still writing to the same state.
+        private void CloseOpenGestures()
+        {
+            EndStroke();
+            EndPaintStroke();
+            EndPlacementDrag();
+        }
+
+        /// <summary>Ctrl+Z. One path for every kind of edit.</summary>
+        private void UndoLastEdit()
+        {
+            CloseOpenGestures();
+            string? label = _undo.Undo(_cmd);
+            _discardArmed = false;
+            _state.Status = label == null
+                ? "Nothing to undo."
+                : $"Undid: {label} ({_undo.UndoDepth} more, Ctrl+Y redoes)";
+        }
+
+        /// <summary>Ctrl+Y (and Ctrl+Shift+Z).</summary>
+        private void RedoLastEdit()
+        {
+            CloseOpenGestures();
+            string? label = _undo.Redo(_cmd);
+            _discardArmed = false;
+            _state.Status = label == null
+                ? "Nothing to redo."
+                : $"Redid: {label} ({_undo.RedoDepth} more)";
+        }
+
+        // ====================================================================
         // UPDATE — INPUT
         // ====================================================================
 
@@ -2204,7 +2341,14 @@ namespace SorceryForge
         {
             if (_cropOpen) return _cropDragging;
             if (_mapMode) return _mapLeftDown || _mapMidDown;
-            return _state.IsMovingSelection || _state.IsMovingSpawn || _panning || _strokeActive;
+            // _paintStroke joins the list for the same reason _strokeActive is
+            // on it: a paint drag now has an END, and the command it records is
+            // committed by the release. Drag toward the room edge and the
+            // cursor routinely lands on a panel before the button comes up —
+            // gate that release on ImGui alone and the stroke stays open, and
+            // the next one merges into it.
+            return _state.IsMovingSelection || _state.IsMovingSpawn || _panning
+                || _strokeActive || _paintStroke.Count > 0;
         }
 
         /// <summary>Everything Update did before the chrome moved to ImGui.</summary>
@@ -2408,12 +2552,15 @@ namespace SorceryForge
                 if (LeftReleased() && _state.IsMovingSelection)
                 {
                     _state.IsMovingSelection = false;
-                    if (_state.AutoPunch && _state.SelectedPlacement != null)
-                        PunchBackground(_state.SelectedPlacement);
+                    if (_state.SelectedPlacement != null) CommitMove(_state.SelectedPlacement);
                 }
                 // Same for the spawn marker — it has no footprint to punch,
-                // so ending the drag is all there is to do.
-                if (LeftReleased()) _state.IsMovingSpawn = false;
+                // so recording the move is all there is to do.
+                if (LeftReleased() && _state.IsMovingSpawn)
+                {
+                    _state.IsMovingSpawn = false;
+                    CommitSpawnMove();
+                }
                 return;
             }
 
@@ -2438,6 +2585,10 @@ namespace SorceryForge
                     _state.IsMovingSpawn = false;
                     _state.IsMovingSelection = true;
                     _state.MoveOffset = _state.SelectedPlacement.Position - game;
+                    // Captured at the press, because the release is the only
+                    // moment that knows where the drag ended — and by then the
+                    // original position has been overwritten sixty times.
+                    _moveFrom = _state.SelectedPlacement.Position;
                     // Expand the inspector section for the freshly-selected
                     // placement so its attributes are visible immediately.
                     _state.Expand(_state.SelectedPlacement.Id);
@@ -2455,6 +2606,7 @@ namespace SorceryForge
                     _state.SpawnSelected = true;
                     _state.IsMovingSpawn = true;
                     _state.SpawnMoveOffset = _state.PlayerSpawn!.Value - game;
+                    _spawnMoveFrom = _state.PlayerSpawn.Value;
                     _state.Status = $"Moving player spawn ({(int)_state.PlayerSpawn.Value.X}, {(int)_state.PlayerSpawn.Value.Y}) — Delete clears it.";
                 }
                 else
@@ -2505,6 +2657,7 @@ namespace SorceryForge
             if (LeftReleased() && _state.IsMovingSpawn)
             {
                 _state.IsMovingSpawn = false;
+                CommitSpawnMove();
                 if (_state.PlayerSpawn.HasValue)
                     _state.Status = $"Player spawn at ({(int)_state.PlayerSpawn.Value.X}, {(int)_state.PlayerSpawn.Value.Y})";
                 return;
@@ -2516,17 +2669,49 @@ namespace SorceryForge
                 if (_state.SelectedPlacement != null)
                 {
                     _state.Status = $"Placed at ({(int)_state.SelectedPlacement.Position.X}, {(int)_state.SelectedPlacement.Position.Y})";
-
-                    // Auto-punch re-cuts at the final position once the drag
-                    // ends (not per-frame while dragging, which would smear a
-                    // trench along the whole path). The hole left at the drop
-                    // position stays: the background there was due for clearing
-                    // anyway, and cutting more than needed is harmless. If it
-                    // isn't, Erase mode's right-drag restores from the last
-                    // saved state.
-                    if (_state.AutoPunch) PunchBackground(_state.SelectedPlacement);
+                    CommitMove(_state.SelectedPlacement);
                 }
             }
+        }
+
+        /// <summary>
+        /// A finished placement drag: record it as one command, together with
+        /// the auto-punch it triggers, and leave nothing behind if the
+        /// placement did not actually move.
+        /// </summary>
+        // Auto-punch re-cuts at the FINAL position once the drag ends (not
+        // per-frame while dragging, which would smear a trench along the whole
+        // path). The hole left at the drop position stays: the background there
+        // was due for clearing anyway, and cutting more than needed is
+        // harmless. If it isn't, Erase mode's right-drag restores from the last
+        // saved state.
+        //
+        // Both halves go into ONE composite, so one release costs one Ctrl+Z.
+        private void CommitMove(Placement p)
+        {
+            bool moved = p.Position != _moveFrom;
+            IEditorCommand? punch = moved && _state.AutoPunch ? PunchBackgroundCore(p) : null;
+
+            if (!moved)
+            {
+                // A click that selected without dragging. Nothing changed, so
+                // nothing is recorded — the same rule that keeps a no-op brush
+                // stroke and an already-clear punch off the stack.
+                return;
+            }
+
+            var move = new MovePlacementCommand(p, _moveFrom, p.Position);
+            RecordCommand(punch == null
+                ? move
+                : new CompositeCommand(move.Label, move, punch));
+        }
+
+        /// <summary>A finished spawn-marker drag.</summary>
+        private void CommitSpawnMove()
+        {
+            if (!_state.PlayerSpawn.HasValue) return;
+            if (_state.PlayerSpawn.Value == _spawnMoveFrom) return;
+            RecordCommand(SetPlayerSpawnCommand.Move(_spawnMoveFrom, _state.PlayerSpawn.Value));
         }
 
         // --- PAINT MODE ----------------------------------------------------
@@ -2539,11 +2724,18 @@ namespace SorceryForge
         private void HandlePaintInput(Point screenPt)
         {
             if (_state.CollisionMap == null) return;
-            if (!EditorLayout.IsInsideCanvas(screenPt)) return;
 
             bool drawSolid = _mouseNow.LeftButton == ButtonState.Pressed;
             bool drawEmpty = _mouseNow.RightButton == ButtonState.Pressed;
-            if (!drawSolid && !drawEmpty) return;
+
+            // Both buttons up ends the drag, wherever the cursor is — so the
+            // command is committed even when the release happens off the canvas
+            // or over a panel. This runs BEFORE the inside-canvas test for that
+            // reason: gating it on the canvas would leave a stroke open until
+            // the next one started and fold the two together.
+            if (!drawSolid && !drawEmpty) { EndPaintStroke(); return; }
+
+            if (!EditorLayout.IsInsideCanvas(screenPt)) return;
 
             Vector2 game = EditorLayout.ScreenToGame(screenPt);
             int tx = (int)(game.X / TileConfig.TILE_SIZE);
@@ -2552,7 +2744,12 @@ namespace SorceryForge
                 return;
 
             int desired = drawSolid ? TileConfig.WALL_DARK_GRAY : TileConfig.EMPTY;
-            if (_state.CollisionMap.GetTile(tx, ty) == desired) return;
+            int had = _state.CollisionMap.GetTile(tx, ty);
+            if (had == desired) return;
+
+            // Only cells that actually changed join the stroke, which is what
+            // makes re-crossing a cell free and a no-op drag record nothing.
+            _paintStroke.Add(new TileEdit(tx, ty, had, desired));
 
             _state.CollisionMap.SetTile(tx, ty, desired);
             _state.CollisionDirty = true;
@@ -2592,8 +2789,10 @@ namespace SorceryForge
 
             if (!_strokeActive)
             {
-                if (_bgUndo.Count >= MaxUndo) _bgUndo.RemoveAt(0);
-                _bgUndo.Add((Color[])_bgPixels.Clone());
+                // A transient full-image clone, NOT a retained snapshot: it is
+                // diffed against the finished stroke in EndStroke and the
+                // command keeps only the rectangle that changed.
+                _strokeBefore = (Color[])_bgPixels.Clone();
                 _strokeActive = true;
                 _strokeChanged = false;
                 _discardArmed = false;   // new edits re-arm the discard guard
@@ -2625,14 +2824,56 @@ namespace SorceryForge
         }
 
         /// <summary>
-        /// Close the current stroke. A stroke that changed nothing drops its
-        /// undo snapshot so no-op clicks can't evict real history.
+        /// Close the current stroke and record it as ONE undo command. A stroke
+        /// that changed nothing records nothing, so no-op clicks can't evict
+        /// real history off the end of the stack.
         /// </summary>
+        // The no-op rule is now enforced twice over, and both are worth having:
+        // _strokeChanged says "no stamp reported a write", and
+        // BackgroundEditCommand.FromDiff returns null when the two images are
+        // identical regardless. The second catches the case the first cannot —
+        // a stroke that erased pixels and then restored exactly those pixels
+        // from the right-drag brush before letting go.
         private void EndStroke()
         {
-            if (_strokeActive && !_strokeChanged && _bgUndo.Count > 0)
-                _bgUndo.RemoveAt(_bgUndo.Count - 1);
+            if (_strokeActive && _strokeChanged && _strokeBefore != null
+                && _bgPixels != null && _currentBackground != null)
+            {
+                var command = BackgroundEditCommand.FromDiff(
+                    _strokeBefore, _bgPixels,
+                    _currentBackground.Width, _currentBackground.Height,
+                    "background stroke");
+                if (command != null) RecordCommand(command);
+            }
+
             _strokeActive = false;
+            _strokeChanged = false;
+            _strokeBefore = null;   // never retained past the stroke that took it
+        }
+
+        /// <summary>
+        /// Close the paint drag under the mouse and record every cell it
+        /// changed as ONE command. A drag that changed nothing records nothing.
+        /// </summary>
+        private void EndPaintStroke()
+        {
+            if (_paintStroke.Count > 0) RecordCommand(new PaintTilesCommand(_paintStroke));
+            _paintStroke.Clear();
+        }
+
+        /// <summary>
+        /// End a placement or spawn drag without recording anything.
+        /// </summary>
+        // Called only from CloseOpenGestures, i.e. from undo/redo. The normal
+        // end of a drag is the release handler in HandleCanvasInput, which
+        // records the move; this is the abnormal one, where the user pressed
+        // Ctrl+Z with the button still down. Recording a half-finished drag
+        // there would push a command the user never completed, on top of the
+        // one they are asking to take back.
+        private void EndPlacementDrag()
+        {
+            _state.IsMovingSelection = false;
+            _state.IsMovingSpawn = false;
         }
 
         /// <summary>Stamp the brush along the line from..to (Bresenham).</summary>
@@ -2678,11 +2919,19 @@ namespace SorceryForge
         // --- PUNCH-OUT (clear the background under a placement) -------------
 
         /// <summary>
+        /// The P key and the inspector's Background row: punch, and record it
+        /// as its own undo entry.
+        /// </summary>
+        private void PunchBackground(Placement p)
+        {
+            var command = PunchBackgroundCore(p);
+            if (command != null) RecordCommand(command);
+        }
+
+        /// <summary>
         /// Clear the background pixels under the given placement's 24x24
-        /// footprint to transparent. One undo snapshot per punch (Ctrl+Z works
-        /// like an erase stroke). No-op (with status explanation) when the room
-        /// has no editable background PNG, and snapshot-free when every pixel
-        /// in the rect is already transparent.
+        /// footprint to transparent, and return the command that describes it —
+        /// WITHOUT recording it. Returns null when nothing was punched.
         ///
         /// Why this exists: rooms are built from screenshots of the original
         /// game, which still contain its baked-in artwork (doors especially).
@@ -2690,7 +2939,13 @@ namespace SorceryForge
         /// bleed through the entity's animation frames — so they get cut out.
         /// Transparent renders as black in-game, which is what we want here.
         /// </summary>
-        private void PunchBackground(Placement p)
+        // It returns the command rather than pushing it because AUTO-PUNCH runs
+        // as part of another action: dropping a placement, or ending a move.
+        // Those callers compose the punch with their own command so that one
+        // click costs one Ctrl+Z — otherwise the first undo would fill the hole
+        // back in and leave the door standing in it, which is a state the user
+        // never asked for and cannot reach any other way.
+        private IEditorCommand? PunchBackgroundCore(Placement p)
         {
             // Same guard HandleEraseInput uses: no raw PNG behind this room
             // means there are no pixels we're allowed to edit (the XNB
@@ -2698,7 +2953,7 @@ namespace SorceryForge
             if (_bgPixels == null || _bgOriginal == null || _currentBackground == null)
             {
                 _state.Status = "Punch: this room has no editable background PNG.";
-                return;
+                return null;
             }
 
             // A punch is its own one-shot "stroke". Closing any open erase
@@ -2720,13 +2975,13 @@ namespace SorceryForge
             if (x0 >= x1 || y0 >= y1)
             {
                 _state.Status = $"Punch: {p.DisplayName} lies outside the background image.";
-                return;
+                return null;
             }
 
             // Pre-scan. Punching an already-clear rect changes nothing, and a
-            // no-op action must not push a snapshot — that would evict real
-            // history off the end of the MaxUndo ring (same rule EndStroke
-            // applies to no-op brush strokes).
+            // no-op action must not push a command — that would evict real
+            // history off the end of the UndoStack.MaxDepth ring (same rule
+            // EndStroke applies to no-op brush strokes).
             bool anyOpaque = false;
             for (int y = y0; y < y1 && !anyOpaque; y++)
             for (int x = x0; x < x1 && !anyOpaque; x++)
@@ -2735,11 +2990,15 @@ namespace SorceryForge
             if (!anyOpaque)
             {
                 _state.Status = $"Punch: nothing to punch — background under {p.DisplayName} is already clear.";
-                return;
+                return null;
             }
 
-            if (_bgUndo.Count >= MaxUndo) _bgUndo.RemoveAt(0);
-            _bgUndo.Add((Color[])_bgPixels.Clone());
+            // Transient, like the erase stroke's: the clone is diffed below and
+            // the command keeps only the 24x24 rectangle. Going through the
+            // same FromDiff as the stroke rather than slicing the known rect
+            // here is deliberate — one construction path for background
+            // history means one place for tools/EditCheck to hold to account.
+            var before = (Color[])_bgPixels.Clone();
 
             for (int y = y0; y < y1; y++)
             for (int x = x0; x < x1; x++)
@@ -2749,6 +3008,9 @@ namespace SorceryForge
             _state.BackgroundDirty = true;
             _discardArmed = false;         // new edits re-arm the discard guard
             _state.Status = $"Punched background under {p.DisplayName} at ({(int)p.Position.X}, {(int)p.Position.Y}) — Ctrl+Z undoes, Save writes PNG.";
+
+            return BackgroundEditCommand.FromDiff(before, _bgPixels, texW, texH,
+                                                  $"punch under {p.Id}");
         }
 
         // --- REACHABILITY VALIDATOR ----------------------------------------
@@ -3016,50 +3278,34 @@ namespace SorceryForge
             {
                 if (_state.SelectedPlacement != null)
                 {
-                    _state.Placements.Remove(_state.SelectedPlacement);
-                    _state.Status = $"Deleted {_state.SelectedPlacement.DisplayName}";
-                    _state.SelectedPlacement = null;
-                    _state.PlacementsDirty = true;
-                    _discardArmed = false;   // new edits re-arm the discard guard
+                    var doomed = _state.SelectedPlacement;
+                    // The index goes into the command so undo puts it back
+                    // where it was, not on the end of the list.
+                    ExecuteCommand(new DeletePlacementCommand(doomed, _state.Placements.IndexOf(doomed)));
+                    _state.Status = $"Deleted {doomed.DisplayName} — Ctrl+Z undoes.";
                 }
                 else if (_state.SpawnSelected && _state.PlayerSpawn.HasValue)
                 {
                     // Back to null, not to (160, 80): the next save then omits
                     // the "playerSpawn" key entirely and the room falls back to
                     // RoomLayoutLoader.DefaultPlayerSpawn in game.
-                    _state.PlayerSpawn = null;
-                    _state.SpawnSelected = false;
-                    _state.IsMovingSpawn = false;
-                    _state.HasValidated = false;
-                    _state.PlacementsDirty = true;
-                    _discardArmed = false;
-                    _state.Status = "Cleared the player spawn — this room falls back to (160, 80). Save to persist.";
+                    ExecuteCommand(SetPlayerSpawnCommand.Clear(_state.PlayerSpawn.Value));
+                    _state.Status = "Cleared the player spawn — this room falls back to (160, 80). Ctrl+Z undoes; Save to persist.";
                 }
             }
 
             // Ctrl+S → save.
             if (ctrl && Pressed(Keys.S)) SaveCurrentRoom();
 
-            // Ctrl+Z → undo the last erase/restore stroke (background only).
-            if (ctrl && Pressed(Keys.Z) && _bgUndo.Count > 0 &&
-                _bgPixels != null && _currentBackground != null)
-            {
-                // Close any in-progress stroke first: a still-held drag then
-                // starts a fresh stroke with a fresh snapshot next frame,
-                // instead of silently merging into the popped history entry.
-                EndStroke();
-                if (_bgUndo.Count > 0)
-                {
-                    var snap = _bgUndo[^1];
-                    _bgUndo.RemoveAt(_bgUndo.Count - 1);
-                    bool differs = !snap.AsSpan().SequenceEqual(_bgPixels);
-                    Array.Copy(snap, _bgPixels, snap.Length);
-                    _currentBackground.SetData(_bgPixels);
-                    if (differs) _state.BackgroundDirty = true;
-                    _discardArmed = false;
-                    _state.Status = $"Undid background stroke ({_bgUndo.Count} more in history).";
-                }
-            }
+            // Ctrl+Z → undo; Ctrl+Y and Ctrl+Shift+Z → redo. One path for every
+            // kind of edit, which is the whole of EDITOR_REVIEW item 11.
+            //
+            // REDO IS TESTED FIRST, and the undo branch excludes Shift. Both
+            // halves are required: without the order, Ctrl+Shift+Z would fall
+            // into the undo branch; without the exclusion, it would do both.
+            if (ctrl && shift && Pressed(Keys.Z)) RedoLastEdit();
+            else if (ctrl && Pressed(Keys.Y)) RedoLastEdit();
+            else if (ctrl && !shift && Pressed(Keys.Z)) UndoLastEdit();
 
             // P → punch the background out from under the selected placement.
             // Place mode only: that's the mode where a placement can be
@@ -3108,17 +3354,20 @@ namespace SorceryForge
             // exactly one per room, by construction rather than by validation.
             if (entry.IsPlayerSpawn)
             {
-                _state.PlayerSpawn = ClampPointToRoom(gamePos);
-                _state.SelectedPlacement = null;
-                _state.IsMovingSelection = false;
-                _state.SpawnSelected = true;
+                Vector2? before = _state.PlayerSpawn;
+                Vector2 after = ClampPointToRoom(gamePos);
                 _state.Dragging = null;
-                _state.HasValidated = false;    // the flood-fill origin moved
-                _state.PlacementsDirty = true;
-                _discardArmed = false;          // new edits re-arm the discard guard
+
+                // Set or Move by whether the room already had a spawn — one
+                // state transition, two labels, because "set player spawn" and
+                // "move player spawn" are what the author did.
+                ExecuteCommand(before.HasValue
+                    ? SetPlayerSpawnCommand.Move(before.Value, after)
+                    : SetPlayerSpawnCommand.Set(before, after));
+
                 _state.Status =
-                    $"Player spawn set to ({(int)_state.PlayerSpawn.Value.X}, {(int)_state.PlayerSpawn.Value.Y}) — " +
-                    "drag to move, Delete to clear, Ctrl+S writes layout JSON.";
+                    $"Player spawn set to ({(int)after.X}, {(int)after.Y}) — " +
+                    "drag to move, Delete to clear, Ctrl+Z undoes, Ctrl+S writes layout JSON.";
                 return;
             }
 
@@ -3147,21 +3396,28 @@ namespace SorceryForge
             };
 
             ClampToRoom(placement);
-            _state.Placements.Add(placement);
-            _state.SelectedPlacement = placement;
-            _state.Expand(placement.Id);
             _state.Dragging = null;
-            _state.HasValidated = false;
-            _state.HasValidatedDoors = false;
-            _state.PlacementsDirty = true;
-            _discardArmed = false;         // new edits re-arm the discard guard
+
+            // The add itself, through its own command — appended, which is
+            // where the list has always grown, and where an undo/redo cycle
+            // puts it back so the saved file's order never shifts.
+            var add = new AddPlacementCommand(placement, _state.Placements.Count);
+            add.Do(_cmd);
             _state.Status = $"Placed {placement.DisplayName} at ({(int)placement.Position.X}, {(int)placement.Position.Y})";
 
             // Auto-punch runs AFTER the clamp, so the hole matches the position
             // the placement actually ended up at. It overwrites the status line
             // with its own report — that's deliberate; the punch is the part
             // that touched the PNG and therefore the part worth reporting.
-            if (_state.AutoPunch) PunchBackground(placement);
+            //
+            // Composed with the add rather than pushed beside it: ONE click
+            // must cost ONE Ctrl+Z. Undoing them separately would leave a hole
+            // with the door still standing in it — a state the author never
+            // asked for and cannot reach any other way.
+            IEditorCommand? punch = _state.AutoPunch ? PunchBackgroundCore(placement) : null;
+            RecordCommand(punch == null
+                ? add
+                : new CompositeCommand(add.Label, add, punch));
         }
 
         private Placement? HitTestPlacements(Vector2 gamePos)
@@ -3263,6 +3519,8 @@ namespace SorceryForge
             // board's unsaved state is not the room's.
             RoomDirty = _state.PlacementsDirty || _state.CollisionDirty || _state.BackgroundDirty,
             Zoom = EditorLayout.Zoom,
+            CanUndo = _undo.CanUndo,
+            CanRedo = _undo.CanRedo,
             MapRoomCount = _mapRooms.Count,
             MapZoomPercent = _mapView.ZoomPercent,
 
@@ -3690,8 +3948,22 @@ namespace SorceryForge
         //
         // Note what they all leave ALONE. None writes _state.Status: the status
         // bar keeps whatever it had, which is how these have always behaved.
-        // None clears HasValidated (they change door wiring, not geometry), and
-        // none touches selection or collapse.
+        //
+        // TWO THINGS CHANGED IN PR 7b, both consequences of these edits joining
+        // the undo stack:
+        //
+        //   They now clear HasValidated as well as HasValidatedDoors. That is
+        //   MarkPlacementsChanged's doing, and it is the conservative reading:
+        //   one flag-clearing rule for every placement edit, at the cost of
+        //   re-running a validator that would have given the same answer.
+        //
+        //   They now SELECT the placement and EXPAND its section. An action
+        //   that can be replayed by Ctrl+Z has to be visible when it is
+        //   replayed — undoing a door retarget inside a collapsed section is an
+        //   undo you cannot confirm — and a rule that applied only on the undo
+        //   half would make Do and Undo asymmetric, which is precisely the
+        //   defect the round-trip property in tools/EditCheck exists to catch.
+        //   So it applies to both, and clicking a field selects its placement.
         // ====================================================================
 
         /// <summary>Section header click: select the placement AND toggle its collapse.</summary>
@@ -3706,42 +3978,64 @@ namespace SorceryForge
             _state.ToggleCollapse(p.Id);
         }
 
+        /// <summary>
+        /// Apply one inspector change as one undoable command, or do nothing
+        /// when the change is a no-op.
+        /// </summary>
+        // THE ONE PATH every inspector field takes, so that "one applied change
+        // = one Ctrl+Z" is a property of the code rather than a habit each
+        // field has to remember. The no-op check is what keeps a picker that
+        // re-selects the value already showing from filling the stack with
+        // entries that undo nothing — the same rule an already-clear punch and
+        // a no-op brush stroke follow.
+        //
+        // The dirty flags are NOT set here: SetPlacementFieldCommand sets them
+        // in both directions, which is what makes undo dirty the room too.
+        private void ApplyPlacementFields(Placement p, in PlacementFields before,
+                                          in PlacementFields after, string what)
+        {
+            if (after.Equals(before)) return;
+            ExecuteCommand(new SetPlacementFieldCommand(p, before, after, what));
+        }
+
         private void CycleDoorOpeningSide(Placement p)
         {
-            p.DoorOpeningSide = p.DoorOpeningSide == "LeftOpening" ? "RightOpening" : "LeftOpening";
-            _state.HasValidatedDoors = false;
-            _state.PlacementsDirty = true;
-            _discardArmed = false;
+            var before = PlacementFields.From(p);
+            var after = before;
+            after.DoorOpeningSide = before.DoorOpeningSide == "LeftOpening" ? "RightOpening" : "LeftOpening";
+            ApplyPlacementFields(p, before, after, "opening side");
         }
 
         /// <summary>Advance the target room — and blank the target door with it.</summary>
         // The blanking is load-bearing, not tidiness: a door id is only
         // meaningful inside one room, so carrying the old one across a room
         // change would leave a link that validates as orphan-door and reads
-        // like a typo.
+        // like a typo. Both writes are ONE command, so undoing the room change
+        // restores the door id with it — a per-field command would undo half of
+        // this and leave exactly the broken link the blanking exists to avoid.
         private void CycleDoorTargetRoom(Placement p)
         {
-            p.DoorTargetRoomId = NextRoomId(p.DoorTargetRoomId);
-            p.DoorTargetDoorId = "";
-            _state.HasValidatedDoors = false;
-            _state.PlacementsDirty = true;
-            _discardArmed = false;
+            var before = PlacementFields.From(p);
+            var after = before;
+            after.DoorTargetRoomId = NextRoomId(p.DoorTargetRoomId);
+            after.DoorTargetDoorId = "";
+            ApplyPlacementFields(p, before, after, "target room");
         }
 
         private void CycleDoorTargetDoor(Placement p)
         {
-            p.DoorTargetDoorId = NextTargetDoorId(p.DoorTargetRoomId, p.DoorTargetDoorId);
-            _state.HasValidatedDoors = false;
-            _state.PlacementsDirty = true;
-            _discardArmed = false;
+            var before = PlacementFields.From(p);
+            var after = before;
+            after.DoorTargetDoorId = NextTargetDoorId(p.DoorTargetRoomId, p.DoorTargetDoorId);
+            ApplyPlacementFields(p, before, after, "target door");
         }
 
         private void CycleBlockedDoorRequiredItem(Placement p)
         {
-            p.RequiredItem = NextItemType(p.RequiredItem);
-            _state.HasValidatedDoors = false;
-            _state.PlacementsDirty = true;
-            _discardArmed = false;
+            var before = PlacementFields.From(p);
+            var after = before;
+            after.RequiredItem = NextItemType(p.RequiredItem);
+            ApplyPlacementFields(p, before, after, "required item");
         }
 
         private static ItemType NextItemType(ItemType current)
@@ -3895,6 +4189,9 @@ namespace SorceryForge
         {
             if (ConfirmDiscardUnsavedEdits(includeMap: true)) Exit();
         }
+
+        void IChromeActions.Undo() => UndoLastEdit();
+        void IChromeActions.Redo() => RedoLastEdit();
 
         void IChromeActions.SetMode(EditorMode mode) => SetMode(mode);
         void IChromeActions.ToggleSnap() => ToggleSnap();

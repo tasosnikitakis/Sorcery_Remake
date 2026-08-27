@@ -47,6 +47,23 @@ namespace SorceryForge.UI
         /// <summary>Integer canvas zoom: one of 1, 2, 4, 8, 16.</summary>
         public int Zoom;
 
+        // ---- Undo / redo -----------------------------------------------------
+        //
+        // Two booleans and not the labels, because the menu shows "Undo" and
+        // "Redo" with their shortcuts and greys them by whether their stack has
+        // anything in it. The LABEL of what would be undone is reported by the
+        // status line at the moment it happens, where it names an entity the
+        // author can go and look at; a menu that read "Undo move
+        // chateau_0_blockeddoor_2" would change width every time anything
+        // happened, and would be read by nobody, because nobody opens a menu to
+        // find out what Ctrl+Z is about to do.
+
+        /// <summary>True when the undo stack has at least one entry.</summary>
+        public bool CanUndo;
+
+        /// <summary>True when the redo stack has at least one entry.</summary>
+        public bool CanRedo;
+
         // ---- Map view -------------------------------------------------------
 
         /// <summary>Rooms currently on the board (the board's list, not the registry's).</summary>

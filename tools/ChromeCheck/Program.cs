@@ -58,6 +58,7 @@
 //  11 pickers     candidate rows, the quantize toggle, and the crop step's two
 //                 buttons - including that the crop IMAGE is left to the canvas
 //  12 modality    with a modal up, nothing behind it answers a click
+//  13 undo menu   Edit > Undo / Redo, greyed by their stacks and by the board
 //
 // HOW TO RUN
 //
@@ -126,6 +127,7 @@ namespace SorceryRemake.Tools.ChromeCheck
             CheckInspector(harness);
             CheckPickers(harness);
             CheckModality(harness);
+            CheckUndoMenu();
 
             Console.WriteLine();
             Console.WriteLine($"  {_checks} checks, {_failures} failure(s)");
@@ -1098,6 +1100,50 @@ namespace SorceryRemake.Tools.ChromeCheck
             AssertPicked("modal closed: the palette answers again", actions, "Sword");
         }
 
+        // ====================================================================
+        // 13. UNDO MENU — Edit > Undo / Redo, and when they are dead
+        // ====================================================================
+        // PR 7b. The two items are the only ones in the menus whose enablement
+        // changes moment to moment, which makes them the two most likely to end
+        // up always-on — and an always-on Undo that sometimes does nothing is
+        // how an author learns to distrust the whole menu.
+        //
+        // Asserted through the named predicates, as section 6 does and for the
+        // same reason: the rule is one table, in one place, and a condition
+        // scattered through the menu bodies could not be tested at all.
+        // ====================================================================
+
+        private static void CheckUndoMenu()
+        {
+            Section("13. UNDO MENU — Edit > Undo / Redo, greyed when their stack is empty");
+
+            var empty = new ChromeView { MapMode = false, CanUndo = false, CanRedo = false };
+            var loaded = new ChromeView { MapMode = false, CanUndo = true, CanRedo = true };
+            var board = new ChromeView { MapMode = true, CanUndo = true, CanRedo = true };
+
+            Assert("Undo is dead with an empty stack", !MenuBar.CanUndo(empty));
+            Assert("Undo is live once something has been done", MenuBar.CanUndo(loaded));
+            Assert("Redo is dead with an empty redo stack", !MenuBar.CanRedo(empty));
+            Assert("Redo is live once something has been undone", MenuBar.CanRedo(loaded));
+
+            // The board's rule, which is the one that would be forgotten: Ctrl+Z
+            // is read in HandleKeyboardShortcuts, and map mode returns before
+            // that ever runs. A live menu item there would be the only way to
+            // undo from the board, i.e. a second entry point into a stack whose
+            // room is not the one on screen.
+            Assert("Undo is dead on the board even with a full stack", !MenuBar.CanUndo(board));
+            Assert("Redo is dead on the board even with a full redo stack", !MenuBar.CanRedo(board));
+
+            // Half-states: one stack full, the other empty. The two items are
+            // independent, and a shared condition would show up here.
+            var undoOnly = new ChromeView { CanUndo = true, CanRedo = false };
+            var redoOnly = new ChromeView { CanUndo = false, CanRedo = true };
+            Assert("with only undo available, Redo stays dead",
+                MenuBar.CanUndo(undoOnly) && !MenuBar.CanRedo(undoOnly));
+            Assert("with only redo available, Undo stays dead",
+                !MenuBar.CanUndo(redoOnly) && MenuBar.CanRedo(redoOnly));
+        }
+
         private static RoomCandidate Candidate(string asset, string roomId, string display, bool ok) =>
             new()
             {
@@ -1191,6 +1237,9 @@ namespace SorceryRemake.Tools.ChromeCheck
             public void ToggleImportQuantize() => Calls.Add(nameof(ToggleImportQuantize));
             public void ConfirmCrop() => Calls.Add(nameof(ConfirmCrop));
             public void CancelCrop() => Calls.Add(nameof(CancelCrop));
+
+            public void Undo() => Calls.Add(nameof(Undo));
+            public void Redo() => Calls.Add(nameof(Redo));
 
             public void CyclePrevRoom() => Calls.Add(nameof(CyclePrevRoom));
             public void CycleNextRoom() => Calls.Add(nameof(CycleNextRoom));
