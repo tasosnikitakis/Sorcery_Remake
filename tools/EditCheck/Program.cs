@@ -289,6 +289,24 @@ namespace SorceryRemake.Tools.EditCheck
                 Assert("  and touches exactly the one pixel that differed", changed == 1,
                     $"{changed} pixels moved");
                 Assert("  which is the pixel it was told about", canvas[3 * 8 + 5] == Color.Red);
+
+                // AND SAYS SO. Writing the array is only half the job: in the
+                // editor those pixels are mirrored into a Texture2D, and
+                // BackgroundPixelsChanged is the only thing that pushes them.
+                // A command that wrote the array and stayed silent would pass
+                // every other assertion in this file and leave the author
+                // looking at a background that did not change when they pressed
+                // Ctrl+Z.
+                Assert("  and tells the target its pixels moved", bg.PushCount == 1,
+                    bg.PushCount.ToString());
+                tight.Undo(ctx);
+                Assert("  on the way back as well", bg.PushCount == 2, bg.PushCount.ToString());
+                // To the value the COMMAND recorded, which is the source
+                // image's, not this canvas's — a command carries its own
+                // before-state and does not consult what it is applied to.
+                Assert("  and the undo wrote the recorded before-value",
+                    canvas[3 * 8 + 5] == identical[3 * 8 + 5],
+                    canvas[3 * 8 + 5].ToString());
             }
 
             // A room with no editable PNG has null pixels. The stack is cleared

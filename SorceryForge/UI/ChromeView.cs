@@ -81,7 +81,7 @@ namespace SorceryForge.UI
         // hand-edited data that points at one. Offering them in an AUTHORING
         // list would make that verdict something the editor produces rather
         // than something it tolerates.
-        public IReadOnlyList<string> TargetRoomIds;
+        public IReadOnlyList<string>? TargetRoomIds;
 
         /// <summary>
         /// The item catalog a blocked door can require. None is excluded.
@@ -92,7 +92,7 @@ namespace SorceryForge.UI
         // blocked door needing nothing is broken data, the cycle could never
         // reach it either, and a hand-edited JSON that says None still SHOWS
         // "None" in the row above the picker.
-        public IReadOnlyList<ItemType> RequiredItems;
+        public IReadOnlyList<ItemType>? RequiredItems;
 
         /// <summary>
         /// The door ids of a given room: its saved doors, plus the unsaved ones

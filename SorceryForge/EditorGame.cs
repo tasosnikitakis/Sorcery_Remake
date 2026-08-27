@@ -1617,6 +1617,19 @@ namespace SorceryForge
 
         private void ToggleMapMode()
         {
+            // Close whatever the mouse was in the middle of before the room
+            // stops being the live surface. Tab is read BEFORE HandleCanvasInput
+            // in UpdateEditor, so a paint or erase drag can genuinely still be
+            // held when the board comes up — and map mode's own
+            // WorldGestureInProgress branch does not know about either of them.
+            // Left open, the drag would sit there until the room was next
+            // touched and then MERGE with the next one into a single undo entry.
+            if (!_mapMode)
+            {
+                EndStroke();
+                EndPaintStroke();
+            }
+
             if (_mapMode) LeaveMapMode();
             else EnterMapMode();
         }
@@ -2282,6 +2295,12 @@ namespace SorceryForge
         // had ("close any in-progress stroke first"). It now has three kinds of
         // gesture to close, and forgetting one of them would mean an undo that
         // pops a command while the mouse is still writing to the same state.
+        //
+        // ALL THREE CLOSE BY RECORDING, never by discarding. Each gesture's
+        // effect is already in the state by the time this runs — the canvas is
+        // handled before the keyboard in the same frame — so a close that threw
+        // the record away would strand the edit rather than cancel it. See
+        // EndPlacementDrag, which got this wrong once.
         private void CloseOpenGestures()
         {
             EndStroke();
@@ -2885,18 +2904,43 @@ namespace SorceryForge
         }
 
         /// <summary>
-        /// End a placement or spawn drag without recording anything.
+        /// End a placement or spawn drag that is still held, RECORDING it,
+        /// exactly as its release handler would have.
         /// </summary>
-        // Called only from CloseOpenGestures, i.e. from undo/redo. The normal
-        // end of a drag is the release handler in HandleCanvasInput, which
-        // records the move; this is the abnormal one, where the user pressed
-        // Ctrl+Z with the button still down. Recording a half-finished drag
-        // there would push a command the user never completed, on top of the
-        // one they are asking to take back.
+        // Called only from CloseOpenGestures, i.e. from Ctrl+Z / Ctrl+Y with
+        // the mouse button still down.
+        //
+        // IT MUST RECORD, and the first version of this method did not. The
+        // reasoning for discarding was that a half-finished drag is a command
+        // the author never completed — which is wrong, and wrong in the
+        // direction that loses work. HandleCanvasInput runs BEFORE
+        // HandleKeyboardShortcuts in the same frame (see UpdateEditor), so by
+        // the time Ctrl+Z is read the placement has ALREADY been moved and
+        // PlacementsDirty is already set. Not recording it does not undo it; it
+        // strands it. And because both release handlers are gated on
+        // IsMovingSelection, which this had just cleared, the release could
+        // never commit it either — so the placement sat at its dragged position
+        // with no undo entry, no auto-punch, and an unrelated older edit popped
+        // in its place.
+        //
+        // Recording makes CloseOpenGestures uniform: every gesture closes by
+        // committing itself, so the Ctrl+Z that closed it then pops THAT
+        // command — which is what "take back the last thing I did" means when
+        // the last thing is the drag under your hand. A drag that ended where
+        // it started still records nothing, because CommitMove checks.
         private void EndPlacementDrag()
         {
-            _state.IsMovingSelection = false;
-            _state.IsMovingSpawn = false;
+            if (_state.IsMovingSelection)
+            {
+                _state.IsMovingSelection = false;
+                if (_state.SelectedPlacement != null) CommitMove(_state.SelectedPlacement);
+            }
+
+            if (_state.IsMovingSpawn)
+            {
+                _state.IsMovingSpawn = false;
+                CommitSpawnMove();
+            }
         }
 
         /// <summary>Stamp the brush along the line from..to (Bresenham).</summary>
