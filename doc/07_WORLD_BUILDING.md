@@ -335,6 +335,23 @@ Place them in SorceryForge and save; that writes `assets/data/layout_forest_1.js
 
 `BuildDoorsForRoom` turns each door entry into a `DoorComponent` at room-load time. `playerSpawn` is optional — see [Player Entry Position](#player-entry-position).
 
+#### Wiring a door in the inspector
+
+Select the door on the canvas and use the inspector's fields:
+
+| Field | What it does |
+|---|---|
+| `Opens` | flips `LeftOpening` / `RightOpening` — one click, because there are only two values |
+| `Room` | **click to open a filterable list** of every registry room. Type to narrow, `Enter` takes the top hit, `Esc` closes. |
+| `Door` | the same list, of the doors belonging to whichever room `Room` names — plus this room's own **unsaved** doors when it targets itself, so a two-door corridor can be wired before either end is written |
+| `Needs` | (blocked doors) the same list, of item types |
+
+Filtering is a **substring** match, case-insensitive: typing `topright` finds `chateau1_door_topright`, which a prefix match would not — and the second half of the id is the half anyone remembers. `(none)` is a real entry in the `Room` and `Door` lists and stores the empty string; a door with no target is what an unfinished room looks like.
+
+**Choosing a room blanks the door.** A door id is only meaningful inside one room, so carrying the old one across would leave a link that validates as `orphan-door` and reads like a typo. Both writes are a single undo entry, so `Ctrl+Z` restores the pair.
+
+**Test rooms are not offered.** `room_1` and `room_2` are dev scaffolding registered in `Game1.RegisterTestRooms`. The door validator tolerates a hand-edited target pointing at one (verdict `ok-test`), but the editor will not author one.
+
 ### 5. Author content
 
 Place items / enemies / wizards / blocked doors in SorceryForge and save; that writes `assets/data/content_forest_1.json`, which `RoomRegistry.GetContent` prefers over any hardcoded entry. (`RoomRegistry.Initialize`'s C# entries remain only as the fallback for the test rooms, which have no JSON.)

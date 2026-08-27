@@ -25,11 +25,19 @@
 //   only selected/unselected, where an ImGui header hovers by default. The
 //   chevron is a literal '+' or '-' followed by two spaces, not a triangle.
 //
-//   A field is NOT an InputText or a Combo. Every editable field cycles: one
-//   click advances to the next value. That is the whole interaction, it is what
-//   EDITOR_REVIEW item 10 is scheduled to replace with list pickers in a LATER
-//   PR, and quietly turning them into dropdowns here would be that PR arriving
-//   early and unreviewed.
+//   A field is NOT an ImGui Combo either, even now that three of them open a
+//   list. PR 7b replaced the cycle-buttons on "Room", "Door" and "Needs" with
+//   filterable pickers (EDITOR_REVIEW item 10) — but the ROW is unchanged: the
+//   same 16 px label over the same full-width 22 px value box, hit-tested the
+//   same way, on the same press edge. Only what the click does is different,
+//   which is why every geometry constant below is untouched and
+//   tools/ChromeCheck's row arithmetic still finds each field where it was.
+//   An ImGui Combo would have brought its own arrow, its own frame padding and
+//   its own release-edge click, and none of those are what this panel looks or
+//   behaves like.
+//
+//   "Opens" still cycles. Two values need no list: a dropdown there would be
+//   two clicks and a popup to do what one click already does.
 //
 // LAYOUT is the old arithmetic, kept: 22 + 18 header lines, a 16 px label line
 // over a full-width 22 px value box, 40 px rows, a 4 px gap between rows, a
@@ -45,6 +53,7 @@
 using ImGuiNET;
 using SorceryRemake.Core;
 using System;
+using System.Collections.Generic;
 using NVector2 = System.Numerics.Vector2;
 
 namespace SorceryForge.UI
@@ -115,7 +124,7 @@ namespace SorceryForge.UI
                             new NVector2(EditorLayout.InspectorWidth, bodyHeight),
                             ImGuiChildFlags.None, MenuBar.Inert(view)))
                     {
-                        DrawSections(actions, state);
+                        DrawSections(actions, state, view);
                     }
                     ImGui.EndChild();
                 }
@@ -125,7 +134,7 @@ namespace SorceryForge.UI
             ImGui.PopStyleVar();
         }
 
-        private static void DrawSections(IChromeActions actions, EditorState state)
+        private static void DrawSections(IChromeActions actions, EditorState state, in ChromeView view)
         {
             float contentW = EditorLayout.InspectorWidth - Padding * 2;
 
@@ -160,7 +169,7 @@ namespace SorceryForge.UI
 
                 if (!collapsed)
                 {
-                    SectionBody(actions, placement, contentW - BodyIndent * 2);
+                    SectionBody(actions, placement, contentW - BodyIndent * 2, view);
                     Gap(BodyGap);
                 }
 
@@ -223,7 +232,8 @@ namespace SorceryForge.UI
         // SECTION BODY
         // ====================================================================
 
-        private static void SectionBody(IChromeActions actions, Placement p, float width)
+        private static void SectionBody(IChromeActions actions, Placement p, float width,
+                                        in ChromeView view)
         {
             float x = Padding + BodyIndent;
 
@@ -247,18 +257,30 @@ namespace SorceryForge.UI
                 case PlacementKind.BlockedDoor:
                     // No "(none)" substitution here: an ItemType of None shows
                     // as "None", which is what a hand-edited JSON produces and
-                    // what the cycle can never reach again.
-                    Row(x, width, "Needs", p.RequiredItem.ToString(),
-                        () => actions.CycleBlockedDoorRequiredItem(p));
+                    // what neither the cycle nor the picker can reach again.
+                    PickerRow(x, width, "Needs", p.RequiredItem.ToString(),
+                        ItemNames(view), picked =>
+                        {
+                            if (Enum.TryParse(picked, out ItemType item))
+                                actions.SetBlockedDoorRequiredItem(p, item);
+                        });
                     break;
 
                 case PlacementKind.Door:
                     Row(x, width, "Opens", p.DoorOpeningSide,
                         () => actions.CycleDoorOpeningSide(p));
-                    Row(x, width, "Room", OrNone(p.DoorTargetRoomId),
-                        () => actions.CycleDoorTargetRoom(p));
-                    Row(x, width, "Door", OrNone(p.DoorTargetDoorId),
-                        () => actions.CycleDoorTargetDoor(p));
+
+                    // Room and Door are the two EDITOR_REVIEW item 10 named:
+                    // the first is a list of every room in the world, and the
+                    // second depends on which one is chosen, so it is fetched
+                    // rather than snapshotted.
+                    PickerRow(x, width, "Room", OrNone(p.DoorTargetRoomId),
+                        WithNone(view.TargetRoomIds),
+                        picked => actions.SetDoorTargetRoom(p, NoneToEmpty(picked)));
+
+                    PickerRow(x, width, "Door", OrNone(p.DoorTargetDoorId),
+                        WithNone(view.DoorIdsForRoom?.Invoke(p.DoorTargetRoomId)),
+                        picked => actions.SetDoorTargetDoor(p, NoneToEmpty(picked)));
                     break;
             }
 
@@ -269,8 +291,100 @@ namespace SorceryForge.UI
                 () => actions.PunchBackground(p));
         }
 
+        // ====================================================================
+        // OPTION LISTS
+        // ====================================================================
+        // Each is rebuilt into a reused buffer rather than allocated per frame:
+        // the inspector redraws sixty times a second whether or not anything is
+        // open, and a room with eight doors would otherwise mint sixteen lists
+        // a frame for a question nobody is asking.
+        //
+        // Safe as a single shared buffer because at most one popup is open at a
+        // time, and the buffer is consumed inside the PickerRow call that
+        // filled it.
+
+        private static readonly List<string> _options = new();
+
+        /// <summary>"(none)" first, then the ids. Null becomes just "(none)".</summary>
+        // "(none)" is a REAL entry rather than a way to clear the field with a
+        // separate gesture, because it is a real value: a door with no target
+        // is what an unfinished room looks like, and the cycle had an empty
+        // entry for exactly the same reason.
+        private static List<string> WithNone(IReadOnlyList<string>? ids)
+        {
+            _options.Clear();
+            _options.Add(NoneLabel);
+            if (ids != null)
+                for (int i = 0; i < ids.Count; i++) _options.Add(ids[i]);
+            return _options;
+        }
+
+        private static List<string> ItemNames(in ChromeView view)
+        {
+            _options.Clear();
+            var items = view.RequiredItems;
+            if (items != null)
+                for (int i = 0; i < items.Count; i++) _options.Add(items[i].ToString());
+            return _options;
+        }
+
+        private const string NoneLabel = "(none)";
+
         private static string OrNone(string value) =>
-            string.IsNullOrEmpty(value) ? "(none)" : value;
+            string.IsNullOrEmpty(value) ? NoneLabel : value;
+
+        private static string NoneToEmpty(string value) =>
+            value == NoneLabel ? "" : value;
+
+        /// <summary>
+        /// A field whose value box opens a filterable list instead of cycling.
+        /// </summary>
+        // Geometrically identical to Row — same label line, same value box,
+        // same press-edge hit region — so the two can be mixed in one body and
+        // tools/ChromeCheck's row arithmetic is unchanged. The popup is opened
+        // INSIDE the row's PushID, which is what makes "##pick" unique per
+        // placement per field without a hand-built id string.
+        private static void PickerRow(float x, float width, string label, string value,
+                                      IReadOnlyList<string> options, Action<string> onPick)
+        {
+            ImGui.SetCursorPosX(x);
+            var labelPos = ImGui.GetCursorScreenPos();
+            ImGui.Dummy(new NVector2(width, LabelH));
+            ImGui.GetWindowDrawList().AddText(labelPos, RowLabel, label);
+
+            ImGui.SetCursorPosX(x);
+            ImGui.Dummy(new NVector2(width, InnerGap));
+
+            ImGui.SetCursorPosX(x);
+            var boxPos = ImGui.GetCursorScreenPos();
+
+            ImGui.PushID(label);
+            ImGui.InvisibleButton("##value", new NVector2(width, ValueH));
+            bool hovered = ImGui.IsItemHovered();
+            if (ImGui.IsItemClicked())
+            {
+                FilterPopup.Open();
+                ImGui.OpenPopup(PopupId);
+            }
+
+            var boxMax = new NVector2(boxPos.X + width, boxPos.Y + ValueH);
+            var dl = ImGui.GetWindowDrawList();
+            dl.AddRectFilled(boxPos, boxMax, hovered ? ValueBgHover : ValueBg);
+            dl.AddRect(boxPos, boxMax, ValueBorder);
+            dl.AddText(new NVector2(boxPos.X + 6f, boxPos.Y + 4f), ValueText,
+                       ChromeTheme.Truncate(value, width - 12f));
+
+            if (FilterPopup.Body(PopupId, options, value, out string chosen)) onPick(chosen);
+            ImGui.PopID();
+
+            Gap(RowGap);
+        }
+
+        /// <summary>
+        /// The popup's id, resolved against whatever the id stack holds — which
+        /// at the call site is the placement's entity id and the field's label.
+        /// </summary>
+        private const string PopupId = "##pick";
 
         /// <summary>
         /// One field: a small label on top, a full-row-width value box below.

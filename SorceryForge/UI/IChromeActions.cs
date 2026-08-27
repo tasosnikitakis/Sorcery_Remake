@@ -26,6 +26,8 @@
 // and assert that a given click invokes exactly the verb it should.
 // ============================================================================
 
+using SorceryRemake.Core;
+
 namespace SorceryForge.UI
 {
     public interface IChromeActions
@@ -97,13 +99,38 @@ namespace SorceryForge.UI
         /// </summary>
         void SelectAndToggleSection(Placement p);
 
+        /// <summary>
+        /// Flip a door between LeftOpening and RightOpening.
+        /// </summary>
+        // Still a CYCLE while the other three became filterable pickers, and
+        // that is a decision rather than an oversight: two values need no list.
+        // A dropdown here would be two clicks and a popup to do what one click
+        // already does, and the value box would have to be re-read to find out
+        // what happened either way.
         void CycleDoorOpeningSide(Placement p);
 
-        /// <summary>Advance the target room — and blank the target door with it.</summary>
-        void CycleDoorTargetRoom(Placement p);
+        // ---- The three pickers (EDITOR_REVIEW item 10) ----------------------
+        //
+        // SET, not CYCLE. The chrome now names the value it wants rather than
+        // asking for "the next one", which is what a list of seventy-five rooms
+        // requires — and it also means the logic side no longer owns an
+        // ordering that only existed to make cycling bearable.
+        //
+        // Each is one applied change and therefore one undo entry. Selecting
+        // the value already set is a no-op that records nothing.
 
-        void CycleDoorTargetDoor(Placement p);
-        void CycleBlockedDoorRequiredItem(Placement p);
+        /// <summary>Point a door at a room — and blank its target door with it.</summary>
+        // The blanking stays here, on the logic side, exactly as it was in the
+        // cycle: a door id is only meaningful inside one room, so carrying the
+        // old one across would leave a link that validates as orphan-door and
+        // reads like a typo. A panel that had to remember to blank it is a
+        // panel that will one day forget.
+        void SetDoorTargetRoom(Placement p, string roomId);
+
+        /// <summary>Point a door at a door in its target room. "" means none.</summary>
+        void SetDoorTargetDoor(Placement p, string doorId);
+
+        void SetBlockedDoorRequiredItem(Placement p, ItemType item);
 
         /// <summary>Clear the background under a placement's 24x24 footprint.</summary>
         void PunchBackground(Placement p);

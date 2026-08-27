@@ -15,6 +15,8 @@
 // ============================================================================
 
 using Microsoft.Xna.Framework;
+using SorceryRemake.Core;
+using System;
 using System.Collections.Generic;
 
 namespace SorceryForge.UI
@@ -63,6 +65,49 @@ namespace SorceryForge.UI
 
         /// <summary>True when the redo stack has at least one entry.</summary>
         public bool CanRedo;
+
+        // ---- Inspector pickers ------------------------------------------------
+        //
+        // What the three filterable dropdowns offer (EDITOR_REVIEW item 10).
+        // Lists rather than "the next value", which is the whole change: a
+        // cycle button is a list you can only see one entry of.
+
+        /// <summary>
+        /// Every registry room, in registry order. Test rooms are NOT here.
+        /// </summary>
+        // The standing decision, unchanged from the cycle this replaces: room_1
+        // and room_2 are dev scaffolding registered in Game1.RegisterTestRooms,
+        // and the door validator has a whole verdict ("ok-test") for
+        // hand-edited data that points at one. Offering them in an AUTHORING
+        // list would make that verdict something the editor produces rather
+        // than something it tolerates.
+        public IReadOnlyList<string> TargetRoomIds;
+
+        /// <summary>
+        /// The item catalog a blocked door can require. None is excluded.
+        /// </summary>
+        // Typed, not names: a string round-trip through an enum is exactly the
+        // "the label is load-bearing" trap PaletteEntry.DoorOpeningSide exists
+        // to prevent. None is left out because it is not a requirement — a
+        // blocked door needing nothing is broken data, the cycle could never
+        // reach it either, and a hand-edited JSON that says None still SHOWS
+        // "None" in the row above the picker.
+        public IReadOnlyList<ItemType> RequiredItems;
+
+        /// <summary>
+        /// The door ids of a given room: its saved doors, plus the unsaved ones
+        /// when it is the room being edited.
+        /// </summary>
+        // A FUNCTION and not a list, because the answer depends on the value in
+        // the row above it — the target room the author has just chosen — and
+        // that changes while the inspector is on screen. The alternative is a
+        // dictionary of every room's doors rebuilt every frame for a question
+        // that is only ever asked while one popup is open.
+        //
+        // It is a READ, not a verb: pure, and the panels still cannot make
+        // anything happen through it. Null in a harness that does not need it;
+        // the panel treats that as "no doors".
+        public Func<string, IReadOnlyList<string>>? DoorIdsForRoom;
 
         // ---- Map view -------------------------------------------------------
 

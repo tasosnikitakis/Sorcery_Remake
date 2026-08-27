@@ -59,6 +59,10 @@
 //                 buttons - including that the crop IMAGE is left to the canvas
 //  12 modality    with a modal up, nothing behind it answers a click
 //  13 undo menu   Edit > Undo / Redo, greyed by their stacks and by the board
+//  14 pickers     the inspector's filterable dropdowns: the list, the filter,
+//                 what the pick becomes, and what the chrome does behind one
+//  15 text input  a focused filter box holds the editor's keys — the first
+//                 time the WantTextInput rule has had anything to gate
 //
 // HOW TO RUN
 //
@@ -128,6 +132,8 @@ namespace SorceryRemake.Tools.ChromeCheck
             CheckPickers(harness);
             CheckModality(harness);
             CheckUndoMenu();
+            CheckInspectorPickers(harness);
+            CheckTextInputKeyboard(harness);
 
             Console.WriteLine();
             Console.WriteLine($"  {_checks} checks, {_failures} failure(s)");
@@ -833,15 +839,24 @@ namespace SorceryRemake.Tools.ChromeCheck
             AssertCall("Opens cycles the door's side", actions,
                 nameof(IChromeActions.CycleDoorOpeningSide), door.Id);
 
+            // Room and Door are PICKERS since PR 7b: the click opens a popup
+            // and fires no verb of its own. Which verb the popup's rows reach
+            // is section 14's business; what belongs here is that the click
+            // lands on the right ROW, and that a row that opens a list does not
+            // also quietly change something on the way.
             actions.Reset();
             h.ClickAt(new NVector2(x, ValueY(2)));
-            AssertCall("Room cycles the target room", actions,
-                nameof(IChromeActions.CycleDoorTargetRoom), door.Id);
+            Assert("Room opens a picker rather than firing a verb",
+                actions.Calls.Count == 0, actions.Only);
+            Assert("  and a picker popup is up", Harness.AnyPopupOpen);
+            h.CloseAnyPopup();
 
             actions.Reset();
             h.ClickAt(new NVector2(x, ValueY(3)));
-            AssertCall("Door cycles the target door", actions,
-                nameof(IChromeActions.CycleDoorTargetDoor), door.Id);
+            Assert("Door opens a picker rather than firing a verb",
+                actions.Calls.Count == 0, actions.Only);
+            Assert("  and a picker popup is up", Harness.AnyPopupOpen);
+            h.CloseAnyPopup();
 
             actions.Reset();
             h.ClickAt(new NVector2(x, ValueY(4)));
@@ -875,8 +890,9 @@ namespace SorceryRemake.Tools.ChromeCheck
             actions.Reset();
             float blockedBody = secondHeaderTop + headerH + headerGap;
             h.ClickAt(new NVector2(x, blockedBody + rowH + labelH + innerGap + valueH / 2f));
-            AssertCall("  and its Needs row cycles ITS required item",
-                actions, nameof(IChromeActions.CycleBlockedDoorRequiredItem), blocked.Id);
+            Assert("  and its Needs row opens a picker of its own",
+                actions.Calls.Count == 0 && Harness.AnyPopupOpen, actions.Only);
+            h.CloseAnyPopup();
 
             // TWO PLACEMENTS OF THE SAME KIND. Both draw a row labelled
             // "Opens", and an ImGui id is the label plus the enclosing id
@@ -1144,6 +1160,381 @@ namespace SorceryRemake.Tools.ChromeCheck
                 !MenuBar.CanUndo(redoOnly) && MenuBar.CanRedo(redoOnly));
         }
 
+        // ====================================================================
+        // 14. PICKERS — type to narrow, Enter takes the top hit
+        // ====================================================================
+        // EDITOR_REVIEW item 10, and the first REAL TEXT INPUT this editor has
+        // ever had. Two families of thing are asserted here, and they fail
+        // differently:
+        //
+        //   the widget      the list is what the logic side offered, typing
+        //                   narrows it, Enter takes the top hit, a click takes
+        //                   the row under the cursor, and "(none)" arrives as
+        //                   the empty string the schema actually stores
+        //
+        //   the modality    what the rest of the chrome does while a picker is
+        //                   open. PR 7a had to say this out loud for the modal
+        //                   pickers (the bands take NoInputs); an ImGui popup
+        //                   is supposed to handle it itself. Supposed to is not
+        //                   a thing to ship, so it is MEASURED here.
+        // ====================================================================
+
+        private static readonly List<string> PickerRooms = new()
+        {
+            "chateau_0", "chateau_1", "chateau_2", "near_chateau",
+            "inside_chateau", "stonehenge", "wastelands_1", "forest_1",
+        };
+
+        private static readonly List<ItemType> PickerItems = new()
+        {
+            ItemType.Sword, ItemType.BallAndChain, ItemType.Axe,
+            ItemType.ShootingStar, ItemType.Lyre,
+        };
+
+        private static readonly Dictionary<string, IReadOnlyList<string>> PickerDoors = new()
+        {
+            ["chateau_1"] = new List<string> { "chateau_1_door_left", "chateau_1_door_topright" },
+            ["chateau_2"] = new List<string> { "chateau_2_door_a" },
+        };
+
+        private static IReadOnlyList<string> DoorsOf(string roomId) =>
+            PickerDoors.TryGetValue(roomId, out var doors) ? doors : new List<string>();
+
+        private static void CheckInspectorPickers(Harness h)
+        {
+            Section("14. PICKERS — the list, the filter, and what the pick becomes");
+
+            // ---- the narrowing rule, on its own -----------------------------
+            //
+            // Asserted apart from the widget because it is a rule rather than a
+            // hit-test, and because SUBSTRING-not-prefix is the part a rewrite
+            // would get wrong: door ids carry their room as a prefix, so a
+            // prefix match would make "topright" find nothing — which is
+            // exactly the half of the id an author remembers.
+            var hits = new List<string>();
+            FilterPopup.Narrow(PickerRooms, "", hits);
+            Assert("an empty filter matches everything", hits.Count == PickerRooms.Count,
+                hits.Count.ToString());
+
+            FilterPopup.Narrow(PickerRooms, "chateau", hits);
+            Assert("a filter narrows to what contains it", hits.Count == 5, hits.Count.ToString());
+            Assert("  including matches that are not a PREFIX",
+                hits.Contains("near_chateau") && hits.Contains("inside_chateau"));
+
+            FilterPopup.Narrow(PickerRooms, "STONE", hits);
+            Assert("the filter ignores case", hits.Count == 1 && hits[0] == "stonehenge");
+
+            FilterPopup.Narrow(PickerRooms, "zzz", hits);
+            Assert("a filter that matches nothing narrows to nothing", hits.Count == 0);
+
+            FilterPopup.Narrow(null, "x", hits);
+            Assert("a null option list narrows to nothing rather than throwing", hits.Count == 0);
+
+            // ---- the widget --------------------------------------------------
+
+            h.Resize(1280, 720);
+            var actions = new RecordingActions();
+            var state = new EditorState();
+            var door = new Placement("chateau_0_door_1", PlacementKind.Door, new Vector2(0, 40))
+            {
+                DoorOpeningSide = "LeftOpening",
+                DoorTargetRoomId = "chateau_1",
+                DoorTargetDoorId = "",
+            };
+            state.Placements.Add(door);
+
+            h.SetBandsModal(false);
+            h.SetPickerLists(PickerRooms, PickerItems, DoorsOf);
+            h.DriveInspector(actions, state);
+
+            const float titleH = 32f, headerH = 40f, headerGap = 2f;
+            const float labelH = 16f, innerGap = 2f, valueH = 22f, rowGap = 4f;
+            const float rowH = labelH + innerGap + valueH + rowGap;
+            float x = EditorLayout.InspectorRect.X + 40f;
+            float bodyTop = EditorLayout.InspectorRect.Y + titleH + headerH + headerGap;
+            float ValueY(int row) => bodyTop + row * rowH + labelH + innerGap + valueH / 2f;
+
+            float roomRowY = ValueY(2);    // Pos, Opens, Room, Door, Background
+            float doorRowY = ValueY(3);
+
+            // ENTER TAKES THE TOP HIT. Three characters and a keypress is the
+            // whole interaction the cycle-button could not offer at any number
+            // of rooms.
+            actions.Reset();
+            h.ClickAt(new NVector2(x, roomRowY));
+            Assert("clicking Room opens a picker", Harness.AnyPopupOpen);
+            h.Settle();
+            h.TypeText("stone");
+            h.TapKey(ImGuiKey.Enter);
+            h.Settle();
+            AssertCall("typing 'stone' and pressing Enter picks stonehenge", actions,
+                nameof(IChromeActions.SetDoorTargetRoom), door.Id);
+            AssertValue("  and the value that arrives is the room id", actions, "stonehenge");
+            Assert("  and picking closes the popup", !Harness.AnyPopupOpen);
+
+            // A CLICK ON A ROW takes that row. The row is FOUND by hovering
+            // rather than computed — see Harness.FindPopupLastRowY. Narrowed to
+            // one option first, so "the last row" is the only row.
+            actions.Reset();
+            h.ClickAt(new NVector2(x, roomRowY));
+            h.Settle();
+            h.TypeText("wastelands");
+            float rowY = h.FindPopupLastRowY(x, roomRowY + 4f, roomRowY + 200f);
+            Assert("the picker's list row can be found under the cursor", rowY > 0f,
+                rowY.ToString("0"));
+            if (rowY > 0f)
+            {
+                h.ClickAt(new NVector2(x, rowY));
+                h.Settle();
+                AssertCall("clicking the row picks it", actions,
+                    nameof(IChromeActions.SetDoorTargetRoom), door.Id);
+                AssertValue("  and it is the row that was showing", actions, "wastelands_1");
+            }
+            h.CloseAnyPopup();
+
+            // "(none)" IS A REAL ENTRY, and it arrives as the empty string the
+            // schema stores. A door with no target is what an unfinished room
+            // looks like; the cycle had an empty entry for the same reason.
+            actions.Reset();
+            h.ClickAt(new NVector2(x, roomRowY));
+            h.Settle();
+            h.TypeText("(none)");
+            h.TapKey(ImGuiKey.Enter);
+            h.Settle();
+            AssertCall("picking (none) still reaches the verb", actions,
+                nameof(IChromeActions.SetDoorTargetRoom), door.Id);
+            AssertValue("  as the EMPTY STRING, not the label", actions, "");
+            h.CloseAnyPopup();
+
+            // THE DOOR LIST FOLLOWS THE ROOM ALREADY CHOSEN. The placement's
+            // target room is chateau_1, so its two doors are what the Door
+            // picker offers — and chateau_2's door is not.
+            actions.Reset();
+            h.ClickAt(new NVector2(x, doorRowY));
+            Assert("clicking Door opens a picker", Harness.AnyPopupOpen);
+            h.Settle();
+            h.TypeText("topright");
+            h.TapKey(ImGuiKey.Enter);
+            h.Settle();
+            AssertCall("the Door picker offers the TARGET room's doors", actions,
+                nameof(IChromeActions.SetDoorTargetDoor), door.Id);
+            AssertValue("  found by the half of the id an author remembers",
+                actions, "chateau_1_door_topright");
+            h.CloseAnyPopup();
+
+            actions.Reset();
+            h.ClickAt(new NVector2(x, doorRowY));
+            h.Settle();
+            h.TypeText("chateau_2");
+            h.TapKey(ImGuiKey.Enter);
+            h.Settle();
+            Assert("  and NOT another room's doors", actions.Calls.Count == 0, actions.Only);
+            h.CloseAnyPopup();
+
+            // THE ITEM PICKER, on a blocked door. Typed all the way through:
+            // the panel offers ItemType values and the verb receives one.
+            actions.Reset();
+            state.Placements.Clear();
+            var blocked = new Placement("chateau_0_blockeddoor_2", PlacementKind.BlockedDoor,
+                                        new Vector2(80, 40)) { RequiredItem = ItemType.Lyre };
+            state.Placements.Add(blocked);
+            h.DriveInspector(actions, state);
+
+            float needsRowY = ValueY(1);   // Pos, Needs, Background
+            h.ClickAt(new NVector2(x, needsRowY));
+            Assert("clicking Needs opens a picker", Harness.AnyPopupOpen);
+            h.Settle();
+            h.TypeText("axe");
+            h.TapKey(ImGuiKey.Enter);
+            h.Settle();
+            AssertCall("the item picker reaches the blocked door's verb", actions,
+                nameof(IChromeActions.SetBlockedDoorRequiredItem), blocked.Id);
+            AssertValue("  with the item it named", actions, "Axe");
+            h.CloseAnyPopup();
+
+            // None is NOT offered — the cycle could never reach it either, and
+            // a blocked door requiring nothing is broken data.
+            actions.Reset();
+            h.ClickAt(new NVector2(x, needsRowY));
+            h.Settle();
+            h.TypeText("None");
+            h.TapKey(ImGuiKey.Enter);
+            h.Settle();
+            Assert("the item picker does not offer None", actions.Calls.Count == 0, actions.Only);
+            h.CloseAnyPopup();
+
+            // ---- MODALITY, measured rather than assumed ---------------------
+            //
+            // PR 7a had to make the bands NoInputs by hand for the three modal
+            // overlays, because an ImGui WINDOW does not stop hit-testing
+            // because something is drawn over the middle of the screen. An
+            // ImGui POPUP is documented to be different: while one is open,
+            // ImGui reports other windows' content as not hoverable, so their
+            // widgets never see a click. The whole of the inspector picker's
+            // modality rests on that, so it is asserted here rather than read
+            // out of the library's source.
+            actions.Reset();
+            var paletteState = BuildPaletteState();
+            h.DrivePalette(actions, paletteState);
+            h.DriveInspector(actions, state);
+            var paletteRow = new NVector2(140f, EditorLayout.PaletteRect.Y + 30f + 22f + 4f + 22f);
+
+            h.ClickAt(paletteRow);
+            AssertPicked("with no popup, the palette answers a click", actions, "Sword");
+
+            actions.Reset();
+            h.ClickAt(new NVector2(x, needsRowY));
+            Assert("a picker popup is open over the panels", Harness.AnyPopupOpen);
+            actions.Reset();
+            h.ClickAt(paletteRow);
+            Assert("with a picker open, the palette does NOT answer that click",
+                actions.Picked == null, actions.Picked ?? "(nothing)");
+            Assert("  and the click closed the popup instead", !Harness.AnyPopupOpen);
+
+            // ...and the chrome is live again the moment it is closed. A
+            // modality that does not lift is worse than one that never applied.
+            actions.Reset();
+            h.ClickAt(paletteRow);
+            AssertPicked("popup closed: the palette answers again", actions, "Sword");
+        }
+
+        // ====================================================================
+        // 15. TEXT INPUT — the keyboard rule, now that it is live
+        // ====================================================================
+        // PR 7a built ChromeInputRouter.KeyboardReachesEditor on io.WantTextInput
+        // rather than io.WantCaptureKeyboard, for a chrome that had NO TEXT
+        // FIELD AT ALL. Every assertion about it until now has been about the
+        // false branch. This is the section where the rule finally does
+        // something, and it is asserted the way 7a's own lesson demands:
+        //
+        //   ACROSS FRAMES. Both flags are latched during NewFrame from what the
+        //   PREVIOUS frame's widgets asked for, so a probe that presses and
+        //   reads on the same frame reports a clean result whatever the rule
+        //   is. That is how a broken keyboard rule once shipped inside a
+        //   PASSING assertion in this very file.
+        //
+        // The editor keybinds this protects — P, Delete, [ and ], N, I, A — all
+        // pass through the single gate KeyboardReachesEditor, in
+        // HandleKeyboardShortcuts and HandleMapInput. The gate is what is
+        // assertable headlessly; that each key is behind it is one `if` in
+        // EditorGame and is in the owner's smoke pass.
+        // ====================================================================
+
+        private static void CheckTextInputKeyboard(Harness h)
+        {
+            Section("15. TEXT INPUT — a focused filter box holds the editor's keys");
+
+            // ---- the rule itself, as a truth table --------------------------
+            //
+            // Driven directly rather than through ImGui, and that is the point.
+            // Every text field this editor has TODAY lives inside a popup, so
+            // the popup term alone covers every case the widget-driven
+            // assertions below can reach — which was measured: deleting the
+            // WantTextInput term entirely left all of them passing. A term with
+            // no test is a term someone deletes.
+            //
+            // It stops being redundant with the room-rename field, which is a
+            // plain band widget with no popup over it. Pinning the table now
+            // means the term is guarded before the widget that needs it lands.
+            var rule = new ChromeInputRouter();
+
+            rule.Sample(false, false, false, false);
+            Assert("neither term set: the keys are the editor's", rule.KeyboardReachesEditor);
+
+            rule.Sample(false, false, false, true);
+            Assert("a TEXT FIELD alone holds them", !rule.KeyboardReachesEditor);
+
+            rule.Sample(false, false, true, false);
+            Assert("an open POPUP alone holds them", !rule.KeyboardReachesEditor);
+
+            rule.Sample(false, false, true, true);
+            Assert("both together hold them", !rule.KeyboardReachesEditor);
+
+            // 7a'S TRAP, pinned as a negative. io.WantCaptureKeyboard is true
+            // whenever ImGui has an ActiveId — which includes a mouse button
+            // merely HELD on empty chrome, because a window takes its own
+            // MoveId even when it is NoMove. Building the rule on it killed
+            // every editor keybind for as long as a button was down anywhere on
+            // the bands.
+            rule.Sample(false, true, false, false);
+            Assert("but WantCaptureKeyboard alone does NOT — it is not the rule",
+                rule.KeyboardReachesEditor);
+
+            h.Resize(1280, 720);
+            var actions = new RecordingActions();
+            var state = new EditorState();
+            var door = new Placement("chateau_0_door_1", PlacementKind.Door, new Vector2(0, 40))
+            { DoorTargetRoomId = "chateau_1" };
+            state.Placements.Add(door);
+
+            h.SetBandsModal(false);
+            h.SetPickerLists(PickerRooms, PickerItems, DoorsOf);
+            h.DriveInspector(actions, state);
+
+            const float titleH = 32f, headerH = 40f, headerGap = 2f;
+            const float labelH = 16f, innerGap = 2f, valueH = 22f, rowGap = 4f;
+            const float rowH = labelH + innerGap + valueH + rowGap;
+            float x = EditorLayout.InspectorRect.X + 40f;
+            float bodyTop = EditorLayout.InspectorRect.Y + titleH + headerH + headerGap;
+            float roomRowY = bodyTop + 2 * rowH + labelH + innerGap + valueH / 2f;
+
+            // Baseline: nothing open, keys are the editor's.
+            h.MoveTo(Centre(EditorLayout.CanvasRect));
+            h.Settle();
+            Assert("with nothing open, keys reach the editor", h.Router.KeyboardReachesEditor);
+
+            h.ClickAt(new NVector2(x, roomRowY));
+            h.Settle();
+
+            // HELD FOR SEVERAL FRAMES, and read on the last of them.
+            h.Frame(); h.Frame(); h.Frame();
+            Assert("the filter box takes text input", h.Router.ImGuiWantsTextInput,
+                $"WantTextInput={h.Router.ImGuiWantsTextInput} popup={Harness.AnyPopupOpen}");
+            Assert("  so P / Delete / brackets / N / I / A cannot reach the editor",
+                !h.Router.KeyboardReachesEditor);
+
+            // Typing keeps it that way. A rule that held for one frame after
+            // focus and then let a keystroke through would be worse than none.
+            h.TypeText("chateau");
+            h.Frame(); h.Frame(); h.Frame();
+            Assert("and it still holds them while the author is typing",
+                !h.Router.KeyboardReachesEditor && h.Router.ImGuiWantsTextInput);
+
+            // ESCAPE, STEP ONE: the field loses focus, the popup stays.
+            h.TapKey(ImGuiKey.Escape);
+            h.Settle();
+            Assert("Esc clears the field's focus FIRST", !h.Router.ImGuiWantsTextInput,
+                $"WantTextInput={h.Router.ImGuiWantsTextInput}");
+            Assert("  leaving the popup open", Harness.AnyPopupOpen);
+            Assert("  and the keys still held, by the popup rather than the field",
+                !h.Router.KeyboardReachesEditor);
+
+            // ESCAPE, STEP TWO: the popup closes. Neither press reached the
+            // editor's Escape — which on a clean room is Exit.
+            h.TapKey(ImGuiKey.Escape);
+            h.Settle();
+            Assert("a second Esc closes the popup", !Harness.AnyPopupOpen);
+            Assert("  and only THEN do the keys come back", h.Router.KeyboardReachesEditor);
+
+            // The same, ended by a pick rather than by Escape: the keys must
+            // come back that way too, or the editor is deaf after every edit.
+            h.ClickAt(new NVector2(x, roomRowY));
+            h.Settle();
+            h.Frame(); h.Frame();
+            Assert("reopening the picker takes the keys again", !h.Router.KeyboardReachesEditor);
+            h.TypeText("stone");
+            h.TapKey(ImGuiKey.Enter);
+            h.Settle();
+            Assert("picking with Enter closes the popup", !Harness.AnyPopupOpen);
+            Assert("  and hands the keyboard back to the editor",
+                h.Router.KeyboardReachesEditor);
+
+            // And a click somewhere harmless leaves the world in a known state
+            // for anything that runs after this section.
+            h.MoveTo(Centre(EditorLayout.CanvasRect));
+            h.Settle();
+        }
+
         private static RoomCandidate Candidate(string asset, string roomId, string display, bool ok) =>
             new()
             {
@@ -1179,6 +1570,18 @@ namespace SorceryRemake.Tools.ChromeCheck
             }
         }
 
+        /// <summary>The value a setter verb was handed — a room id, a door id, an item.</summary>
+        private static void AssertValue(string label, RecordingActions actions, string expected)
+        {
+            _checks++;
+            bool ok = actions.Values.Count == 1 && actions.Values[0] == expected;
+            if (!ok) _failures++;
+            Console.WriteLine($"    {(ok ? "ok  " : "FAIL")} {label}");
+            if (!ok)
+                Console.WriteLine($"           expected '{expected}', got " +
+                    (actions.Values.Count == 0 ? "(nothing)" : $"'{string.Join(",", actions.Values)}'"));
+        }
+
         private static void AssertPicked(string label, RecordingActions actions, string expected)
         {
             _checks++;
@@ -1201,7 +1604,14 @@ namespace SorceryRemake.Tools.ChromeCheck
             /// <summary>The entity id each placement-targeted verb was given.</summary>
             public readonly List<string> Targets = new();
 
-            public void Reset() { Picked = null; Calls.Clear(); Targets.Clear(); }
+            /// <summary>The VALUE each setter verb was given — a room id, a door id, an item.</summary>
+            // New in PR 7b. A cycle verb carried no value: "advance this door's
+            // target room" was the whole message. A picker's verb carries the
+            // chosen value, so "the row you clicked is the value that arrives"
+            // is now a question worth being able to ask.
+            public readonly List<string> Values = new();
+
+            public void Reset() { Picked = null; Calls.Clear(); Targets.Clear(); Values.Clear(); }
 
             public string Only => Calls.Count == 1 ? Calls[0] : $"[{Calls.Count}: {string.Join(",", Calls)}]";
 
@@ -1215,10 +1625,22 @@ namespace SorceryRemake.Tools.ChromeCheck
 
             public void SelectAndToggleSection(Placement p) => Hit(nameof(SelectAndToggleSection), p);
             public void CycleDoorOpeningSide(Placement p) => Hit(nameof(CycleDoorOpeningSide), p);
-            public void CycleDoorTargetRoom(Placement p) => Hit(nameof(CycleDoorTargetRoom), p);
-            public void CycleDoorTargetDoor(Placement p) => Hit(nameof(CycleDoorTargetDoor), p);
-            public void CycleBlockedDoorRequiredItem(Placement p) => Hit(nameof(CycleBlockedDoorRequiredItem), p);
             public void PunchBackground(Placement p) => Hit(nameof(PunchBackground), p);
+
+            private void Set(string verb, Placement p, string value)
+            {
+                Hit(verb, p);
+                Values.Add(value);
+            }
+
+            public void SetDoorTargetRoom(Placement p, string roomId) =>
+                Set(nameof(SetDoorTargetRoom), p, roomId);
+
+            public void SetDoorTargetDoor(Placement p, string doorId) =>
+                Set(nameof(SetDoorTargetDoor), p, doorId);
+
+            public void SetBlockedDoorRequiredItem(Placement p, ItemType item) =>
+                Set(nameof(SetBlockedDoorRequiredItem), p, item.ToString());
 
             public void CreateRoom(RoomCandidate candidate)
             {
@@ -1342,9 +1764,52 @@ namespace SorceryRemake.Tools.ChromeCheck
                 Frame();
             }
 
-            /// <summary>True while ImGui has any popup — a menu, chiefly — open.</summary>
+            /// <summary>
+            /// Type text into whatever ImGui widget has the keyboard, the way
+            /// ImGuiRenderer's TextInput handler does.
+            /// </summary>
+            // Queued and flushed inside Frame(), not pushed here: ImGui reads
+            // io.InputQueueCharacters during NewFrame, so a character added
+            // after NewFrame would be seen a frame late — or, if the frame in
+            // between closed the widget, never.
+            public void TypeText(string text)
+            {
+                foreach (char c in text) _pendingChars.Add(c);
+                Frame();
+                Frame();
+            }
+
+            private readonly List<char> _pendingChars = new();
+
+            /// <summary>True while ImGui has any popup — a menu or a picker — open.</summary>
             public static bool AnyPopupOpen =>
                 ImGui.IsPopupOpen("", ImGuiPopupFlags.AnyPopupId | ImGuiPopupFlags.AnyPopupLevel);
+
+            /// <summary>
+            /// Leave whatever popup is up, so the next assertion starts clean.
+            /// </summary>
+            // SETTLE FIRST, then tap until it goes. A picker's first Escape
+            // only defocuses its filter box — that two-step is section 15's
+            // subject, and this is a tool rather than the thing under test, so
+            // it loops instead of asserting a count.
+            //
+            // The settle is not decoration. ImGui's InputText ignores keys on
+            // the frame its item was JUST activated, and the filter box is
+            // activated by a focus request that resolves a frame after the
+            // popup opens — so an Escape sent immediately after the opening
+            // click is swallowed and the popup never closes. Measured, after a
+            // section that opened a picker and then found the NEXT click going
+            // to the still-open popup instead of the row it aimed at.
+            public void CloseAnyPopup()
+            {
+                if (!AnyPopupOpen) return;
+                Settle();
+                for (int i = 0; i < 3 && AnyPopupOpen; i++)
+                {
+                    TapKey(ImGuiKey.Escape);
+                    Settle();
+                }
+            }
 
             public void SetRight(bool down) => _right = down;
 
@@ -1373,6 +1838,8 @@ namespace SorceryRemake.Tools.ChromeCheck
                 io.AddMouseButtonEvent(2, _middle);
                 if (_wheel != 0f) { io.AddMouseWheelEvent(0f, _wheel); _wheel = 0f; }
                 foreach (var pair in _keys) io.AddKeyEvent(pair.Key, pair.Value);
+                for (int i = 0; i < _pendingChars.Count; i++) io.AddInputCharacter(_pendingChars[i]);
+                _pendingChars.Clear();
 
                 ImGui.NewFrame();
                 Router.Sample(io.WantCaptureMouse, io.WantCaptureKeyboard, AnyPopupOpen, io.WantTextInput);
@@ -1395,6 +1862,16 @@ namespace SorceryRemake.Tools.ChromeCheck
 
             private IChromeActions? _inspectorActions;
             private EditorState? _inspectorState;
+
+            // The three option lists the inspector's pickers read out of
+            // ChromeView. Kept beside the band view rather than folded into it
+            // so that section 12's modality drive (SetBandsModal) and section
+            // 14's picker drive can be set independently — a picker open behind
+            // a modal is a real combination and both flags have to reach the
+            // panel at once.
+            private IReadOnlyList<string>? _pickerRoomIds;
+            private IReadOnlyList<ItemType>? _pickerItems;
+            private Func<string, IReadOnlyList<string>>? _pickerDoorIds;
             private IChromeActions? _pickerActions;
             private ChromeView _pickerView;
             private bool _pickersOn;
@@ -1437,6 +1914,17 @@ namespace SorceryRemake.Tools.ChromeCheck
                 Settle();
             }
 
+            /// <summary>Fill the three lists the inspector's pickers offer.</summary>
+            public void SetPickerLists(IReadOnlyList<string> roomIds,
+                                       IReadOnlyList<ItemType> items,
+                                       Func<string, IReadOnlyList<string>> doorIds)
+            {
+                _pickerRoomIds = roomIds;
+                _pickerItems = items;
+                _pickerDoorIds = doorIds;
+                Settle();
+            }
+
             /// <summary>Draw the real Pickers over whatever else is up.</summary>
             public void DrivePickers(IChromeActions actions, ChromeView view)
             {
@@ -1459,6 +1947,42 @@ namespace SorceryRemake.Tools.ChromeCheck
                 Frame();
                 SetLeft(false);
                 Frame();
+            }
+
+            /// <summary>True while the cursor is over some hoverable ImGui item.</summary>
+            // Read AFTER a frame, so it reports that frame's answer. Used to
+            // FIND a popup's rows rather than to compute where they must be:
+            // an open popup is positioned by ImGui against the mouse and
+            // clamped to the viewport, and its internal spacing comes from the
+            // style — so hard-coding a row's y would be asserting arithmetic
+            // this harness had to reproduce, which is exactly the class of
+            // duplicated-rectangle bug the ImGui migration deleted.
+            public static bool AnyItemHovered => ImGui.IsAnyItemHovered();
+
+            /// <summary>
+            /// Walk down column <paramref name="x"/> and return a point inside
+            /// the LAST hoverable thing found — which, in a filter popup
+            /// narrowed to a single option, is that option's row.
+            /// </summary>
+            // The bottom of a popup's hoverable column is the bottom of its
+            // list; the padding below it hits nothing. So with the list
+            // narrowed to ONE row, four pixels above that boundary is inside
+            // that row, whatever the style's padding and spacing happen to be.
+            //
+            // Counting hover RUNS instead — filter box, then row — was tried
+            // and does not work: ImGui registers the child window itself as an
+            // item, so the filter box and the list are one continuous hoverable
+            // column with no gap to count.
+            public float FindPopupLastRowY(float x, float fromY, float toY)
+            {
+                float lastHovered = -1f;
+                for (float y = fromY; y <= toY; y += 2f)
+                {
+                    MoveTo(new NVector2(x, y));
+                    Frame();
+                    if (AnyItemHovered) lastHovered = y;
+                }
+                return lastHovered < 0f ? -1f : lastHovered - 4f;
             }
 
             /// <summary>Wheel the palette list as far down as it goes.</summary>
@@ -1504,7 +2028,14 @@ namespace SorceryRemake.Tools.ChromeCheck
 
                 if (_inspectorActions != null && _inspectorState != null)
                 {
-                    InspectorPanel.Draw(_inspectorActions, _inspectorState, _bandView);
+                    // The band view plus whatever picker lists have been set:
+                    // the modality flag and the option lists are independent,
+                    // and both have to reach the panel in the same struct.
+                    var inspectorView = _bandView;
+                    inspectorView.TargetRoomIds = _pickerRoomIds;
+                    inspectorView.RequiredItems = _pickerItems;
+                    inspectorView.DoorIdsForRoom = _pickerDoorIds;
+                    InspectorPanel.Draw(_inspectorActions, _inspectorState, inspectorView);
                 }
                 else
                 {

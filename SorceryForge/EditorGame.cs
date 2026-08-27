@@ -3521,6 +3521,14 @@ namespace SorceryForge
             Zoom = EditorLayout.Zoom,
             CanUndo = _undo.CanUndo,
             CanRedo = _undo.CanRedo,
+
+            // The inspector's three pickers. TargetDoorIds is a FUNCTION
+            // because the answer depends on the room chosen in the row above
+            // it, which changes while the panel is on screen; the other two are
+            // lists because they do not.
+            TargetRoomIds = TargetRoomIds(),
+            RequiredItems = RequiredItems(),
+            DoorIdsForRoom = TargetDoorIdsFor,
             MapRoomCount = _mapRooms.Count,
             MapZoomPercent = _mapView.ZoomPercent,
 
@@ -4006,81 +4014,110 @@ namespace SorceryForge
             ApplyPlacementFields(p, before, after, "opening side");
         }
 
-        /// <summary>Advance the target room — and blank the target door with it.</summary>
+        /// <summary>Point a door at a room — and blank the target door with it.</summary>
         // The blanking is load-bearing, not tidiness: a door id is only
         // meaningful inside one room, so carrying the old one across a room
         // change would leave a link that validates as orphan-door and reads
         // like a typo. Both writes are ONE command, so undoing the room change
         // restores the door id with it — a per-field command would undo half of
         // this and leave exactly the broken link the blanking exists to avoid.
-        private void CycleDoorTargetRoom(Placement p)
+        //
+        // It stays on THIS side rather than in the picker for the same reason:
+        // a panel that had to remember to blank the door is a panel that will
+        // one day forget, and forgetting is silent.
+        private void SetDoorTargetRoom(Placement p, string roomId)
         {
             var before = PlacementFields.From(p);
             var after = before;
-            after.DoorTargetRoomId = NextRoomId(p.DoorTargetRoomId);
+            after.DoorTargetRoomId = roomId;
             after.DoorTargetDoorId = "";
             ApplyPlacementFields(p, before, after, "target room");
         }
 
-        private void CycleDoorTargetDoor(Placement p)
+        private void SetDoorTargetDoor(Placement p, string doorId)
         {
             var before = PlacementFields.From(p);
             var after = before;
-            after.DoorTargetDoorId = NextTargetDoorId(p.DoorTargetRoomId, p.DoorTargetDoorId);
+            after.DoorTargetDoorId = doorId;
             ApplyPlacementFields(p, before, after, "target door");
         }
 
-        private void CycleBlockedDoorRequiredItem(Placement p)
+        private void SetBlockedDoorRequiredItem(Placement p, ItemType item)
         {
             var before = PlacementFields.From(p);
             var after = before;
-            after.RequiredItem = NextItemType(p.RequiredItem);
+            after.RequiredItem = item;
             ApplyPlacementFields(p, before, after, "required item");
         }
 
-        private static ItemType NextItemType(ItemType current)
+        // ====================================================================
+        // PICKER OPTION LISTS
+        // ====================================================================
+        // What the three filterable dropdowns offer. Built here, on the logic
+        // side, and handed to the chrome through ChromeView — the panels can
+        // read them and cannot compute them, which is the same rule that keeps
+        // "what happens when I retarget a door" out of a renderer.
+        //
+        // Each is rebuilt into a reused list rather than allocated per frame.
+        // Snapshot() runs several times a frame (see BuildChrome), and a fresh
+        // List<string> of every room per call is a per-frame allocation for an
+        // answer that changes only when a room is created.
+        // ====================================================================
+
+        private readonly List<string> _targetRoomIds = new();
+        private readonly List<ItemType> _requiredItems = new();
+        private readonly List<string> _targetDoorIds = new();
+
+        /// <summary>Every registry room, in registry order. Test rooms excluded.</summary>
+        // The exclusion is the standing decision, carried over from the cycle
+        // this replaces — which walked RoomMeta.All, and RoomMeta.All is built
+        // from the registry, so room_1 and room_2 were never offered there
+        // either. They are dev scaffolding registered in Game1.RegisterTestRooms
+        // and the door validator has a whole verdict ("ok-test") for
+        // hand-edited data that points at one; offering them in an AUTHORING
+        // list would make that verdict something the editor produces rather
+        // than something it tolerates.
+        private IReadOnlyList<string> TargetRoomIds()
         {
-            // Cycle through the known ItemType enum values, skipping None.
-            var values = (ItemType[])Enum.GetValues(typeof(ItemType));
-            int idx = Array.IndexOf(values, current);
-            for (int step = 1; step <= values.Length; step++)
-            {
-                var next = values[(idx + step) % values.Length];
-                if (next != ItemType.None) return next;
-            }
-            return current;
+            _targetRoomIds.Clear();
+            foreach (var r in RoomMeta.All) _targetRoomIds.Add(r.RoomId);
+            return _targetRoomIds;
         }
 
-        private static string NextRoomId(string current)
+        /// <summary>The item catalog a blocked door can require. None excluded.</summary>
+        // The same set the cycle reached, expressed as a list instead of as a
+        // "next value" walk: it skipped None, so a blocked door could never be
+        // cycled back to requiring nothing, and the picker keeps that.
+        private IReadOnlyList<ItemType> RequiredItems()
         {
-            // Cycle through every room id (plus an empty entry at the start).
-            var ids = new List<string> { "" };
-            foreach (var r in RoomMeta.All) ids.Add(r.RoomId);
-            int idx = ids.IndexOf(current);
-            return ids[(idx + 1) % ids.Count];
+            _requiredItems.Clear();
+            foreach (ItemType t in Enum.GetValues(typeof(ItemType)))
+                if (t != ItemType.None) _requiredItems.Add(t);
+            return _requiredItems;
         }
 
-        private string NextTargetDoorId(string roomId, string current)
+        /// <summary>
+        /// The door ids of one room: its saved doors, plus this room's unsaved
+        /// ones when the named room IS the room being edited.
+        /// </summary>
+        // The unsaved half is what lets a door be wired to another door in the
+        // same room before either has been written — self-linking a room is how
+        // a two-door corridor gets built, and the cycle had the same rule.
+        private IReadOnlyList<string> TargetDoorIdsFor(string roomId)
         {
-            // Door IDs to cycle through: those that exist in the named room
-            // (saved RoomMeta + unsaved current-room placements). Plus an
-            // "" entry so you can cycle back to "no target".
-            var ids = new List<string> { "" };
+            _targetDoorIds.Clear();
+
             var room = RoomMeta.Find(roomId);
             if (room != null)
-            {
-                foreach (var d in room.Doors) ids.Add(d.DoorId);
-            }
-            // If the target room IS the current room, also include unsaved
-            // doors so you can self-link before saving.
+                foreach (var d in room.Doors) _targetDoorIds.Add(d.DoorId);
+
             if (roomId == _state.CurrentRoom.RoomId)
             {
                 foreach (var p in _state.Placements)
-                    if (p.Kind == PlacementKind.Door && !ids.Contains(p.Id))
-                        ids.Add(p.Id);
+                    if (p.Kind == PlacementKind.Door && !_targetDoorIds.Contains(p.Id))
+                        _targetDoorIds.Add(p.Id);
             }
-            int idx = ids.IndexOf(current);
-            return ids[(idx + 1) % ids.Count];
+            return _targetDoorIds;
         }
 
         // ====================================================================
@@ -4219,9 +4256,10 @@ namespace SorceryForge
 
         void IChromeActions.SelectAndToggleSection(Placement p) => SelectAndToggleSection(p);
         void IChromeActions.CycleDoorOpeningSide(Placement p) => CycleDoorOpeningSide(p);
-        void IChromeActions.CycleDoorTargetRoom(Placement p) => CycleDoorTargetRoom(p);
-        void IChromeActions.CycleDoorTargetDoor(Placement p) => CycleDoorTargetDoor(p);
-        void IChromeActions.CycleBlockedDoorRequiredItem(Placement p) => CycleBlockedDoorRequiredItem(p);
+        void IChromeActions.SetDoorTargetRoom(Placement p, string roomId) => SetDoorTargetRoom(p, roomId);
+        void IChromeActions.SetDoorTargetDoor(Placement p, string doorId) => SetDoorTargetDoor(p, doorId);
+        void IChromeActions.SetBlockedDoorRequiredItem(Placement p, ItemType item) =>
+            SetBlockedDoorRequiredItem(p, item);
         void IChromeActions.PunchBackground(Placement p) => PunchBackground(p);
 
         void IChromeActions.OpenNewRoomPicker() => OpenNewRoomPicker();

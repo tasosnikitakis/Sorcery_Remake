@@ -92,6 +92,7 @@
     <Compile Include="..\..\SorceryForge\UI\ChromeInputRouter.cs" />
     <Compile Include="..\..\SorceryForge\UI\ChromeTheme.cs" />
     <Compile Include="..\..\SorceryForge\UI\ChromeView.cs" />
+    <Compile Include="..\..\SorceryForge\UI\FilterPopup.cs" />
     <Compile Include="..\..\SorceryForge\UI\IChromeActions.cs" />
     <Compile Include="..\..\SorceryForge\UI\MenuBar.cs" />
     <Compile Include="..\..\SorceryForge\UI\InspectorPanel.cs" />
