@@ -63,6 +63,8 @@
 //                 what the pick becomes, and what the chrome does behind one
 //  15 text input  a focused filter box holds the editor's keys — the first
 //                 time the WantTextInput rule has had anything to gate
+//  16 room block  the rename field — the first text field with NO popup over
+//                 it, so WantTextInput alone is what holds the editor's keys
 //
 // HOW TO RUN
 //
@@ -134,6 +136,7 @@ namespace SorceryRemake.Tools.ChromeCheck
             CheckUndoMenu();
             CheckInspectorPickers(harness);
             CheckTextInputKeyboard(harness);
+            CheckRoomBlock(harness);
 
             Console.WriteLine();
             Console.WriteLine($"  {_checks} checks, {_failures} failure(s)");
@@ -818,7 +821,9 @@ namespace SorceryRemake.Tools.ChromeCheck
             const float labelH = 16f, innerGap = 2f, valueH = 22f, rowGap = 4f;
             const float rowH = labelH + innerGap + valueH + rowGap;   // 44
             float x = EditorLayout.InspectorRect.X + 40f;
-            float headerTop = EditorLayout.InspectorRect.Y + titleH;
+            // The ROOM block sits above every placement section — its height comes
+            // from the panel's own constant, never re-derived here.
+            float headerTop = EditorLayout.InspectorRect.Y + titleH + InspectorPanel.RoomBlockHeight;
             float bodyTop = headerTop + headerH + headerGap;
 
             // A row's clickable half is the VALUE BOX, not the label above it.
@@ -1251,7 +1256,7 @@ namespace SorceryRemake.Tools.ChromeCheck
             const float labelH = 16f, innerGap = 2f, valueH = 22f, rowGap = 4f;
             const float rowH = labelH + innerGap + valueH + rowGap;
             float x = EditorLayout.InspectorRect.X + 40f;
-            float bodyTop = EditorLayout.InspectorRect.Y + titleH + headerH + headerGap;
+            float bodyTop = EditorLayout.InspectorRect.Y + titleH + InspectorPanel.RoomBlockHeight + headerH + headerGap;
             float ValueY(int row) => bodyTop + row * rowH + labelH + innerGap + valueH / 2f;
 
             float roomRowY = ValueY(2);    // Pos, Opens, Room, Door, Background
@@ -1475,7 +1480,7 @@ namespace SorceryRemake.Tools.ChromeCheck
             const float labelH = 16f, innerGap = 2f, valueH = 22f, rowGap = 4f;
             const float rowH = labelH + innerGap + valueH + rowGap;
             float x = EditorLayout.InspectorRect.X + 40f;
-            float bodyTop = EditorLayout.InspectorRect.Y + titleH + headerH + headerGap;
+            float bodyTop = EditorLayout.InspectorRect.Y + titleH + InspectorPanel.RoomBlockHeight + headerH + headerGap;
             float roomRowY = bodyTop + 2 * rowH + labelH + innerGap + valueH / 2f;
 
             // Baseline: nothing open, keys are the editor's.
@@ -1531,6 +1536,125 @@ namespace SorceryRemake.Tools.ChromeCheck
 
             // And a click somewhere harmless leaves the world in a known state
             // for anything that runs after this section.
+            h.MoveTo(Centre(EditorLayout.CanvasRect));
+            h.Settle();
+        }
+
+        // ====================================================================
+        // 16. ROOM BLOCK — the rename field, and the keyboard rule it makes live
+        // ====================================================================
+        // PR 7b commit 3. The inspector's ROOM block carries the editor's first
+        // text field that is NOT inside a popup, which is what makes it worth a
+        // section of its own: for the pickers, ChromeInputRouter's popup term
+        // alone would gate the keyboard, and section 15 had to pin the
+        // WantTextInput term as a truth table because no widget exercised it.
+        // This widget exercises it. While the name field has focus, io.
+        // WantTextInput is the ONLY thing standing between the author's typing
+        // and P, Delete, the brackets, N, I and A firing as editor keybinds.
+        //
+        // Asserted ACROSS FRAMES, for the reason PR 7a wrote down in blood: the
+        // flag is latched during NewFrame from what the previous frame's widgets
+        // asked for, so a probe that clicks and reads on the same frame reports
+        // a clean result whatever the rule is.
+        // ====================================================================
+
+        private static void CheckRoomBlock(Harness h)
+        {
+            Section("16. ROOM BLOCK — renaming, and a text field with no popup over it");
+
+            h.Resize(1280, 720);
+            var actions = new RecordingActions();
+            var state = new EditorState();
+            state.Placements.Add(new Placement("chateau_0_sword_1", PlacementKind.Item,
+                                               new Vector2(40, 100)) { ItemType = ItemType.Sword });
+
+            h.SetBandsModal(false);
+            h.SetPickerLists(PickerRooms, PickerItems, DoorsOf);
+            h.DriveInspector(actions, state);
+            h.SetInspectorRoom("chateau_0", "Chateau 0");
+
+            // Geometry from the panel's own constants. The field is the value
+            // box of the block's one row: strip, gap, label, gap, field.
+            const float titleH = 32f, roomHeaderH = 22f, rowGap = 4f;
+            const float labelH = 16f, innerGap = 2f, valueH = 22f;
+            float x = EditorLayout.InspectorRect.X + 40f;
+            float blockTop = EditorLayout.InspectorRect.Y + titleH;
+            float fieldY = blockTop + roomHeaderH + rowGap + labelH + innerGap + valueH / 2f;
+
+            // Baseline.
+            h.MoveTo(Centre(EditorLayout.CanvasRect));
+            h.Settle();
+            Assert("with nothing focused, keys reach the editor", h.Router.KeyboardReachesEditor);
+            Assert("  and no popup is open", !Harness.AnyPopupOpen);
+
+            // FOCUS. No popup anywhere — this is the WantTextInput term on its
+            // own, doing the whole job.
+            actions.Reset();
+            h.ClickAt(new NVector2(x, fieldY));
+            h.Frame(); h.Frame(); h.Frame();
+            Assert("clicking the name field takes text input", h.Router.ImGuiWantsTextInput,
+                $"WantTextInput={h.Router.ImGuiWantsTextInput}");
+            Assert("  with NO popup open — the popup term cannot be what did it",
+                !Harness.AnyPopupOpen);
+            Assert("  so the editor's keybinds are suppressed by WantTextInput ALONE",
+                !h.Router.KeyboardReachesEditor);
+            Assert("  and clicking the field applied no rename by itself",
+                actions.Calls.Count == 0, actions.Only);
+
+            // TYPE AND COMMIT. Enter deactivates a single-line InputText, and
+            // the deactivation is what applies the name.
+            h.TypeReplacingAll("Chateau Zero");
+            h.Frame(); h.Frame(); h.Frame();
+            Assert("typing keeps the keys held", !h.Router.KeyboardReachesEditor);
+
+            h.TapKey(ImGuiKey.Enter);
+            h.Settle();
+            AssertCall("Enter applies the rename", actions, nameof(IChromeActions.SetRoomDisplayName));
+            AssertValue("  with the text that was typed", actions, "Chateau Zero");
+            Assert("  and the field lets the keyboard go", h.Router.KeyboardReachesEditor);
+
+            // The panel re-seeds its draft from the view whenever the field is
+            // not being edited, so a rename the LOGIC side refused (or one that
+            // simply has not happened yet) never leaves stale text on screen.
+            // Driven by telling the panel the room is still called what it was.
+            actions.Reset();
+            h.ClickAt(new NVector2(x, fieldY));
+            h.Settle();
+            h.TypeReplacingAll("ZZZ");
+            h.TapKey(ImGuiKey.Escape);
+            h.Settle();
+            Assert("Esc in the name field lets the keyboard go",
+                h.Router.KeyboardReachesEditor);
+            Assert("  and does NOT close anything else — there was no popup",
+                !Harness.AnyPopupOpen);
+            AssertValue("  and the name it reports is the reverted one, which the "
+                      + "logic side treats as a no-op", actions, "Chateau 0");
+
+            // A ROOM SWITCH RE-SEEDS THE DRAFT. Without it the field would still
+            // be showing the previous room's name — and applying it would
+            // rename the room you just arrived in, which is a data change
+            // nobody asked for in a file nobody was watching.
+            //
+            // Proved by APPENDING rather than by typing a whole name: End then
+            // one character means whatever comes back has to start with what
+            // the field was seeded with. Pressing Enter on an untouched field
+            // would prove nothing — an unedited InputText reports no
+            // deactivation-after-edit at all, so the assertion would pass
+            // whatever the seed was.
+            actions.Reset();
+            h.SetInspectorRoom("stonehenge", "Stonehenge");
+            h.Settle();
+            h.ClickAt(new NVector2(x, fieldY));
+            h.Settle();
+            h.TapKey(ImGuiKey.End);
+            h.TypeText("!");
+            h.TapKey(ImGuiKey.Enter);
+            h.Settle();
+            AssertCall("switching rooms leaves an editable field", actions,
+                nameof(IChromeActions.SetRoomDisplayName));
+            AssertValue("  seeded with the NEW room's name, not the old one",
+                actions, "Stonehenge!");
+
             h.MoveTo(Centre(EditorLayout.CanvasRect));
             h.Settle();
         }
@@ -1641,6 +1765,12 @@ namespace SorceryRemake.Tools.ChromeCheck
 
             public void SetBlockedDoorRequiredItem(Placement p, ItemType item) =>
                 Set(nameof(SetBlockedDoorRequiredItem), p, item.ToString());
+
+            public void SetRoomDisplayName(string displayName)
+            {
+                Calls.Add(nameof(SetRoomDisplayName));
+                Values.Add(displayName);
+            }
 
             public void CreateRoom(RoomCandidate candidate)
             {
@@ -1779,6 +1909,28 @@ namespace SorceryRemake.Tools.ChromeCheck
                 Frame();
             }
 
+            /// <summary>Ctrl+A, then type — replacing whatever the field held.</summary>
+            // Without the select-all, a typed character lands at the CARET, and
+            // the caret is wherever the click that focused the field put it —
+            // so "Chateau 0" clicked two characters in and typed into becomes
+            // "ChXateau 0". Correct behaviour, and a terrible thing to assert
+            // against, since the answer depends on the click's x and the font's
+            // metrics. Select-all is also what someone renaming a room actually
+            // does.
+            public void TypeReplacingAll(string text)
+            {
+                SetKey(ImGuiKey.ModCtrl, true);
+                SetKey(ImGuiKey.LeftCtrl, true);
+                SetKey(ImGuiKey.A, true);
+                Frame();
+                SetKey(ImGuiKey.A, false);
+                Frame();
+                SetKey(ImGuiKey.ModCtrl, false);
+                SetKey(ImGuiKey.LeftCtrl, false);
+                Frame();
+                TypeText(text);
+            }
+
             private readonly List<char> _pendingChars = new();
 
             /// <summary>True while ImGui has any popup — a menu or a picker — open.</summary>
@@ -1911,6 +2063,16 @@ namespace SorceryRemake.Tools.ChromeCheck
             {
                 _inspectorActions = actions;
                 _inspectorState = state;
+                Settle();
+            }
+
+            /// <summary>
+            /// Tell the inspector which room it is showing, for the ROOM block.
+            /// </summary>
+            public void SetInspectorRoom(string roomId, string displayName)
+            {
+                _bandView.RoomId = roomId;
+                _bandView.RoomDisplayName = displayName;
                 Settle();
             }
 

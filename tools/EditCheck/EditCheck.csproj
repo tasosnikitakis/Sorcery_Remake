@@ -84,6 +84,7 @@
          reason. Neither harness runs the analyzer. -->
     <Compile Include="..\..\SorceryForge\PuzzleAnalyzer.cs" />
     <Compile Include="..\..\SorceryForge\RoomMeta.cs" />
+    <Compile Include="..\..\SorceryForge\RoomProperties.cs" />
     <Compile Include="..\..\SorceryForge\UndoStack.cs" />
     <Compile Include="Program.cs" />
   </ItemGroup>

@@ -245,7 +245,7 @@ no `Texture2D` and no `GraphicsDevice`; keep it that way.
 
 That writes all three things step 1–2 below describe by hand: the `#begin` block in `Content/Content.mgcb`, an all-empty `collision_<id>.json`, and the appended `rooms.json` entry. It does **not** create `content_<id>.json` or `layout_<id>.json` — those appear the first time you save something real into the room (see [Per-Room JSON Files](#per-room-json-files--when-they-exist)).
 
-**The id and name come from the filename** — the editor has no text field, and the flow is designed so it never needs one:
+**The id and name are derived from the filename.** The display name can be changed afterwards in the inspector's ROOM block (see [Renaming a Room's Display Name](#renaming-a-rooms-display-name)); the id cannot, and the filename is the only chance to choose it:
 
 | PNG | Room ID | Display Name |
 |-----|---------|--------------|
@@ -254,6 +254,8 @@ That writes all three things step 1–2 below describe by hand: the `#begin` blo
 | `RoomBG_Stonehenge.png` | `stonehenge` | `Stonehenge` |
 
 The rule (`SorceryForge/NewRoomFlow.cs`): strip `RoomBG_` and `.png`, split into words at each separator (`_` or `-`, which are consumed), at each internal capital and at a trailing digit run, then join the words with spaces for the display name and with underscores, lowercased, for the id. **Rename the file to change the room's id** — there is no rename-after-the-fact. A derived id that collides with an existing room or with a reserved test-room id (`room_1` / `room_2`) is listed in the picker but greyed out with the reason.
+
+`NewRoomFlow.Create` reads `rooms.json` **from the data directory it is about to write**, not from the cached `RoomManifest.All`, and re-checks the derived id against it. Before PR 7b it appended to the cached snapshot, so two creations without a `RoomManifest.Reload()` between them both started from the same list and the second write silently dropped the first room. The editor never hit it because `CreateAndOpenRoom` reloads after every file — which was a caller having to remember something. `tools/ImportCheck` now pins the fix rather than the hazard.
 
 A name that is *already* snake_case derives itself: `chateau_1` → `chateau_1`, `near-chateau` → `near_chateau`. That idempotence is what makes the collision check trustworthy — the id being tested has to be the id that would be created. Until PR 5b it did not hold: the separator was counted as a boundary *and* kept, so `chateau_1` derived `chateau__1`, which collides with nothing and so was cheerfully created beside the shipped `chateau_1`. `tools/ImportCheck` section 5a now pins both `derive(derive(x)) == derive(x)` and "no derived id contains `__`".
 
@@ -645,6 +647,14 @@ A room's `content_<roomId>.json` and `layout_<roomId>.json` are **optional**. An
 
 "Empty" is defined per file at the check site in each loader's `Save`: content = no items, enemies, wizards or blocked doors; layout = no doors **and no `playerSpawn`**. `roomId` doesn't count — the writer always fills it in. Any future DTO field that carries authored room data has to be folded into those predicates, or a room whose only content is that field never gets a file. `playerSpawn` is the worked example: a doorless room with just a spawn *is* non-empty and does get a file, and `tools/RoundTrip`'s self-test pins that case.
 
+**What `Ctrl+S` reports.** The status line names exactly the parts that reached the disk, and never a part that did not:
+
+```
+Saved chateau_0: content + layout + PNG — rebuild (dotnet build) for the game to see the PNG.
+```
+
+`content` and `layout` appear only when the loader actually wrote (see the two rules above); `collision` only when Paint mode changed a tile; `PNG` only when Erase or a punch touched background pixels. The rebuild note rides on `PNG` alone, because the background is the only part of a save the *game* cannot see until the content pipeline runs again — this is what the PR 4b smoke pass caught, where a save quietly rewrote an asset in `Content/` and said nothing about it.
+
 Together with a stable serializer this gives the repo a checkable invariant: **load every manifest room in the editor, save each untouched, and both `git diff` and `git status` stay clean.** `tools/RoundTrip` runs exactly that headlessly and is the regression test for any change to the save path, the loaders, or room registration.
 
 ## Layout Conventions
@@ -659,6 +669,21 @@ These are project conventions, not framework requirements:
 - Room IDs use snake_case with the area prefix (`forest_1`, `chateau_0`, `stonehenge`).
 - Door IDs follow `<roomId>_door_<location>` (e.g., `chateau_1_door_topright`).
 - Item / enemy / wizard IDs follow `<roomid>_<type>_<n>` so they stay unique without a counter.
+
+## Renaming a Room's Display Name
+
+The inspector's **ROOM** block (top of the right panel, always there) has a text field for the room's `displayName`. Type, press `Enter` or click away, and it writes through `RoomManifest.Save` to `assets/data/rooms.json` — header comment preserved, array order preserved, one field changed. `Esc` reverts. An empty name is refused: `RoomManifest.LoadAll` substitutes the room id for a blank `displayName`, so writing one would look like it had worked and quietly rename the room to its own id.
+
+Renaming writes the file immediately, so it is **not on the undo stack** — the same boundary `Ctrl+S` sits on. It does **not** reload the room, so unsaved placement edits survive it.
+
+**The room ID is not editable, and this is not an oversight.** An id is:
+
+- a **persistence key** — `WorldState` remembers `PickedUpItems` / `DeadEnemies` / `SavedWizards` / `UnlockedDoors` as sets of *entity* ids, and every entity id is built from its room's id. A rename orphans every one of them, silently, because a set lookup that misses just means "not picked up yet";
+- **three file names** — `content_<id>.json`, `layout_<id>.json`, `collision_<id>.json`;
+- a **cross-room link** — every door in every *other* room that targets this one names it in `targetRoom`, and the validator's `orphan-room` verdict is the only thing that would notice;
+- a **map key** — `worldmap.json` stores board positions by room id.
+
+Doing it properly means a migration: rewrite three files, rewrite every referring door, rewrite the map, and decide what happens to an existing save. That is a tool, not a text field, and a text field that did a third of it would be worse than none. To change an id today, see [Removing or Renaming a Room](#removing-or-renaming-a-room) below and do it as a one-shot operation by hand.
 
 ## Removing or Renaming a Room
 

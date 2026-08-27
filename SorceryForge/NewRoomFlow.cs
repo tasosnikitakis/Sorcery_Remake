@@ -313,13 +313,37 @@ namespace SorceryForge
 
         /// <summary>
         /// Create the room: collision grid, .mgcb block, registry entry. Does
-        /// NOT reload the registry or load the room — the caller owns that, in
-        /// that order (RoomManifest.Reload → RoomMeta.RebuildAll → LoadRoom).
+        /// NOT reload the cached registry or load the room — the caller owns
+        /// that, in that order (RoomManifest.Reload → RoomMeta.RebuildAll →
+        /// LoadRoom).
         /// </summary>
         // Nor does it write the background PNG: New Room's already exists (it
         // is what the candidate was found from), and the screenshot import
         // writes its own before calling here. Keeping the PNG out means this
         // method needs no GraphicsDevice and stays headlessly exercisable.
+        //
+        // ---------------------------------------------------------------------
+        // IT READS THE REGISTRY FRESH, FROM dataDir. PR 7b; PR 5b left this as a
+        // documented hazard and tools/ImportCheck pinned it as one.
+        //
+        // The hazard: this method used to build the new registry from the CACHED
+        // RoomManifest.All. Two Creates without a RoomManifest.Reload between
+        // them therefore both started from the same snapshot, and the second
+        // write silently dropped the room the first had added. Nothing failed.
+        // Nothing warned. A room simply was not there any more.
+        //
+        // The editor never hit it, because CreateAndOpenRoom reloads after every
+        // file — but that is a caller remembering something, and a caller
+        // remembering something is the shape of every bug this comment block
+        // exists to describe. So the method no longer depends on being called
+        // correctly: it reads the registry it is about to rewrite, from the
+        // directory it is about to rewrite it in, at the moment it rewrites it.
+        //
+        // It also re-checks the id against that fresh registry. A candidate is
+        // computed when a picker OPENS; between then and the click, a batch
+        // import may have created a room deriving the same id. The check that
+        // matters is the one against the file being written.
+        // ---------------------------------------------------------------------
         public static CreateResult Create(RoomCandidate candidate, string contentDir, string dataDir)
         {
             var result = new CreateResult();
@@ -327,6 +351,29 @@ namespace SorceryForge
             if (!candidate.CanCreate)
             {
                 result.Message = $"Cannot create {candidate.BackgroundAsset}: {candidate.Problem}";
+                return result;
+            }
+
+            string roomsPath = Path.Combine(dataDir, "rooms.json");
+            List<RoomManifest> registry;
+            try
+            {
+                registry = RoomManifest.LoadFrom(roomsPath);
+            }
+            catch (Exception ex)
+            {
+                // Before ANY write. A registry that cannot be read is a registry
+                // that cannot be appended to, and leaving a collision file and
+                // an .mgcb block behind for a room that will never exist is
+                // litter this method is in a position to avoid.
+                result.Message = $"Create failed: {ex.Message}";
+                return result;
+            }
+
+            string? fresh = CheckRoomId(candidate.RoomId, TakenRoomIds(registry));
+            if (fresh != null)
+            {
+                result.Message = $"Cannot create {candidate.BackgroundAsset}: {fresh}";
                 return result;
             }
 
@@ -361,12 +408,11 @@ namespace SorceryForge
 
                 // 3. Registry entry, appended last in the array — array order
                 //    is room order, and appending is the only always-safe edit.
-                var rooms = new List<RoomManifest>(RoomManifest.All)
-                {
-                    new RoomManifest(candidate.RoomId, candidate.DisplayName,
-                                     candidate.BackgroundAsset, collisionName),
-                };
-                RoomManifest.Save(rooms, Path.Combine(dataDir, "rooms.json"));
+                //    Onto the registry READ FROM DISK above, not onto the
+                //    cached one; see the block on Create.
+                registry.Add(new RoomManifest(candidate.RoomId, candidate.DisplayName,
+                                              candidate.BackgroundAsset, collisionName));
+                RoomManifest.Save(registry, roomsPath);
                 result.Wrote.Add("rooms.json");
 
                 result.Ok = true;

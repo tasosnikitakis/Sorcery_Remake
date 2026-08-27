@@ -684,21 +684,37 @@ namespace SorceryForge
             var meta = _state.CurrentRoom;
             try
             {
-                // The status line names exactly the files that hit the disk.
+                // ---- WHAT CTRL+S REPORTS ----------------------------------
+                // The status line names exactly the parts that hit the disk,
+                // and never a part that did not:
+                //
+                //     Saved chateau_0: content + layout + PNG
+                //
                 // Both loaders decline to CREATE a file for a room that is
                 // empty and has none yet (they still rewrite an existing one,
-                // so deletions persist), so "saved" cannot be assumed — it is
-                // built from what each Save actually reports back.
+                // so deletions persist), so "saved" cannot be assumed — every
+                // entry below is added only after the write that produced it
+                // reported back.
+                //
+                // This closes the silent ride-along the PR 4b smoke pass found:
+                // Ctrl+S writes the background PNG too when Erase or a punch
+                // has touched it, and a message that said only "Saved" left the
+                // author with no way to know an ASSET had just been rewritten —
+                // the one save that also needs a content rebuild before the
+                // GAME sees it. Short names rather than file names because the
+                // room id is stated once, in front, and four full file names
+                // did not fit the status bar beside the view-info group.
                 var saved = new List<string>();
+                bool wrotePng = false;
 
                 // 1. Content (items, enemies, wizards, blocked doors).
                 if (RoomContentLoader.Save(meta.RoomId, _state.ToRoomContent(), EditorPaths.RepoAssetsDataDir))
-                    saved.Add($"content_{meta.RoomId}.json");
+                    saved.Add("content");
 
                 // 2. Layout (doors + player spawn).
                 var layout = _state.ToRoomLayoutJson(meta.RoomId);
                 if (RoomLayoutLoader.Save(layout, EditorPaths.RepoAssetsDataDir))
-                    saved.Add($"layout_{meta.RoomId}.json");
+                    saved.Add("layout");
 
                 // Placements and the spawn live entirely in those two files,
                 // so they're durable now — clear the flag here (same pattern
@@ -712,7 +728,7 @@ namespace SorceryForge
                     string path = Path.Combine(EditorPaths.RepoAssetsDataDir, meta.CollisionJsonName);
                     RoomLoader.SaveCollisionGrid(path, _state.CollisionMap);
                     _state.CollisionDirty = false;
-                    saved.Add(meta.CollisionJsonName);
+                    saved.Add("collision");
                 }
 
                 // 4. Background PNG (only when Erase mode touched pixels).
@@ -732,7 +748,8 @@ namespace SorceryForge
                     // The restore brush now restores to this saved state.
                     _bgOriginal = (Color[])_bgPixels.Clone();
                     _state.BackgroundDirty = false;
-                    saved.Add($"{meta.BackgroundAsset}.png (rebuild for game)");
+                    saved.Add("PNG");
+                    wrotePng = true;
                 }
 
                 // Refresh the in-memory door / spawn cache from the file we
@@ -740,8 +757,14 @@ namespace SorceryForge
                 meta.ReloadLayoutFromDisk();
 
                 _discardArmed = false;   // a save always disarms the discard guard
+
+                // The rebuild note rides ONLY on the PNG, because the PNG is
+                // the only part of a save the game cannot see until the content
+                // pipeline runs again. Saying it every time would train the
+                // author to stop reading it.
                 _state.Status = saved.Count > 0
-                    ? "Saved " + string.Join(" + ", saved)
+                    ? $"Saved {meta.RoomId}: {string.Join(" + ", saved)}" +
+                      (wrotePng ? " — rebuild (dotnet build) for the game to see the PNG." : "")
                     : $"Nothing to save — {meta.DisplayName} is empty, so no files were created";
             }
             catch (Exception ex)
@@ -4051,6 +4074,55 @@ namespace SorceryForge
         }
 
         // ====================================================================
+        // ROOM PROPERTIES
+        // ====================================================================
+
+        /// <summary>
+        /// The inspector's ROOM block: rewrite this room's displayName in
+        /// rooms.json.
+        /// </summary>
+        // NOT UNDOABLE, and that is the same boundary Save sits on. This writes
+        // a file the moment it happens; "undo" for it would mean rewriting the
+        // previous file, which is version control's job and not a stack's. The
+        // undo stack holds unsaved working state, and a rename is never unsaved.
+        //
+        // NOT A ROOM RELOAD EITHER, which is the part worth being careful
+        // about. Renaming touches rooms.json and nothing else — not content,
+        // not layout, not collision, not the PNG — so calling LoadRoom here
+        // would rebuild the working set from disk and throw away every unsaved
+        // edit in the room, for a cosmetic change. Reloading the two CATALOGUES
+        // is enough: CurrentRoomIndex still points at the same room because
+        // RoomProperties.Rename preserves array order, and RoomMeta.Doors is
+        // only the saved view — the working set is _state.Placements, which
+        // nothing here touches.
+        private void SetRoomDisplayName(string displayName)
+        {
+            var meta = _state.CurrentRoom;
+            string name = (displayName ?? "").Trim();
+
+            var result = RoomProperties.Rename(meta.RoomId, name, EditorPaths.RepoAssetsDataDir);
+            if (!result.Ok)
+            {
+                _state.Status = result.Message;
+                return;
+            }
+
+            // A no-op rename says nothing. The field reports EVERY deactivation,
+            // including the one after Escape has reverted the text, so the
+            // common case here is "nothing changed" and it must not shout.
+            if (!result.Changed) return;
+
+            RoomManifest.Reload();
+            RoomMeta.RebuildAll();
+
+            // The world map needs nothing here: EnterMapMode calls
+            // RebuildMapBoard unconditionally, so the board's labels are built
+            // from the catalogue as it is at the moment Tab is pressed.
+
+            _state.Status = result.Message;
+        }
+
+        // ====================================================================
         // PICKER OPTION LISTS
         // ====================================================================
         // What the three filterable dropdowns offer. Built here, on the logic
@@ -4261,6 +4333,7 @@ namespace SorceryForge
         void IChromeActions.SetBlockedDoorRequiredItem(Placement p, ItemType item) =>
             SetBlockedDoorRequiredItem(p, item);
         void IChromeActions.PunchBackground(Placement p) => PunchBackground(p);
+        void IChromeActions.SetRoomDisplayName(string displayName) => SetRoomDisplayName(displayName);
 
         void IChromeActions.OpenNewRoomPicker() => OpenNewRoomPicker();
         void IChromeActions.OpenImportPicker() => OpenImportPicker();

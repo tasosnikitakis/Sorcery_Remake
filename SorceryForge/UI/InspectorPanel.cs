@@ -91,6 +91,10 @@ namespace SorceryForge.UI
         private static readonly uint ValueBorder = ChromeTheme.Packed(90, 100, 130);
         private static readonly uint ValueBgReadOnly = ChromeTheme.Packed(34, 38, 50);
         private static readonly uint ValueText = ChromeTheme.Packed(255, 255, 255);
+        // The amber every section header and modal title in this editor wears —
+        // the ROOM strip is a heading, not an entity.
+        private static readonly uint RoomHeaderText = ChromeTheme.Packed(255, 220, 110);
+        private static readonly uint RoomNoteColor = ChromeTheme.Packed(150, 160, 185);
 
         public static void Draw(IChromeActions actions, EditorState state, in ChromeView view)
         {
@@ -140,6 +144,8 @@ namespace SorceryForge.UI
 
             ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new NVector2(0f, 0f));
 
+            RoomBlock(actions, view, contentW);
+
             if (state.Placements.Count == 0)
             {
                 // Exact wording, em dash included.
@@ -178,6 +184,157 @@ namespace SorceryForge.UI
 
             ImGui.PopStyleVar();
         }
+
+        // ====================================================================
+        // ROOM BLOCK — the room's own properties, above the entities
+        // ====================================================================
+        // PR 7b commit 3. The editor had no text field anywhere, so a room's
+        // display name was fixed at creation from its background PNG's filename
+        // and could only be changed by hand-editing rooms.json. This is the
+        // field.
+        //
+        // WHERE IT IS, and why it is not a modal. Three options were on the
+        // table: File > Room Properties…, an inspector block shown only when
+        // nothing is selected, and this — a block that is ALWAYS at the top of
+        // the inspector's list.
+        //
+        //   A modal would be a FOURTH thing in the ModalOpen set, with its own
+        //   NoInputs handling for the three bands, its own Escape path and its
+        //   own overlay. That is a lot of new modality for one text field, and
+        //   the editor's modality rules are the part of PR 7a that took the
+        //   longest to get right.
+        //
+        //   Shown-only-when-nothing-is-selected would appear and disappear on
+        //   every canvas click, and everything below it would jump 96 px each
+        //   time. The inspector is a list you scroll and click in; a list whose
+        //   contents move when you select something is a list that hands you
+        //   the wrong row.
+        //
+        //   Always-present costs 96 px, and costs it only until you scroll —
+        //   the block lives INSIDE the scrolling child, so it is not pinned
+        //   furniture. The inspector already reports the room's entity count at
+        //   the top; the room's own identity belongs in the same place.
+        //
+        // AND IT IS THE FIRST TEXT FIELD WITH NO POPUP OVER IT. The pickers'
+        // filter boxes are inside ImGui popups, so ChromeInputRouter's popup
+        // term alone would gate the keyboard for them. This one is a plain band
+        // widget: while it has focus, io.WantTextInput is the ONLY thing
+        // stopping P, Delete, the brackets and the rest from firing as editor
+        // keybinds under the author's typing. That is exactly the case PR 7a
+        // wrote the rule for and had nothing to test it with.
+        //
+        // NO ID FIELD, deliberately. An id is a persistence key, three file
+        // names and a cross-room link — renaming one is a migration, not a text
+        // field. The note under the name says so, and doc/07 says why.
+        // ====================================================================
+
+        private const float RoomHeaderH = 22f;
+        private const float RoomNoteH = 16f;
+
+        /// <summary>
+        /// The exact height of the ROOM block, so that everything below it can
+        /// be found without the arithmetic being duplicated anywhere.
+        /// </summary>
+        // internal, and read by tools/ChromeCheck rather than re-derived there.
+        // The whole reason the hand-rolled chrome kept handing back the wrong
+        // row was a rectangle maintained in more than one place.
+        internal const float RoomBlockHeight =
+            RoomHeaderH + RowGap                       // the "ROOM" strip
+            + LabelH + InnerGap + ValueH + RowGap      // the Name row
+            + RoomNoteH + RowGap                       // the id note
+            + BodyGap;
+
+        // The draft the field edits, and which room it belongs to. Presentation
+        // state, in the same category as the panel scroll offsets ImGui owns:
+        // nothing outside this file reads it, and the moment it is APPLIED it
+        // stops being the chrome's business and becomes a verb call.
+        private static string _nameDraft = "";
+        private static string _nameDraftRoomId = "";
+        private static bool _nameFieldActive;
+
+        private static void RoomBlock(IChromeActions actions, in ChromeView view, float width)
+        {
+            // Re-seed from the room whenever the draft and the registry
+            // disagree. Three cases, one condition: a room switch (the field
+            // must not still be showing the previous room's name, because
+            // applying it would rename the room you just arrived in), a rename
+            // that succeeded, and a rename the logic side REFUSED — where the
+            // draft has to fall back to what the file still says rather than
+            // sitting there showing a name that was never written.
+            //
+            // The !_nameFieldActive term is belt-and-braces rather than
+            // load-bearing, and is written down as such because a test cannot
+            // tell: ImGui's InputText keeps its own edit buffer while its item
+            // is active and only writes back to the caller's string on the way
+            // out, so assigning to _nameDraft mid-edit is ignored in this
+            // version anyway. Deleting the guard breaks nothing today and would
+            // break everything under a version that read the buffer each frame.
+            if (!_nameFieldActive &&
+                (_nameDraftRoomId != view.RoomId || _nameDraft != (view.RoomDisplayName ?? "")))
+            {
+                _nameDraft = view.RoomDisplayName ?? "";
+                _nameDraftRoomId = view.RoomId ?? "";
+            }
+
+            ImGui.SetCursorPosX(Padding);
+            var strip = ImGui.GetCursorScreenPos();
+            ImGui.Dummy(new NVector2(width, RoomHeaderH));
+            var dl = ImGui.GetWindowDrawList();
+            dl.AddRectFilled(strip, new NVector2(strip.X + width, strip.Y + RoomHeaderH), HeaderBg);
+            dl.AddRect(strip, new NVector2(strip.X + width, strip.Y + RoomHeaderH), HeaderBorder);
+            dl.AddText(new NVector2(strip.X + 8f, strip.Y + 4f), RoomHeaderText, "ROOM");
+            Gap(RowGap);
+
+            float x = Padding + BodyIndent;
+            float fieldW = width - BodyIndent * 2;
+
+            ImGui.SetCursorPosX(x);
+            var labelPos = ImGui.GetCursorScreenPos();
+            ImGui.Dummy(new NVector2(fieldW, LabelH));
+            ImGui.GetWindowDrawList().AddText(labelPos, RowLabel, "Name");
+
+            ImGui.SetCursorPosX(x);
+            ImGui.Dummy(new NVector2(fieldW, InnerGap));
+
+            // Frame padding chosen so the field is EXACTLY ValueH tall, like
+            // every other value box in this panel. Without it the field would
+            // be whatever the font and the style's padding happened to add up
+            // to, and RoomBlockHeight above would be a lie.
+            float padY = Math.Max(0f, (ValueH - ImGui.GetTextLineHeight()) * 0.5f);
+            ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, new NVector2(6f, padY));
+            ImGui.SetCursorPosX(x);
+            ImGui.SetNextItemWidth(fieldW);
+            ImGui.InputText("##sf_roomname", ref _nameDraft, RoomNameBufferSize);
+
+            // Read IMMEDIATELY after the call, both of them. IsItemActive is
+            // what suppresses the re-seed above on the next frame, and
+            // IsItemDeactivatedAfterEdit fires on Enter, on a click away, and
+            // on Escape-after-typing — the last of which arrives with the text
+            // already reverted, which is why the logic side treats an unchanged
+            // name as a silent no-op rather than as a write.
+            _nameFieldActive = ImGui.IsItemActive();
+            bool applied = ImGui.IsItemDeactivatedAfterEdit();
+            ImGui.PopStyleVar();
+
+            if (applied) actions.SetRoomDisplayName(_nameDraft);
+
+            Gap(RowGap);
+
+            ImGui.SetCursorPosX(x);
+            var notePos = ImGui.GetCursorScreenPos();
+            ImGui.Dummy(new NVector2(fieldW, RoomNoteH));
+            ImGui.GetWindowDrawList().AddText(notePos, RoomNoteColor,
+                ChromeTheme.Truncate($"id {view.RoomId} — fixed", fieldW));
+
+            Gap(RowGap);
+            Gap(BodyGap);
+        }
+
+        /// <summary>Room names are short by rule; the buffer says so.</summary>
+        // Matches RoomProperties.MaxDisplayNameLength, plus one for the
+        // terminator ImGui's buffer wants. The logic side still checks — a
+        // buffer limit is a convenience, not a validation.
+        private const uint RoomNameBufferSize = 49;
 
         // ====================================================================
         // SECTION HEADER

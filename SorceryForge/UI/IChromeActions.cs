@@ -135,6 +135,23 @@ namespace SorceryForge.UI
         /// <summary>Clear the background under a placement's 24x24 footprint.</summary>
         void PunchBackground(Placement p);
 
+        // ---- Room properties -------------------------------------------------
+
+        /// <summary>
+        /// Rewrite the current room's displayName in rooms.json.
+        /// </summary>
+        // Called on every DEACTIVATION of the inspector's name field, including
+        // the one Escape produces after reverting the text — so the common case
+        // is "the name did not change", and the logic side is what decides that
+        // and stays quiet about it. A panel that tried to work out whether a
+        // rename was needed would be a panel holding an opinion about the
+        // registry.
+        //
+        // There is deliberately no SetRoomId. An id is a persistence key, three
+        // file names and a cross-room link; renaming one is a migration, not a
+        // text field. See the header of RoomProperties.cs and doc/07.
+        void SetRoomDisplayName(string displayName);
+
         // ---- Modal pickers -------------------------------------------------
 
         void OpenNewRoomPicker();

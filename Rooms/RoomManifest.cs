@@ -118,17 +118,28 @@ namespace SorceryRemake.Rooms
             AllowTrailingCommas = true,
         };
 
-        /// <summary>
-        /// Read and validate assets/data/rooms.json. Every failure here is
-        /// FATAL and loud. A silently-empty room list would "work" — the game
-        /// would boot into a world with no rooms and the editor would show an
-        /// empty picker — which is far harder to diagnose than a crash naming
-        /// the file and the problem.
-        /// </summary>
-        private static List<RoomManifest> LoadAll()
-        {
-            string path = RoomsJsonPath;
+        private static List<RoomManifest> LoadAll() => LoadFrom(RoomsJsonPath);
 
+        /// <summary>
+        /// Read and validate a rooms.json at an explicit path. Every failure
+        /// here is FATAL and loud. A silently-empty room list would "work" —
+        /// the game would boot into a world with no rooms and the editor would
+        /// show an empty picker — which is far harder to diagnose than a crash
+        /// naming the file and the problem.
+        /// </summary>
+        // PUBLIC, and taking a path, since PR 7b. The cached <see cref="All"/>
+        // is the right thing for the game and for the editor's own reads, and
+        // the wrong thing for anything that WRITES the registry: SorceryForge's
+        // New Room and its room rename both need the registry as it is on disk
+        // RIGHT NOW, because appending to a stale copy silently drops whatever
+        // was added since it was cached. That hazard used to be documented in a
+        // tools/ImportCheck assertion; it is closed here instead, by making the
+        // fresh read available to the writers.
+        //
+        // Uncached on purpose. A second cache keyed by path would have exactly
+        // the staleness problem this exists to solve.
+        public static List<RoomManifest> LoadFrom(string path)
+        {
             if (!File.Exists(path))
                 throw new InvalidOperationException(
                     $"Room registry not found: '{path}'. assets/data/rooms.json defines which " +

@@ -689,8 +689,123 @@ namespace SorceryRemake.Tools.EditCheck
                     File.ReadAllText(path) == after);
             }
 
+            CheckDisplayNameRules();
+            CheckRenameFlow(scratch, live);
+
             Console.WriteLine();
             Console.WriteLine($"  scratch left at {scratch}");
+        }
+
+        // ---- what a display name may be -------------------------------------
+
+        private static void CheckDisplayNameRules()
+        {
+            Console.WriteLine();
+            Console.WriteLine("    what a display name may be");
+
+            Assert("an ordinary name is accepted",
+                RoomProperties.CheckDisplayName("Chateau Zero") == null,
+                RoomProperties.CheckDisplayName("Chateau Zero") ?? "");
+
+            // THE ONE THAT MATTERS. RoomManifest.LoadAll treats displayName as
+            // cosmetic and falls back to the ID when it is blank — so an empty
+            // rename would be written, read back as the room's id, and look
+            // like it had worked. Refused up front instead.
+            Assert("an empty name is refused", RoomProperties.CheckDisplayName("") != null);
+            Assert("  and so is whitespace, for the same reason",
+                RoomProperties.CheckDisplayName("   ") != null);
+            Assert("  and null", RoomProperties.CheckDisplayName(null) != null);
+
+            Assert($"a name longer than {RoomProperties.MaxDisplayNameLength} is refused",
+                RoomProperties.CheckDisplayName(new string('x', RoomProperties.MaxDisplayNameLength + 1)) != null);
+            Assert("  and one exactly that long is not",
+                RoomProperties.CheckDisplayName(new string('x', RoomProperties.MaxDisplayNameLength)) == null);
+
+            // rooms.json is written one entry per line. A newline would be
+            // escaped into the JSON correctly and read back as a name with a
+            // \n in it, which every label in two applications renders as a box.
+            Assert("a name containing a newline is refused",
+                RoomProperties.CheckDisplayName("Chateau\n0") != null);
+            Assert("  and a tab", RoomProperties.CheckDisplayName("Chateau\t0") != null);
+        }
+
+        // ---- the rename, end to end, against a scratch registry -------------
+
+        private static void CheckRenameFlow(string scratch, IReadOnlyList<RoomManifest> live)
+        {
+            Console.WriteLine();
+            Console.WriteLine("    the rename flow");
+
+            // Its own directory: Rename READS the registry it is about to
+            // write, so the two must be the same file, and this section rewrites
+            // it several times.
+            string dir = Path.Combine(scratch, "rename");
+            Directory.CreateDirectory(dir);
+            string path = Path.Combine(dir, "rooms.json");
+            RoomManifest.Save(live, path);
+
+            string firstId = live[0].RoomId;
+            string secondId = live.Count > 1 ? live[1].RoomId : live[0].RoomId;
+
+            var refused = RoomProperties.Rename(firstId, "  ", dir);
+            Assert("Rename refuses an empty name", !refused.Ok, refused.Message);
+            Assert("  and writes nothing for it",
+                File.ReadAllText(path) == RegistryText(live), "the file changed");
+
+            var missing = RoomProperties.Rename("no_such_room", "Whatever", dir);
+            Assert("Rename refuses a room the registry does not hold", !missing.Ok, missing.Message);
+
+            var noop = RoomProperties.Rename(firstId, live[0].DisplayName, dir);
+            Assert("renaming to the name it already has succeeds", noop.Ok, noop.Message);
+            Assert("  and reports that nothing changed", !noop.Changed);
+
+            var first = RoomProperties.Rename(firstId, "Alpha Room", dir);
+            Assert("a real rename succeeds", first.Ok, first.Message);
+            Assert("  and reports that something changed", first.Changed);
+
+            // THE FRESH READ, which is the whole reason Rename does not use the
+            // cached RoomManifest.All. Two renames in a row, with no reload
+            // between them: if the second had started from a snapshot taken
+            // before the first, it would rewrite the whole file from that
+            // snapshot and the first rename would simply be gone.
+            var second = RoomProperties.Rename(secondId, "Beta Room", dir);
+            Assert("a second rename succeeds", second.Ok, second.Message);
+
+            var final = ReadRegistry(path, out string? problem);
+            if (final == null)
+            {
+                Assert("the twice-renamed file parses back", false, problem ?? "unknown");
+                return;
+            }
+
+            Assert("the twice-renamed file parses back", true);
+            Assert("  the SECOND rename is in it", NameOf(final, secondId) == "Beta Room",
+                NameOf(final, secondId) ?? "(missing)");
+            Assert("  and so is the FIRST — no snapshot overwrote it",
+                NameOf(final, firstId) == "Alpha Room", NameOf(final, firstId) ?? "(missing)");
+            Assert("  with the room count unchanged", final.Count == live.Count,
+                $"{live.Count} -> {final.Count}");
+
+            // Order is room order — the editor's Prev/Next cycle walks it — so
+            // a rename must not reorder anything.
+            bool sameOrder = final.Count == live.Count;
+            for (int i = 0; sameOrder && i < final.Count; i++)
+                sameOrder = final[i].RoomId == live[i].RoomId;
+            Assert("  and the array order untouched", sameOrder);
+        }
+
+        private static string? NameOf(IReadOnlyList<RoomManifest> registry, string roomId)
+        {
+            foreach (var r in registry) if (r.RoomId == roomId) return r.DisplayName;
+            return null;
+        }
+
+        /// <summary>What the writer would produce for this registry.</summary>
+        private static string RegistryText(IReadOnlyList<RoomManifest> registry)
+        {
+            string tmp = Path.Combine(Path.GetTempPath(), "sorcery-editcheck-cmp.json");
+            RoomManifest.Save(registry, tmp);
+            return File.ReadAllText(tmp);
         }
 
         private static List<RoomManifest>? ReadRegistry(string path, out string? problem)

@@ -721,6 +721,15 @@ namespace SorceryRemake.Tools.ImportCheck
             string scratchRooms = Path.Combine(dataDir, "rooms.json");
             string roomsBefore = File.ReadAllText(realRooms);
 
+            // SEEDED, since PR 7b. NewRoomFlow.Create now reads the registry
+            // from the data directory it is about to write, rather than from
+            // the cached RoomManifest.All — see the block on Create, and the
+            // hazard section 7b below used to pin. So a scratch data directory
+            // has to hold a registry, exactly as a real one does; the editor's
+            // own assets/data always does, since a missing rooms.json is a
+            // fatal startup error in both applications by design.
+            File.Copy(realRooms, scratchRooms, overwrite: true);
+
             var candidate = NewRoomFlow.MakeCandidate(NewRoomFlow.AssetNameFor("Chateau3"));
             var result = NewRoomFlow.Create(candidate, contentDir, dataDir);
             Assert("Create succeeds", result.Ok, result.Message);
@@ -1664,20 +1673,24 @@ namespace SorceryRemake.Tools.ImportCheck
                 stopped.StartsWith("Import All stopped:", StringComparison.Ordinal), stopped);
         }
 
-        // ---- why the loop must reload the registry ---------------------------
+        // ---- two Creates in a row, with no reload between them ---------------
 
         private static void CheckBatchNeedsAReload(string contentDir, string dataDir)
         {
-            // NewRoomFlow.Create builds the new registry from RoomManifest.All,
-            // which is a cached Lazy. Two Creates without a Reload between them
-            // therefore both start from the SAME nine rooms, and the second
-            // write silently drops the first room. The editor's batch avoids
-            // this only because it goes through CreateAndOpenRoom, which
-            // reloads after every file.
+            // THIS ASSERTION USED TO PIN A HAZARD. NewRoomFlow.Create built the
+            // new registry from the CACHED RoomManifest.All, so two Creates
+            // without a RoomManifest.Reload between them both started from the
+            // same nine rooms and the second write silently dropped the first
+            // room. Nothing failed and nothing warned; a room simply was not
+            // there. The editor never hit it only because CreateAndOpenRoom
+            // reloads after every file — which is a caller remembering
+            // something, and the PR 5b hand-off said so.
             //
-            // That is a real hazard hiding behind a convenience method, so it
-            // is asserted rather than trusted: if Create ever stops depending
-            // on the cache, this check says so and the batch can be simplified.
+            // PR 7b removed the hazard rather than continuing to document it:
+            // Create reads the registry from the data directory it is about to
+            // write, at the moment it writes it. So the assertion is INVERTED,
+            // not deleted. It now pins the fix, and it fails the moment Create
+            // goes back to reading a snapshot.
             string scratchRooms = Path.Combine(dataDir, "rooms.json");
             if (!File.Exists(scratchRooms))
             {
@@ -1691,15 +1704,28 @@ namespace SorceryRemake.Tools.ImportCheck
 
             var second = NewRoomFlow.MakeCandidate(NewRoomFlow.AssetNameFor("Chateau4"));
             var result = NewRoomFlow.Create(second, contentDir, dataDir);
-            Assert("a second Create succeeds on its own terms", result.Ok, result.Message);
+            Assert("a second Create succeeds with no reload between them", result.Ok, result.Message);
 
             string after = File.ReadAllText(scratchRooms);
-            Assert("  but without a registry reload it drops the first room",
+            Assert("  and it KEEPS the room the first one made",
                 after.Contains("\"id\": \"chateau_4\"", StringComparison.Ordinal)
-                && !after.Contains("\"id\": \"chateau_3\"", StringComparison.Ordinal),
-                "Create no longer reads the cached registry — the batch's reload may be redundant now");
-            Assert("  which is exactly why the batch goes through CreateAndOpenRoom",
-                EntryRows(after) == RoomManifest.All.Count + 1, EntryRows(after).ToString());
+                && after.Contains("\"id\": \"chateau_3\"", StringComparison.Ordinal),
+                "Create is reading a snapshot again — the second write dropped the first room");
+            Assert("  so the registry has grown by both",
+                EntryRows(after) == RoomManifest.All.Count + 2, EntryRows(after).ToString());
+
+            // AND IT RE-CHECKS THE ID against that fresh registry. A candidate
+            // is computed when a picker OPENS; between then and the click, a
+            // batch may have created a room deriving the same id. The check
+            // that matters is the one against the file being written — so a
+            // candidate that looked fine when it was built is refused now.
+            var stale = NewRoomFlow.MakeCandidate(NewRoomFlow.AssetNameFor("Chateau3"));
+            Assert("a candidate built before the file changed carries no Problem",
+                stale.CanCreate, stale.Problem ?? "");
+            var refusedNow = NewRoomFlow.Create(stale, contentDir, dataDir);
+            Assert("  but Create refuses it against the registry as it is NOW",
+                !refusedNow.Ok, refusedNow.Message);
+            Assert("  and the file is unchanged", File.ReadAllText(scratchRooms) == after);
         }
 
         // ====================================================================
